@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Bell,
+  BellRing,
   Search,
   User,
   ShieldCheck,
@@ -13,6 +14,12 @@ import {
 import { useAuth } from '../../context/AuthContext';
 import { useTheme } from '../../context/ThemeContext';
 import { ZahiraLogo } from '../common/ZahiraLogo';
+import {
+  isBrowserNotificationSupported,
+  isRunningInIframe,
+  requestNotificationPermission,
+  sendTestBrowserNotification,
+} from '../../services/notificationService';
 
 interface HeaderProps {
   onSearch?: (query: string) => void;
@@ -40,6 +47,37 @@ export const Header: React.FC<HeaderProps> = ({
 
   const [showNotifs, setShowNotifs] = useState(false);
   const [searchVal, setSearchVal] = useState('');
+  const [notifPermission, setNotifPermission] = useState<NotificationPermission | 'unsupported'>(() =>
+    isBrowserNotificationSupported() ? Notification.permission : 'unsupported'
+  );
+  const [notifFeedback, setNotifFeedback] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (showNotifs && isBrowserNotificationSupported()) {
+      setNotifPermission(Notification.permission);
+    }
+  }, [showNotifs]);
+
+  const handleEnableDeviceNotifications = async () => {
+    setNotifFeedback(null);
+    const res = await requestNotificationPermission();
+    setNotifPermission(res);
+    if (res === 'granted') {
+      const sent = await sendTestBrowserNotification();
+      setNotifFeedback(sent ? 'Device & browser notifications enabled!' : 'Permission granted!');
+    } else if (isRunningInIframe()) {
+      setNotifFeedback('Preview iframe blocks prompts — open the hosted URL directly in a browser tab to allow alerts.');
+    } else {
+      setNotifFeedback('Notifications blocked in browser site settings. Click the lock/site-info icon in the address bar to Allow.');
+    }
+    setTimeout(() => setNotifFeedback(null), 5000);
+  };
+
+  const handleTestNotification = async () => {
+    const sent = await sendTestBrowserNotification();
+    setNotifFeedback(sent ? 'Test notification sent to your device!' : 'Allow notifications in browser settings first.');
+    setTimeout(() => setNotifFeedback(null), 4000);
+  };
 
   const unreadNotifs = notifications.filter((n) => !n.read);
 
@@ -177,6 +215,46 @@ export const Header: React.FC<HeaderProps> = ({
                   </button>
                 )}
               </div>
+
+              {/* Device & Browser Notification Control Bar */}
+              {notifPermission !== 'unsupported' && (
+                <div className="border-b border-slate-100 dark:border-slate-800 px-4 py-2.5 bg-blue-50/60 dark:bg-blue-950/30 flex flex-col gap-1.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-700 dark:text-slate-200">
+                      <BellRing className="w-3.5 h-3.5 text-blue-700 dark:text-blue-400 shrink-0" />
+                      <span>
+                        {notifPermission === 'granted'
+                          ? 'Device & browser alerts active'
+                          : notifPermission === 'denied'
+                            ? 'Browser alerts blocked'
+                            : 'Get device alerts for new messages'}
+                      </span>
+                    </div>
+                    {notifPermission === 'granted' ? (
+                      <button
+                        type="button"
+                        onClick={handleTestNotification}
+                        className="rounded-lg border border-blue-200 dark:border-blue-800 bg-white dark:bg-slate-900 px-2.5 py-1 text-[10px] font-bold text-blue-700 dark:text-blue-300 hover:bg-blue-50 dark:hover:bg-slate-800 transition-colors shrink-0"
+                      >
+                        Test Alert
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={handleEnableDeviceNotifications}
+                        className="rounded-lg bg-blue-600 hover:bg-blue-700 px-2.5 py-1 text-[10px] font-bold text-white transition-colors shrink-0"
+                      >
+                        Enable Alerts
+                      </button>
+                    )}
+                  </div>
+                  {notifFeedback && (
+                    <p className="text-[10px] text-blue-800 dark:text-blue-300 leading-snug">
+                      {notifFeedback}
+                    </p>
+                  )}
+                </div>
+              )}
 
               <div className="max-h-72 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800">
                 {notifications.length === 0 ? (
