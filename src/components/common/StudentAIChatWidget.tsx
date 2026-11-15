@@ -29,6 +29,8 @@ import { useAuth } from '../../context/AuthContext';
 import { Assignment, Submission, SchoolEvent } from '../../types';
 import { SEED_ASSIGNMENTS, SEED_SUBMISSIONS, SEED_SCHOOL_EVENTS } from '../../services/dataService';
 import { AIMarkdownMath } from './AIMarkdownMath';
+import { getApiUrl } from '../../services/apiConfig';
+import { generateClientStudentAssistantFallback } from '../../services/localTutorFallback';
 
 interface ChatMessage {
   id: string;
@@ -285,7 +287,7 @@ export const StudentAIChatWidget: React.FC<StudentAIChatWidgetProps> = ({ onNavi
         headers['x-gemini-api-key'] = latestKey;
       }
 
-      const response = await fetch('/api/gemini/student-assistant', {
+      const response = await fetch(getApiUrl('/api/gemini/student-assistant'), {
         method: 'POST',
         headers,
         body: JSON.stringify({
@@ -327,16 +329,23 @@ export const StudentAIChatWidget: React.FC<StudentAIChatWidgetProps> = ({ onNavi
 
       setMessages((prev) => [...prev, botMsg]);
     } catch (e: any) {
-      console.error('Chat error:', e);
-      const isMissingBackend = e?.message === 'BACKEND_UNAVAILABLE';
+      console.warn('244 AI fallback activated:', e?.message || e);
+      const userSubs = submissions.filter((s) => s.studentId === userProfile?.userId);
+      const fallbackReply = generateClientStudentAssistantFallback(queryText, {
+        assignments: assignments.map((a) => ({
+          title: a.title,
+          subject: a.subjectId || 'Science EM',
+          dueDate: a.dueDate,
+          maxMarks: a.maxMarks,
+          isSubmitted: userSubs.some((s) => s.assignmentId === a.id),
+        })),
+      });
       setMessages((prev) => [
         ...prev,
         {
-          id: `err-${Date.now()}`,
+          id: `ast-${Date.now()}`,
           role: 'assistant',
-          content: isMissingBackend
-            ? 'The `/api/gemini/student-assistant` backend route is unavailable on this host. Deploy the full-stack Node server (`npm run build && npm run start` with `GEMINI_API_KEY`) rather than static `dist/` hosting alone.'
-            : 'Unable to reach the Gemini assistant. Please ensure your network is connected and try again.',
+          content: fallbackReply,
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         },
       ]);
