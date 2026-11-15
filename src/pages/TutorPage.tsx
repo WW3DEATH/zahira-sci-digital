@@ -18,7 +18,7 @@ import {
   SlidersHorizontal,
 } from 'lucide-react';
 import { collection, doc, getDocs, setDoc, query, where } from 'firebase/firestore';
-import { db } from '../firebase';
+import { db, sanitizeFirestoreDoc } from '../firebase';
 import { useAuth } from '../context/AuthContext';
 import { TutorChatMessage, TutorSession } from '../types';
 import { AIMarkdownMath } from '../components/common/AIMarkdownMath';
@@ -156,7 +156,11 @@ Type any question below and I will break it down step-by-step for you!`,
         }),
       });
 
-      if (!response.ok) {
+      const contentType = response.headers.get('content-type') || '';
+      if (!response.ok || !contentType.includes('application/json')) {
+        if (response.status === 404 || response.status === 405 || contentType.includes('text/html')) {
+          throw new Error('BACKEND_UNAVAILABLE');
+        }
         throw new Error(`HTTP ${response.status}`);
       }
 
@@ -170,25 +174,32 @@ Type any question below and I will break it down step-by-step for you!`,
       const finalMessages = [...newMessages, assistantMsg];
       setMessages(finalMessages);
 
-      // Persist session to Firestore
-      const sessionDoc: TutorSession = {
-        id: currentSessionId,
-        studentId: userProfile?.userId || 'student_scholar',
-        subject,
-        topic,
-        style,
-        messages: finalMessages,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
-      await setDoc(doc(db, 'tutorSessions', currentSessionId), sessionDoc, { merge: true });
-    } catch (error) {
+      // Persist session to Firestore (non-fatal if offline or permission fails)
+      try {
+        const sessionDoc: TutorSession = {
+          id: currentSessionId,
+          studentId: userProfile?.userId || 'student_scholar',
+          subject,
+          topic,
+          style,
+          messages: finalMessages,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+        await setDoc(doc(db, 'tutorSessions', currentSessionId), sanitizeFirestoreDoc(sessionDoc), { merge: true });
+      } catch (persistErr) {
+        console.warn('Could not save tutor session history to Firestore:', persistErr);
+      }
+    } catch (error: any) {
       console.error('Tutor Error:', error);
+      const isMissingBackend = error?.message === 'BACKEND_UNAVAILABLE';
       setMessages((prev) => [
         ...prev,
         {
           role: 'assistant',
-          content: 'Sorry, I encountered a communication error with the Gemini tutoring service. Please check your network or try again.',
+          content: isMissingBackend
+            ? 'The `/api/gemini/tutor` backend endpoint is not reachable on this host. This usually happens when only the static `dist/` folder is deployed (e.g., Firebase Hosting or Netlify) without running the full-stack Express server (`npm run build && npm run start` with `GEMINI_API_KEY` set).'
+            : 'Sorry, I encountered a communication error with the Gemini tutoring service. Please check your network or try again.',
           timestamp: new Date().toISOString(),
         },
       ]);
