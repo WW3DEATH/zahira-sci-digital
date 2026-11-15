@@ -51,6 +51,8 @@ import {
 } from '../types';
 import { AIMarkdownMath } from '../components/common/AIMarkdownMath';
 import { sendDirectNotification } from '../services/notificationService';
+import { getApiUrl } from '../services/apiConfig';
+import { generateClientPvPFallback } from '../services/localTutorFallback';
 
 interface PvPQuizArenaPageProps {
   initialTab?: 'arena' | 'leaderboard';
@@ -431,41 +433,50 @@ export const PvPQuizArenaPage: React.FC<PvPQuizArenaPageProps> = ({
       }
 
       const nonce = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      const res = await fetch('/api/gemini/pvp-quiz-generate', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(activeCustomKey ? { 'x-gemini-api-key': activeCustomKey } : {}),
-        },
-        body: JSON.stringify({
-          subject: subjectLabel,
-          subjects: activeSubjects,
-          topic: topic.trim() || undefined,
-          difficulty,
-          numQuestions: questionCount,
-          nonce,
-          apiKey: activeCustomKey || undefined,
-        }),
-      });
+      let questions: QuizQuestion[] = [];
+      let dataSource: string = 'procedural_engine';
+      let aiErrorMsg: string | null = null;
 
-      if (!res.ok) {
-        showToast(`Question generator returned status ${res.status}. Please retry.`);
-        setCreatingMatch(false);
-        return;
+      try {
+        const res = await fetch(getApiUrl('/api/gemini/pvp-quiz-generate'), {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(activeCustomKey ? { 'x-gemini-api-key': activeCustomKey } : {}),
+          },
+          body: JSON.stringify({
+            subject: subjectLabel,
+            subjects: activeSubjects,
+            topic: topic.trim() || undefined,
+            difficulty,
+            numQuestions: questionCount,
+            nonce,
+            apiKey: activeCustomKey || undefined,
+          }),
+        });
+
+        const contentType = res.headers.get('content-type') || '';
+        if (res.ok && contentType.includes('application/json')) {
+          const data = await res.json();
+          questions = data.questions || [];
+          dataSource = data.source || 'procedural_engine';
+          aiErrorMsg = data.aiError || null;
+        }
+      } catch (fetchErr) {
+        console.warn('PvP endpoint unavailable, using local STEM fallback:', fetchErr);
       }
 
-      const data = await res.json();
-      const questions: QuizQuestion[] = data.questions || [];
       if (questions.length === 0) {
-        showToast('Could not generate questions right now. Please try again.');
-        setCreatingMatch(false);
-        return;
+        questions = generateClientPvPFallback(activeSubjects, questionCount, difficulty);
+        dataSource = 'procedural_engine';
       }
 
-      if (data.aiError && activeCustomKey) {
-        showToast(`Gemini API key notice (${data.aiError}). Loaded ${questions.length} backup STEM/ICT questions.`);
-      } else if (data.source === 'gemini_ai') {
+      if (aiErrorMsg && activeCustomKey) {
+        showToast(`Gemini API key notice (${aiErrorMsg}). Loaded ${questions.length} backup STEM/ICT questions.`);
+      } else if (dataSource === 'gemini_ai') {
         showToast(`Live Gemini AI generated ${questions.length} fresh ${subjectLabel} questions!`);
+      } else {
+        showToast(`Loaded ${questions.length} fresh ${subjectLabel} competition questions!`);
       }
 
       const matchId = `pvp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
@@ -509,7 +520,7 @@ export const PvPQuizArenaPage: React.FC<PvPQuizArenaPageProps> = ({
         invitedUserId: invitedUser?.userId,
         invitedUserName: invitedUser?.fullName,
         questions,
-        questionSource: data.source || 'gemini_ai',
+        questionSource: dataSource === 'gemini_ai' ? 'gemini_ai' : 'procedural_engine',
         playerStates: {
           [userProfile.userId]: hostState,
         },
