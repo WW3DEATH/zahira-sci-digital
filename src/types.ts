@@ -129,6 +129,7 @@ export interface TestMark {
   testId: string;
   studentId: string;
   studentName: string;
+  studentIndex?: string;
   classId: string;
   subjectId: string;
   marksObtained: number;
