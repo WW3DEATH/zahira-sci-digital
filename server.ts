@@ -193,7 +193,8 @@ async function callGeminiWithFallback(
   for (let i = 0; i < models.length; i++) {
     const model = models[i];
     try {
-      const res = await tryClient(client, model, i === 0 ? timeoutMs : Math.min(timeoutMs, 6500));
+      const attemptMs = i === 0 ? Math.min(timeoutMs, 5500) : Math.min(timeoutMs, 5000);
+      const res = await tryClient(client, model, attemptMs);
       if (res) return res;
     } catch (err: any) {
       lastError = err;
