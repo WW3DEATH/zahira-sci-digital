@@ -165,10 +165,10 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
       const userMarks = list.filter(
         (m) =>
           m.studentId === userProfile?.userId ||
-          m.studentId === 'student-2860003' ||
-          (userProfile?.fullName && m.studentName && m.studentName.toLowerCase() === userProfile.fullName.toLowerCase())
+          (userProfile?.indexNumber && m.studentIndex && m.studentIndex.trim() === userProfile.indexNumber.trim()) ||
+          (userProfile?.fullName && m.studentName && m.studentName.trim().toLowerCase() === userProfile.fullName.trim().toLowerCase())
       );
-      setMarks(userMarks.length > 0 ? userMarks : list);
+      setMarks(userMarks);
       setLoading(false);
     });
 
@@ -182,7 +182,7 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
       unsubReplies();
       unsubMarks();
     };
-  }, [userProfile?.userId]);
+  }, [userProfile?.userId, userProfile?.fullName, userProfile?.indexNumber]);
 
   // Check for upcoming deadlines (<24h) and trigger desktop notification
   useEffect(() => {
