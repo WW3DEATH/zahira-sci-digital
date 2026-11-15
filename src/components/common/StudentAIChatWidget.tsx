@@ -307,7 +307,11 @@ export const StudentAIChatWidget: React.FC<StudentAIChatWidgetProps> = ({ onNavi
         }),
       });
 
-      if (!response.ok) {
+      const contentType = response.headers.get('content-type') || '';
+      if (!response.ok || !contentType.includes('application/json')) {
+        if (response.status === 404 || response.status === 405 || contentType.includes('text/html')) {
+          throw new Error('BACKEND_UNAVAILABLE');
+        }
         throw new Error(`HTTP ${response.status}`);
       }
 
@@ -324,12 +328,15 @@ export const StudentAIChatWidget: React.FC<StudentAIChatWidgetProps> = ({ onNavi
       setMessages((prev) => [...prev, botMsg]);
     } catch (e: any) {
       console.error('Chat error:', e);
+      const isMissingBackend = e?.message === 'BACKEND_UNAVAILABLE';
       setMessages((prev) => [
         ...prev,
         {
           id: `err-${Date.now()}`,
           role: 'assistant',
-          content: 'Unable to reach the Gemini assistant. Please ensure your network is connected and try again.',
+          content: isMissingBackend
+            ? 'The `/api/gemini/student-assistant` backend route is unavailable on this host. Deploy the full-stack Node server (`npm run build && npm run start` with `GEMINI_API_KEY`) rather than static `dist/` hosting alone.'
+            : 'Unable to reach the Gemini assistant. Please ensure your network is connected and try again.',
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         },
       ]);
