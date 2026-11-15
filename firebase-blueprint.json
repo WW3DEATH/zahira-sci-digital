@@ -140,6 +140,7 @@
         "testId": { "type": "string" },
         "studentId": { "type": "string" },
         "studentName": { "type": "string" },
+        "studentIndex": { "type": "string" },
         "classId": { "type": "string" },
         "subjectId": { "type": "string" },
         "marksObtained": { "type": "number" },
