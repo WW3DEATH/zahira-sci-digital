@@ -22,6 +22,8 @@ import { db, sanitizeFirestoreDoc } from '../firebase';
 import { useAuth } from '../context/AuthContext';
 import { TutorChatMessage, TutorSession } from '../types';
 import { AIMarkdownMath } from '../components/common/AIMarkdownMath';
+import { getApiUrl } from '../services/apiConfig';
+import { generateClientTutorFallback } from '../services/localTutorFallback';
 
 interface TutorPageProps {
   initialTopic?: string;
@@ -143,7 +145,7 @@ Type any question below and I will break it down step-by-step for you!`,
         headers['x-gemini-api-key'] = activeCustomKey;
       }
 
-      const response = await fetch('/api/gemini/tutor', {
+      const response = await fetch(getApiUrl('/api/gemini/tutor'), {
         method: 'POST',
         headers,
         body: JSON.stringify({
@@ -191,18 +193,29 @@ Type any question below and I will break it down step-by-step for you!`,
         console.warn('Could not save tutor session history to Firestore:', persistErr);
       }
     } catch (error: any) {
-      console.error('Tutor Error:', error);
-      const isMissingBackend = error?.message === 'BACKEND_UNAVAILABLE';
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: 'assistant',
-          content: isMissingBackend
-            ? 'The `/api/gemini/tutor` backend endpoint is not reachable on this host. This usually happens when only the static `dist/` folder is deployed (e.g., Firebase Hosting or Netlify) without running the full-stack Express server (`npm run build && npm run start` with `GEMINI_API_KEY` set).'
-            : 'Sorry, I encountered a communication error with the Gemini tutoring service. Please check your network or try again.',
-          timestamp: new Date().toISOString(),
-        },
-      ]);
+      console.warn('Tutor fallback activated:', error?.message || error);
+      const fallbackReply = generateClientTutorFallback(textToSend, subject, topic, style);
+      const fallbackMsg: TutorChatMessage = {
+        role: 'assistant',
+        content: fallbackReply,
+        timestamp: new Date().toISOString(),
+      };
+      const finalMessages = [...newMessages, fallbackMsg];
+      setMessages(finalMessages);
+
+      try {
+        const sessionDoc: TutorSession = {
+          id: currentSessionId,
+          studentId: userProfile?.userId || 'student_scholar',
+          subject,
+          topic,
+          style,
+          messages: finalMessages,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+        await setDoc(doc(db, 'tutorSessions', currentSessionId), sanitizeFirestoreDoc(sessionDoc), { merge: true });
+      } catch {}
     } finally {
       setLoading(false);
     }
