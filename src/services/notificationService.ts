@@ -11,41 +11,127 @@ export interface BroadcastNotificationParams {
   userId?: string;
 }
 
-/**
- * Triggers a native HTML5 Desktop Browser Notification if permission is granted.
- */
-export function triggerBrowserNotification(title: string, options?: { body?: string; tag?: string }) {
-  if (typeof window === 'undefined' || !('Notification' in window)) {
-    return;
-  }
+const APP_ICON_URL = '/assets/aistudio/image_27ea2622.png';
+let swRegistrationPromise: Promise<ServiceWorkerRegistration | null> | null = null;
 
-  if (Notification.permission === 'granted') {
-    try {
-      new Notification(title, {
-        body: options?.body || 'Zahira College 2k28 Science EM academic alert.',
-        icon: 'https://images.unsplash.com/photo-1546410531-bb4caa6b424d?auto=format&fit=crop&q=80&w=128',
-        tag: options?.tag,
-      });
-    } catch (e) {
-      console.warn('Browser notification trigger failed:', e);
-    }
+export function isBrowserNotificationSupported(): boolean {
+  return typeof window !== 'undefined' && 'Notification' in window;
+}
+
+export function isRunningInIframe(): boolean {
+  try {
+    return typeof window !== 'undefined' && window.self !== window.top;
+  } catch {
+    return true;
   }
 }
 
 /**
- * Requests browser notification permission from the user.
+ * Registers the lightweight service worker (/sw.js) so Android Chrome, desktop Chrome/Edge,
+ * and installed PWAs can display real OS-level notifications via ServiceWorkerRegistration.showNotification().
+ */
+export function registerNotificationServiceWorker(): Promise<ServiceWorkerRegistration | null> {
+  if (typeof window === 'undefined' || !('serviceWorker' in navigator)) {
+    return Promise.resolve(null);
+  }
+  if (!swRegistrationPromise) {
+    swRegistrationPromise = navigator.serviceWorker
+      .register('/sw.js', { scope: '/' })
+      .then(async (reg) => {
+        try {
+          const readyReg = await navigator.serviceWorker.ready;
+          return readyReg || reg;
+        } catch {
+          return reg;
+        }
+      })
+      .catch((err) => {
+        console.warn('Service worker registration note:', err);
+        return null;
+      });
+  }
+  return swRegistrationPromise;
+}
+
+/**
+ * Triggers a real OS / Device / Browser Notification if permission is granted.
+ * Uses ServiceWorkerRegistration.showNotification first (required on mobile browsers),
+ * falling back cleanly to window.Notification on desktop browsers.
+ */
+export async function triggerBrowserNotification(
+  title: string,
+  options?: { body?: string; tag?: string; link?: string }
+): Promise<boolean> {
+  if (!isBrowserNotificationSupported()) {
+    return false;
+  }
+
+  if (Notification.permission !== 'granted') {
+    return false;
+  }
+
+  const cleanBody = options?.body || 'Zahira College 2k28 Science EM academic alert.';
+  const notifOptions: NotificationOptions = {
+    body: cleanBody,
+    icon: APP_ICON_URL,
+    badge: APP_ICON_URL,
+    tag: options?.tag || `znc-${Date.now()}`,
+    data: {
+      link: options?.link || 'dashboard',
+      url: '/',
+    },
+  };
+
+  // Prefer ServiceWorkerRegistration.showNotification (works on Android, mobile browsers, and desktop)
+  try {
+    const reg = await registerNotificationServiceWorker();
+    if (reg && typeof reg.showNotification === 'function') {
+      await reg.showNotification(title, notifOptions);
+      return true;
+    }
+  } catch (swErr) {
+    console.warn('Service worker showNotification fallback:', swErr);
+  }
+
+  // Desktop Notification API fallback
+  try {
+    const notif = new Notification(title, notifOptions);
+    notif.onclick = () => {
+      try {
+        window.focus();
+        notif.close();
+      } catch {}
+    };
+    return true;
+  } catch (e) {
+    console.warn('Browser notification trigger failed:', e);
+    return false;
+  }
+}
+
+/**
+ * Requests browser & device notification permission from the user and registers the service worker.
  */
 export async function requestNotificationPermission(): Promise<NotificationPermission> {
-  if (typeof window === 'undefined' || !('Notification' in window)) {
+  if (!isBrowserNotificationSupported()) {
     return 'denied';
   }
   try {
+    await registerNotificationServiceWorker();
     const permission = await Notification.requestPermission();
     return permission;
   } catch (err) {
     console.warn('Error requesting notification permission:', err);
     return 'denied';
   }
+}
+
+export async function sendTestBrowserNotification(): Promise<boolean> {
+  return triggerBrowserNotification('Zahira College 2k28 Science EM', {
+    body: 'Device and browser notifications are now active for school alerts and messages.',
+    tag: `znc-test-${Date.now()}`,
+    link: 'dashboard',
+  });
 }
 
 /**
