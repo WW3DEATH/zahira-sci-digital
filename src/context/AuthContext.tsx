@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
 import {
   User as FirebaseUser,
   onAuthStateChanged,
@@ -26,6 +26,7 @@ import { auth, db, sanitizeFirestoreDoc } from '../firebase';
 import { UserProfile, UserRole, AppNotification } from '../types';
 import { REAL_ADMIN_PROFILE, seedInitialDatabaseIfEmpty } from '../services/dataService';
 import { ensureStudentIndexNumber, generateNextStudentIndex } from '../services/studentIndexService';
+import { triggerBrowserNotification } from '../services/notificationService';
 
 interface AuthContextType {
   firebaseUser: FirebaseUser | null;
@@ -98,6 +99,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [impersonatedProfile, setImpersonatedProfile] = useState<UserProfile | null>(null);
   const [googleAccessToken, setGoogleAccessToken] = useState<string | null>(null);
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
+  const notifiedIdsRef = useRef<Set<string>>(new Set());
+  const initializedNotifsForRef = useRef<string | null>(null);
 
   // Seed Zahira College 2k28 Science EM on boot
   useEffect(() => {
@@ -283,12 +286,31 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const currentId = impersonatedProfile?.userId || userProfile?.userId;
     if (!currentId) {
       setNotifications([]);
+      initializedNotifsForRef.current = null;
+      notifiedIdsRef.current.clear();
       return;
+    }
+
+    const storageKey = `znc_browser_notified_${currentId}`;
+    let persistedSeen: string[] = [];
+    try {
+      persistedSeen = JSON.parse(localStorage.getItem(storageKey) || '[]');
+      if (!Array.isArray(persistedSeen)) persistedSeen = [];
+    } catch {
+      persistedSeen = [];
+    }
+
+    if (initializedNotifsForRef.current !== currentId) {
+      notifiedIdsRef.current = new Set(persistedSeen);
     }
 
     try {
       const unsubNotif = onSnapshot(collection(db, 'notifications'), (snapshot) => {
         const notifs: AppNotification[] = [];
+        const isInitialBatch = initializedNotifsForRef.current !== currentId;
+        const nowMs = Date.now();
+        const newlyDispatchedIds: string[] = [];
+
         snapshot.forEach((d) => {
           const data = { id: d.id, ...d.data() } as AppNotification;
           // Check if targeted to a specific user (e.g. direct messages, private alerts)
@@ -316,8 +338,35 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               ...data,
               read: !!isRead,
             });
+
+            if (!isRead && !notifiedIdsRef.current.has(data.id)) {
+              const createdMs = new Date(data.createdAt || 0).getTime();
+              const isFresh = nowMs - createdMs <= 60 * 1000;
+              if (!isInitialBatch || isFresh) {
+                triggerBrowserNotification(data.title, {
+                  body: data.message,
+                  tag: data.id,
+                  link: data.link,
+                });
+              }
+              notifiedIdsRef.current.add(data.id);
+              newlyDispatchedIds.push(data.id);
+            } else if (!notifiedIdsRef.current.has(data.id)) {
+              notifiedIdsRef.current.add(data.id);
+              newlyDispatchedIds.push(data.id);
+            }
           }
         });
+
+        initializedNotifsForRef.current = currentId;
+
+        if (newlyDispatchedIds.length > 0) {
+          try {
+            const merged = Array.from(new Set([...persistedSeen, ...notifiedIdsRef.current])).slice(-120);
+            persistedSeen = merged;
+            localStorage.setItem(storageKey, JSON.stringify(merged));
+          } catch {}
+        }
 
         setNotifications(
           notifs.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
