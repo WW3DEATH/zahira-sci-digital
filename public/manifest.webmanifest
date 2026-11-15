@@ -1,0 +1,25 @@
+{
+  "id": "/",
+  "name": "ZNC Science Project - Zahira College Mawanella",
+  "short_name": "ZNC Science",
+  "description": "Zahira College Mawanella 2k28 A/L Science EM Learning Management System",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "theme_color": "#1e3a8a",
+  "background_color": "#f8fafc",
+  "icons": [
+    {
+      "src": "/assets/aistudio/image_27ea2622.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/assets/aistudio/image_27ea2622.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}
