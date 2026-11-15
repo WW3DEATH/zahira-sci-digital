@@ -17,6 +17,8 @@ import {
 } from 'lucide-react';
 import { AIMarkdownMath } from '../components/common/AIMarkdownMath';
 import { useAuth } from '../context/AuthContext';
+import { getApiUrl } from '../services/apiConfig';
+import { generateClientTeacherAssistantFallback } from '../services/localTutorFallback';
 
 export const TeacherAssistantPage: React.FC = () => {
   const { userProfile, activeRole } = useAuth();
@@ -61,7 +63,7 @@ export const TeacherAssistantPage: React.FC = () => {
         headers['x-gemini-api-key'] = activeCustomKey;
       }
 
-      const response = await fetch('/api/gemini/teacher-assistant', {
+      const response = await fetch(getApiUrl('/api/gemini/teacher-assistant'), {
         method: 'POST',
         headers,
         body: JSON.stringify({
@@ -74,15 +76,16 @@ export const TeacherAssistantPage: React.FC = () => {
         }),
       });
 
-      if (!response.ok) {
-        throw new Error(`Service returned status ${response.status}`);
+      const contentType = response.headers.get('content-type') || '';
+      if (!response.ok || !contentType.includes('application/json')) {
+        throw new Error('BACKEND_UNAVAILABLE');
       }
 
       const data = await response.json();
       setGeneratedOutput(data.content || 'Unable to generate curriculum content.');
     } catch (e: any) {
-      console.error('Teacher Assistant Error:', e);
-      setErrorMsg(e?.message || 'Unable to generate curriculum material right now. Please try again.');
+      console.warn('Teacher Assistant fallback activated:', e?.message || e);
+      setGeneratedOutput(generateClientTeacherAssistantFallback(taskType, subject, gradeLevel, topic));
     } finally {
       setLoading(false);
     }
