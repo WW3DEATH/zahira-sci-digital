@@ -175,11 +175,23 @@ export interface AttendanceRecord {
   id: string;
   classId: string;
   date: string; // YYYY-MM-DD
+  sessionId?: string;
+  sessionSubject?: string;
+  timeSlot?: string;
   teacherId: string;
   records: Record<string, AttendanceStatus>; // studentId -> status
   checkInLogs?: AttendanceCheckInLog[];
   activeSession?: QRAttendanceSession;
   createdAt: string;
+}
+
+export interface AttendanceDayControl {
+  id: string; // YYYY-MM-DD
+  date: string; // YYYY-MM-DD
+  enabled: boolean;
+  updatedBy?: string;
+  updatedByName?: string;
+  updatedAt: string;
 }
 
 export interface ScienceSkillReference {
