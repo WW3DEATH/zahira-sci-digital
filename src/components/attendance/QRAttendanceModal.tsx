@@ -24,6 +24,7 @@ import { db, sanitizeFirestoreDoc } from '../../firebase';
 import { useAuth } from '../../context/AuthContext';
 import { AttendanceCheckInLog, AttendanceRecord, QRAttendanceSession } from '../../types';
 import { broadcastSystemNotification } from '../../services/notificationService';
+import { buildAttendanceRecordId } from '../../utils/attendanceUtils';
 
 interface QRAttendanceModalProps {
   isOpen: boolean;
@@ -31,6 +32,9 @@ interface QRAttendanceModalProps {
   classId?: string;
   className?: string;
   selectedDate?: string;
+  sessionId?: string;
+  sessionSubject?: string;
+  defaultRoom?: string;
   mode: 'generate' | 'scan'; // 'generate' for teacher/admin, 'scan' for student
 }
 
@@ -40,14 +44,17 @@ export const QRAttendanceModal: React.FC<QRAttendanceModalProps> = ({
   classId = 'general',
   className = '2k28 Science EM',
   selectedDate = new Date().toISOString().split('T')[0],
+  sessionId = 'daily',
+  sessionSubject,
+  defaultRoom,
   mode,
 }) => {
   const { userProfile, activeRole } = useAuth();
   const isTeacherOrAdmin = activeRole === 'teacher' || activeRole === 'admin';
 
   // Teacher generator state
-  const [selectedSubject, setSelectedSubject] = useState('Combined Mathematics');
-  const [selectedRoom, setSelectedRoom] = useState('Science Complex - Hall 28');
+  const [selectedSubject, setSelectedSubject] = useState(sessionSubject || 'Combined Mathematics');
+  const [selectedRoom, setSelectedRoom] = useState(defaultRoom || 'Science Complex - Hall 28');
   const [qrDataUrl, setQrDataUrl] = useState<string>('');
   const [sessionToken, setSessionToken] = useState<string>('');
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -62,7 +69,16 @@ export const QRAttendanceModal: React.FC<QRAttendanceModalProps> = ({
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const animationFrameRef = useRef<number | null>(null);
 
-  const recordId = `att-${selectedDate}-${classId}`;
+  useEffect(() => {
+    if (isOpen && sessionSubject) {
+      setSelectedSubject(sessionSubject);
+    }
+    if (isOpen && defaultRoom) {
+      setSelectedRoom(defaultRoom);
+    }
+  }, [isOpen, sessionSubject, defaultRoom]);
+
+  const recordId = buildAttendanceRecordId(selectedDate, classId, sessionId);
 
   // 1. Listen for real-time check-in logs for this record
   useEffect(() => {
@@ -140,6 +156,8 @@ export const QRAttendanceModal: React.FC<QRAttendanceModalProps> = ({
           id: recordId,
           classId,
           date: selectedDate,
+          sessionId: sessionId && sessionId !== 'daily' ? sessionId : undefined,
+          sessionSubject: selectedSubject,
           teacherId: userProfile?.userId || 'teacher_lead',
           activeSession: sessionObj,
         }),
@@ -286,6 +304,8 @@ export const QRAttendanceModal: React.FC<QRAttendanceModalProps> = ({
           id: recordId,
           classId,
           date: selectedDate,
+          sessionId: sessionId && sessionId !== 'daily' ? sessionId : undefined,
+          sessionSubject: sessionSubject || selectedSubject,
           teacherId: existingRecord?.teacherId || 'faculty_lead',
           records: currentRecords,
           checkInLogs: updatedLogs,
