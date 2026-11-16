@@ -18,6 +18,7 @@ import {
   AlertCircle,
   Loader2,
   Lock,
+  GraduationCap,
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import { collection, doc, onSnapshot, setDoc, deleteDoc } from 'firebase/firestore';
@@ -26,6 +27,7 @@ import { useAuth } from '../context/AuthContext';
 import { AcademicTest, TestMark, Subject, RosterStudent } from '../types';
 import { SEED_TESTS, SEED_SUBJECTS, isFakeSeedRosterStudent } from '../services/dataService';
 import { PDFPreviewModal, PDFPreviewData } from '../components/common/PDFPreviewModal';
+import { TermExamMarksSection } from '../components/assessments/TermExamMarksSection';
 import {
   LiveMorphIcon,
   LivePaperScannerGraphic,
@@ -62,9 +64,9 @@ export const AssessmentsPage: React.FC = () => {
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
   const [statusToast, setStatusToast] = useState<string | null>(null);
 
-  // Active tab: 'batch_entry' (teachers/admins) | 'report_card' | 'tests'
-  const [activeTab, setActiveTab] = useState<'batch_entry' | 'report_card' | 'tests'>(
-    isTeacherOrAdmin ? 'batch_entry' : 'report_card'
+  // Active tab: 'term_exams' | 'batch_entry' (teachers/admins) | 'report_card' | 'tests'
+  const [activeTab, setActiveTab] = useState<'term_exams' | 'batch_entry' | 'report_card' | 'tests'>(
+    'term_exams'
   );
 
   // Schedule Examination Modal (optional upcoming exam scheduling without marks)
@@ -850,7 +852,7 @@ export const AssessmentsPage: React.FC = () => {
             </>
           )}
 
-          {activeStudent && (
+          {activeStudent && activeTab !== 'term_exams' && (
             <>
               <button
                 onClick={handlePreviewPDF}
@@ -890,10 +892,22 @@ export const AssessmentsPage: React.FC = () => {
 
       {/* Navigation Tabs */}
       <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 dark:border-slate-800 pb-2 text-xs font-semibold">
+        <button
+          onClick={() => setActiveTab('term_exams')}
+          className={`rounded-lg px-4 py-2 transition-colors inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
+            activeTab === 'term_exams'
+              ? 'bg-blue-600 text-white shadow-2xs font-bold'
+              : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+          }`}
+        >
+          <GraduationCap className="w-3.5 h-3.5" />
+          <span>Term Exam Marks (Streams &amp; Report Cards)</span>
+        </button>
+
         {isTeacherOrAdmin && (
           <button
             onClick={() => setActiveTab('batch_entry')}
-            className={`rounded-lg px-4 py-2 transition-colors inline-flex items-center gap-1.5 ${
+            className={`rounded-lg px-4 py-2 transition-colors inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
               activeTab === 'batch_entry'
                 ? 'bg-blue-600 text-white shadow-2xs font-bold'
                 : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
@@ -906,28 +920,47 @@ export const AssessmentsPage: React.FC = () => {
 
         <button
           onClick={() => setActiveTab('report_card')}
-          className={`rounded-lg px-4 py-2 transition-colors inline-flex items-center gap-1.5 ${
+          className={`rounded-lg px-4 py-2 transition-colors inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
             activeTab === 'report_card'
               ? 'bg-blue-600 text-white shadow-2xs font-bold'
               : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
           }`}
         >
           <Award className="w-3.5 h-3.5" />
-          <span>Official Report Card &amp; Transcript</span>
+          <span>Continuous Transcript</span>
         </button>
 
         <button
           onClick={() => setActiveTab('tests')}
-          className={`rounded-lg px-4 py-2 transition-colors inline-flex items-center gap-1.5 ${
+          className={`rounded-lg px-4 py-2 transition-colors inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
             activeTab === 'tests'
               ? 'bg-blue-600 text-white shadow-2xs font-bold'
               : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
           }`}
         >
           <FileText className="w-3.5 h-3.5" />
-          <span>Scheduled Examinations ({tests.length})</span>
+          <span>Scheduled Exams ({tests.length})</span>
         </button>
       </div>
+
+      {/* TAB 0: TERM EXAM MARKS (SEPARATED BIO & PHYSICAL STREAMS + REAL REPORT CARD PDF) */}
+      {activeTab === 'term_exams' && (
+        <TermExamMarksSection
+          isTeacherOrAdmin={isTeacherOrAdmin}
+          userProfile={userProfile}
+          rosterStudents={rosterStudents}
+          loadingRoster={loadingRoster}
+          subjectOptions={subjectOptions}
+          onPreviewPDF={(data) => {
+            setPreviewData(data);
+            setIsPreviewOpen(true);
+          }}
+          onToast={(msg) => {
+            setStatusToast(msg);
+            setTimeout(() => setStatusToast(null), 4500);
+          }}
+        />
+      )}
 
       {/* TAB 1: TEACHER BATCH MARK ENTRY (CREATE EXAM/TOPIC + ALL BULK STUDENTS) */}
       {activeTab === 'batch_entry' && isTeacherOrAdmin && (
