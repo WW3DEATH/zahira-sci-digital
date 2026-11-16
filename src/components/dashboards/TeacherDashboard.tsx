@@ -64,9 +64,11 @@ import {
 } from '../common/LiveVisuals';
 import {
   getMatchingStudentIds,
+  getValidAttendanceRecordsMap,
   isAttendanceRecordActive,
   resolveStudentStatusInRecord,
 } from '../../utils/attendanceUtils';
+import { isFakeSeedRosterStudent } from '../../services/dataService';
 
 interface TeacherDashboardProps {
   onNavigate: (page: string) => void;
@@ -142,7 +144,11 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
 
     const unsubRoster = onSnapshot(collection(db, 'attendanceRoster'), (snap) => {
       const list: RosterStudent[] = [];
-      snap.forEach((d) => list.push({ ...(d.data() as RosterStudent), id: d.id }));
+      snap.forEach((d) => {
+        const data = d.data() as RosterStudent;
+        if (isFakeSeedRosterStudent(d.id, data?.fullName)) return;
+        list.push({ ...data, id: d.id });
+      });
       setRosterStudents(list);
     });
 
@@ -171,14 +177,21 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
   const pendingSubmissions = submissions.filter((s) => s.status === 'submitted' || s.status === 'under_review');
   const myClasses = classes;
 
-  // Strictly active saved attendance records (only dates where Attendance Marking is ON)
+  const validStudentIds = useMemo(() => {
+    const ids = new Set<string>();
+    rosterStudents.forEach((r) => ids.add(r.id));
+    students.forEach((s) => ids.add(s.userId));
+    return ids;
+  }, [rosterStudents, students]);
+
+  // Strictly active saved attendance records (only dates where Attendance Marking is ON and real student logs exist)
   const activeAttendanceRecords = useMemo(() => {
     return attendanceRecords.filter((rec) => {
-      if (!isAttendanceRecordActive(rec, dayControlsMap)) return false;
+      if (!isAttendanceRecordActive(rec, dayControlsMap, validStudentIds)) return false;
       if (selectedClassId !== 'all' && rec.classId && rec.classId !== selectedClassId) return false;
       return true;
     });
-  }, [attendanceRecords, dayControlsMap, selectedClassId]);
+  }, [attendanceRecords, dayControlsMap, selectedClassId, validStudentIds]);
 
   // Build trend points strictly from real saved registers (supports multiple classes per date)
   const attendanceTrendData = useMemo(() => {
@@ -192,7 +205,8 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
     sorted.forEach((rec) => countByDate.set(rec.date, (countByDate.get(rec.date) || 0) + 1));
 
     return sorted.map((rec) => {
-      const studentStatuses = Object.values(rec.records || {});
+      const validRecordsMap = getValidAttendanceRecordsMap(rec, validStudentIds);
+      const studentStatuses = Object.values(validRecordsMap);
       let present = 0;
       let absent = 0;
       let late = 0;
@@ -240,7 +254,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
         rate,
       };
     });
-  }, [activeAttendanceRecords]);
+  }, [activeAttendanceRecords, validStudentIds]);
 
   // Real Attendance KPIs strictly from saved active sessions (zero fake fallback numbers)
   const kpis = useMemo(() => {
