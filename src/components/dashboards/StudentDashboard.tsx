@@ -50,6 +50,7 @@ import {
   PieChart,
   Pie,
   Cell,
+  ReferenceLine,
 } from 'recharts';
 import { collection, onSnapshot } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../../firebase';
@@ -81,6 +82,7 @@ import {
   SEED_ATTENDANCE,
   SEED_DISCUSSIONS,
   SEED_DISCUSSION_REPLIES,
+  isFakeSeedRosterStudent,
 } from '../../services/dataService';
 import { calculateStudentBadges } from '../../services/badgeService';
 import { StudentBadgeSection } from '../common/StudentBadgeSection';
@@ -145,13 +147,13 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
     const unsubAssignments = onSnapshot(collection(db, 'assignments'), (snap) => {
       const list: Assignment[] = [];
       snap.forEach((d) => list.push(d.data() as Assignment));
-      if (list.length > 0) setAssignments(list);
+      setAssignments(list);
     });
 
     const unsubSubmissions = onSnapshot(collection(db, 'submissions'), (snap) => {
       const list: Submission[] = [];
       snap.forEach((d) => list.push(d.data() as Submission));
-      if (list.length > 0) setSubmissions(list);
+      setSubmissions(list);
     });
 
     const unsubQuizzes = onSnapshot(collection(db, 'quizzes'), (snap) => {
@@ -185,7 +187,11 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
 
     const unsubRoster = onSnapshot(collection(db, 'attendanceRoster'), (snap) => {
       const list: RosterStudent[] = [];
-      snap.forEach((d) => list.push({ ...(d.data() as RosterStudent), id: d.id }));
+      snap.forEach((d) => {
+        const data = d.data() as RosterStudent;
+        if (isFakeSeedRosterStudent(d.id, data?.fullName)) return;
+        list.push({ ...data, id: d.id });
+      });
       setRosterStudents(list);
     });
 
@@ -198,13 +204,13 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
     const unsubDiscussions = onSnapshot(collection(db, 'discussions'), (snap) => {
       const list: Discussion[] = [];
       snap.forEach((d) => list.push(d.data() as Discussion));
-      if (list.length > 0) setDiscussions(list);
+      setDiscussions(list);
     });
 
     const unsubReplies = onSnapshot(collection(db, 'discussionReplies'), (snap) => {
       const list: DiscussionReply[] = [];
       snap.forEach((d) => list.push(d.data() as DiscussionReply));
-      if (list.length > 0) setDiscussionReplies(list);
+      setDiscussionReplies(list);
     });
 
     const unsubMarks = onSnapshot(collection(db, 'testMarks'), (snap) => {
@@ -324,17 +330,31 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
   const studentAttPresent = studentAttendanceTrendData.filter(
     (d) => d.status === 'present' || d.status === 'late' || d.status === 'excused'
   ).length;
-  const studentAttRate =
+  const studentAttExactPresent = studentAttendanceTrendData.filter(
+    (d) => d.status === 'present' || d.status === 'excused'
+  ).length;
+  const studentAttLateCount = studentAttendanceTrendData.filter((d) => d.status === 'late').length;
+  const studentAttAbsences = studentAttendanceTrendData.filter((d) => d.status === 'absent').length;
+  const studentAttAvgNum =
     studentAttTotal > 0
-      ? `${Math.round(
+      ? Math.round(
           (studentAttendanceTrendData.reduce(
             (sum, d) => sum + (d.status === 'present' || d.status === 'excused' ? 1 : d.status === 'late' ? 0.5 : 0),
             0
           ) /
             studentAttTotal) *
             100
-        )}%`
-      : '—';
+        )
+      : null;
+  const studentAttRate = studentAttAvgNum !== null ? `${studentAttAvgNum}%` : '—';
+  const studentAttPeakRate =
+    studentAttTotal > 0
+      ? Math.max(...studentAttendanceTrendData.map((d) => d.sessionScore))
+      : null;
+  const studentAttPunctualityRate =
+    studentAttExactPresent + studentAttLateCount > 0
+      ? Math.round((studentAttExactPresent / (studentAttExactPresent + studentAttLateCount)) * 100)
+      : null;
 
   const badgeSummary = calculateStudentBadges({
     studentId: userProfile?.userId || 'student_scholar',
@@ -384,27 +404,43 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
       })
     : [];
 
-  // Monthly Assignment Completion Data (Recharts Bar Chart)
-  const assignmentCompletionData = [
-    { month: 'Sep', assigned: 6, submittedOnTime: 6, pending: 0, completionRate: 100 },
-    { month: 'Oct', assigned: 8, submittedOnTime: 7, pending: 1, completionRate: 88 },
-    { month: 'Nov', assigned: 7, submittedOnTime: 7, pending: 0, completionRate: 100 },
-    { month: 'Dec', assigned: 5, submittedOnTime: 4, pending: 1, completionRate: 80 },
-  ];
+  // Monthly Assignment Completion Data strictly from real Firestore assignments & submissions
+  const assignmentCompletionData = React.useMemo(() => {
+    const map = new Map<string, { month: string; sortKey: string; assigned: number; submittedOnTime: number }>();
+    assignments.forEach((a) => {
+      const d = new Date(a.dueDate);
+      if (Number.isNaN(d.getTime())) return;
+      const sortKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+      const month = d.toLocaleDateString('en-US', { month: 'short' });
+      const curr = map.get(sortKey) || { month, sortKey, assigned: 0, submittedOnTime: 0 };
+      curr.assigned++;
+      if (myCompletedSet.has(a.id)) curr.submittedOnTime++;
+      map.set(sortKey, curr);
+    });
+    return Array.from(map.values()).sort((a, b) => a.sortKey.localeCompare(b.sortKey));
+  }, [assignments, myCompletedSet]);
 
-  // Coursework Status Breakdown (Recharts Donut Pie Chart)
-  const completedCount = myCompletedSubmissions.length > 0 ? myCompletedSubmissions.length : 14;
-  const inReviewCount = 2;
-  const activeCount = Math.max(1, assignments.length - completedCount);
+  // Coursework Status Breakdown strictly from real assignments & student submissions
+  const gradedCount = myCompletedSubmissions.filter((s) => s.status === 'graded').length;
+  const inReviewCount = myCompletedSubmissions.filter((s) => s.status !== 'graded').length;
+  const activeCount = Math.max(0, assignments.length - myCompletedSubmissions.length);
+  const completedCount = myCompletedSubmissions.length;
+  const totalTasks = assignments.length;
+  const completionPercentage = totalTasks > 0 ? Math.min(100, Math.round((completedCount / totalTasks) * 100)) : 0;
+
+  const onTimeSubsCount = myCompletedSubmissions.filter((s) => {
+    const target = assignments.find((a) => a.id === s.assignmentId);
+    if (!target?.dueDate || !s.submittedAt) return true;
+    return new Date(s.submittedAt).getTime() <= new Date(target.dueDate).getTime();
+  }).length;
+  const onTimeVelocityRate =
+    completedCount > 0 ? `${Math.round((onTimeSubsCount / completedCount) * 100)}%` : '—';
 
   const pieStatusData = [
-    { name: 'Graded & Verified', value: completedCount, color: '#16a34a' }, // Emerald
-    { name: 'Submitted (In Review)', value: inReviewCount, color: '#2563eb' }, // Royal Blue
-    { name: 'Active / Due Soon', value: activeCount, color: '#d97706' }, // Amber
-  ];
-
-  const totalTasks = completedCount + inReviewCount + activeCount;
-  const completionPercentage = Math.round((completedCount / totalTasks) * 100);
+    { name: 'Graded & Verified', value: gradedCount, color: '#16a34a' },
+    { name: 'Submitted (In Review)', value: inReviewCount, color: '#2563eb' },
+    { name: 'Active / Due Soon', value: activeCount, color: '#d97706' },
+  ].filter((d) => d.value > 0);
 
   // Subject Performance strictly calculated from real testMarks - ZERO FAKE MARKS
   const scienceSubjects = [
@@ -435,29 +471,37 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
     };
   });
 
-  // Daily Assignment Completion Metrics (Last 7 Days + Today)
-  const dailyMetrics = [
-    { day: 'Wed Oct 28', shortDay: 'Wed 28', assigned: 2, completed: 2, earlyBonus: 1, onTimeRate: 100, xpEarned: 80 },
-    { day: 'Thu Oct 29', shortDay: 'Thu 29', assigned: 3, completed: 3, earlyBonus: 2, onTimeRate: 100, xpEarned: 110 },
-    { day: 'Fri Oct 30', shortDay: 'Fri 30', assigned: 2, completed: 2, earlyBonus: 1, onTimeRate: 100, xpEarned: 85 },
-    { day: 'Sat Oct 31', shortDay: 'Sat 31', assigned: 1, completed: 1, earlyBonus: 1, onTimeRate: 100, xpEarned: 60 },
-    { day: 'Sun Nov 01', shortDay: 'Sun 01', assigned: 2, completed: 2, earlyBonus: 1, onTimeRate: 100, xpEarned: 90 },
-    { day: 'Mon Nov 02', shortDay: 'Mon 02', assigned: 3, completed: 3, earlyBonus: 2, onTimeRate: 100, xpEarned: 125 },
-    { day: 'Tue Nov 03', shortDay: 'Tue 03', assigned: 2, completed: 2, earlyBonus: 2, onTimeRate: 100, xpEarned: 100 },
-    { day: 'Wed Nov 04 (Today)', shortDay: 'Today', assigned: 2, completed: Math.min(2, Math.max(1, myCompletedSubmissions.length > 0 ? 2 : 1)), earlyBonus: 1, onTimeRate: 100, xpEarned: 90 },
-  ];
+  // Daily & Weekly Assignment Completion Metrics strictly from real Firestore assignments & submissions
+  const dailyMetrics = React.useMemo(() => {
+    const byDay = new Map<string, { day: string; shortDay: string; sortKey: string; assigned: number; completed: number; earlyBonus: number; xpEarned: number }>();
+    assignments.forEach((a) => {
+      const d = new Date(a.dueDate);
+      if (Number.isNaN(d.getTime())) return;
+      const sortKey = d.toISOString().split('T')[0];
+      const shortDay = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      const entry = byDay.get(sortKey) || { day: shortDay, shortDay, sortKey, assigned: 0, completed: 0, earlyBonus: 0, xpEarned: 0 };
+      entry.assigned++;
+      const sub = myCompletedSubmissions.find((s) => s.assignmentId === a.id);
+      if (sub) {
+        entry.completed++;
+        const isOnTime = !sub.submittedAt || new Date(sub.submittedAt).getTime() <= d.getTime();
+        if (isOnTime) entry.earlyBonus++;
+        entry.xpEarned += sub.marksObtained ?? 20;
+      }
+      byDay.set(sortKey, entry);
+    });
+    return Array.from(byDay.values()).sort((a, b) => a.sortKey.localeCompare(b.sortKey));
+  }, [assignments, myCompletedSubmissions]);
 
-  // Weekly Assignment Milestone Metrics (Academic Weeks 1 - 8)
-  const weeklyMetrics = [
-    { week: 'W1 Induction', shortWeek: 'W1', assigned: 4, completed: 4, milestoneRate: 100, velocityXP: 220, target: 4 },
-    { week: 'W2 Kinematics', shortWeek: 'W2', assigned: 5, completed: 5, milestoneRate: 100, velocityXP: 265, target: 5 },
-    { week: 'W3 Vectors & Force', shortWeek: 'W3', assigned: 4, completed: 4, milestoneRate: 100, velocityXP: 230, target: 4 },
-    { week: 'W4 Calculus Functions', shortWeek: 'W4', assigned: 5, completed: 5, milestoneRate: 98, velocityXP: 280, target: 5 },
-    { week: 'W5 Newton Laws', shortWeek: 'W5', assigned: 4, completed: 4, milestoneRate: 100, velocityXP: 245, target: 4 },
-    { week: 'W6 Optics & Waves', shortWeek: 'W6', assigned: 5, completed: 4, milestoneRate: 90, velocityXP: 215, target: 5 },
-    { week: 'W7 Chemical Moles', shortWeek: 'W7', assigned: 4, completed: 4, milestoneRate: 100, velocityXP: 250, target: 4 },
-    { week: 'W8 Mid-Term Sprint', shortWeek: 'W8', assigned: 5, completed: 5, milestoneRate: 100, velocityXP: 290, target: 5 },
-  ];
+  const weeklyMetrics = React.useMemo(() => {
+    return assignmentCompletionData.map((m) => ({
+      week: m.month,
+      shortWeek: m.month,
+      assigned: m.assigned,
+      completed: m.submittedOnTime,
+      velocityXP: m.submittedOnTime * 25,
+    }));
+  }, [assignmentCompletionData]);
 
   // Theme-aware colors for Recharts
   const gridStroke = isDark ? '#334155' : '#e2e8f0';
@@ -716,13 +760,23 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
 
         <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 shadow-xs transition-colors">
           <div className="flex items-center justify-between text-slate-500 dark:text-slate-400">
-            <span className="text-xs font-semibold uppercase tracking-wider">Active Stream Rank</span>
+            <span className="text-xs font-semibold uppercase tracking-wider">Academic Standing</span>
             <div className="p-2 rounded-xl bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-400">
               <LiveMorphIcon icons={[Sparkles, Flame, Zap]} intervalMs={2700} className="w-4 h-4" />
             </div>
           </div>
-          <p className="font-serif text-3xl font-bold text-slate-900 dark:text-slate-100 mt-2">Top 5%</p>
-          <p className="text-[11px] text-amber-700 dark:text-amber-400 font-medium mt-2">A/L Science Island Trajectory</p>
+          <p className="font-serif text-3xl font-bold text-slate-900 dark:text-slate-100 mt-2">
+            {totalMax > 0
+              ? totalScore / totalMax >= 0.85
+                ? 'Grade A'
+                : totalScore / totalMax >= 0.75
+                ? 'Grade B'
+                : 'Grade C'
+              : '—'}
+          </p>
+          <p className="text-[11px] text-amber-700 dark:text-amber-400 font-medium mt-2">
+            {marks.length > 0 ? `Verified across ${marks.length} paper(s)` : 'Awaiting evaluated papers'}
+          </p>
         </div>
       </div>
 
@@ -738,16 +792,16 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
                 Assignment Completion & Diligence Tracker
               </h3>
               <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 dark:bg-emerald-950/50 text-emerald-800 dark:text-emerald-300 text-[10px] font-bold px-2.5 py-0.5 border border-emerald-300 dark:border-emerald-800">
-                <Flame className="w-3 h-3 text-emerald-600 animate-pulse" />
-                <span>6-Day Streak</span>
+                <Flame className="w-3 h-3 text-emerald-600" />
+                <span>{badgeSummary.totalXp} Merit XP</span>
               </span>
             </div>
             <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 max-w-2xl">
-              Daily problem set cadence and weekly academic milestones for Zahira College 2k28 Science EM scholars.
+              Live assignment submission and coursework milestones synced directly from Firestore for Zahira College 2k28 Science EM scholars.
             </p>
           </div>
 
-          {/* Daily vs Weekly Toggle */}
+          {/* Daily vs Monthly Toggle */}
           <div className="flex flex-wrap sm:inline-flex rounded-xl border border-slate-200 dark:border-slate-700 p-1 bg-slate-50 dark:bg-slate-800 text-xs shrink-0 w-full sm:w-auto gap-1 sm:gap-0">
             <button
               onClick={() => setCompletionCadence('daily')}
@@ -758,7 +812,7 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
               }`}
             >
               <Zap className="w-3.5 h-3.5 shrink-0" />
-              <span>Daily (8 Days)</span>
+              <span>By Due Date</span>
             </button>
             <button
               onClick={() => setCompletionCadence('weekly')}
@@ -769,38 +823,44 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
               }`}
             >
               <BarChart3 className="w-3.5 h-3.5 shrink-0" />
-              <span>Weekly (W1–W8)</span>
+              <span>Monthly</span>
             </button>
           </div>
         </div>
 
-        {/* Motivational High-Impact Badges Row */}
+        {/* Real Coursework Metrics Row */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 my-6">
           <div className="rounded-xl border border-amber-200 dark:border-amber-900/40 bg-amber-50/50 dark:bg-amber-950/20 p-3.5">
             <div className="flex items-center justify-between text-amber-700 dark:text-amber-400">
-              <span className="text-[10px] font-bold uppercase tracking-wider">Active Diligence</span>
+              <span className="text-[10px] font-bold uppercase tracking-wider">Merit XP Earned</span>
               <Flame className="w-4 h-4 text-amber-500" />
             </div>
-            <p className="font-serif text-2xl font-bold text-slate-900 dark:text-slate-100 mt-1">6 Days</p>
-            <p className="text-[11px] text-amber-700 dark:text-amber-400 font-medium mt-0.5">+180 Diligence XP Boost</p>
+            <p className="font-serif text-2xl font-bold text-slate-900 dark:text-slate-100 mt-1">{badgeSummary.totalXp} XP</p>
+            <p className="text-[11px] text-amber-700 dark:text-amber-400 font-medium mt-0.5">
+              {badgeSummary.unlockedCount} badge(s) unlocked
+            </p>
           </div>
 
           <div className="rounded-xl border border-emerald-200 dark:border-emerald-900/40 bg-emerald-50/50 dark:bg-emerald-950/20 p-3.5">
             <div className="flex items-center justify-between text-emerald-700 dark:text-emerald-400">
-              <span className="text-[10px] font-bold uppercase tracking-wider">On-Time Velocity</span>
+              <span className="text-[10px] font-bold uppercase tracking-wider">On-Time Rate</span>
               <CheckCircle2 className="w-4 h-4 text-emerald-500" />
             </div>
-            <p className="font-serif text-2xl font-bold text-slate-900 dark:text-slate-100 mt-1">98.2%</p>
-            <p className="text-[11px] text-emerald-700 dark:text-emerald-400 font-medium mt-0.5">Top Tier Batch Promptness</p>
+            <p className="font-serif text-2xl font-bold text-slate-900 dark:text-slate-100 mt-1">{onTimeVelocityRate}</p>
+            <p className="text-[11px] text-emerald-700 dark:text-emerald-400 font-medium mt-0.5">
+              {completedCount > 0 ? `${onTimeSubsCount} submitted before due` : 'No submissions yet'}
+            </p>
           </div>
 
           <div className="rounded-xl border border-blue-200 dark:border-blue-900/40 bg-blue-50/50 dark:bg-blue-950/20 p-3.5">
             <div className="flex items-center justify-between text-blue-700 dark:text-blue-400">
-              <span className="text-[10px] font-bold uppercase tracking-wider">Early Submissions</span>
+              <span className="text-[10px] font-bold uppercase tracking-wider">Graded Submissions</span>
               <Zap className="w-4 h-4 text-blue-500" />
             </div>
-            <p className="font-serif text-2xl font-bold text-slate-900 dark:text-slate-100 mt-1">84%</p>
-            <p className="text-[11px] text-blue-700 dark:text-blue-400 font-medium mt-0.5">Turned in &gt;12h Ahead of Due</p>
+            <p className="font-serif text-2xl font-bold text-slate-900 dark:text-slate-100 mt-1">{gradedCount}</p>
+            <p className="text-[11px] text-blue-700 dark:text-blue-400 font-medium mt-0.5">
+              {inReviewCount} awaiting review
+            </p>
           </div>
 
           <div className="rounded-xl border border-purple-200 dark:border-purple-900/40 bg-purple-50/50 dark:bg-purple-950/20 p-3.5">
@@ -808,13 +868,28 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
               <span className="text-[10px] font-bold uppercase tracking-wider">Semester Coursework</span>
               <Award className="w-4 h-4 text-purple-500" />
             </div>
-            <p className="font-serif text-2xl font-bold text-slate-900 dark:text-slate-100 mt-1">36 / 37</p>
-            <p className="text-[11px] text-purple-700 dark:text-purple-400 font-medium mt-0.5">Honors Milestone Level 7</p>
+            <p className="font-serif text-2xl font-bold text-slate-900 dark:text-slate-100 mt-1">
+              {completedCount} / {totalTasks}
+            </p>
+            <p className="text-[11px] text-purple-700 dark:text-purple-400 font-medium mt-0.5">
+              {totalTasks > 0 ? `${completionPercentage}% completed` : 'No assignments posted'}
+            </p>
           </div>
         </div>
 
-        {/* Visual Recharts Progress Chart */}
+        {/* Visual Recharts Progress Chart or Clean Empty State */}
         <div className="h-72 w-full pt-2">
+          {(completionCadence === 'daily' ? dailyMetrics.length === 0 : weeklyMetrics.length === 0) ? (
+            <div className="h-full w-full flex flex-col items-center justify-center text-center p-6 border border-dashed border-slate-200 dark:border-slate-800 rounded-2xl bg-slate-50/40 dark:bg-slate-800/20">
+              <LivePaperScannerGraphic accent="blue" className="w-20 h-20 mb-2" />
+              <h4 className="font-bold text-slate-700 dark:text-slate-200 text-sm">
+                No Coursework Submissions Recorded Yet
+              </h4>
+              <p className="text-xs text-slate-400 mt-1 max-w-md">
+                Real assignments posted by teachers and your submitted coursework will automatically plot here.
+              </p>
+            </div>
+          ) : (
           <ResponsiveContainer width="100%" height="100%">
             {completionCadence === 'daily' ? (
               <ComposedChart data={dailyMetrics} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
@@ -910,13 +985,19 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
               </ComposedChart>
             )}
           </ResponsiveContainer>
+          )}
         </div>
 
         {/* Motivational Footer Note */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-4 mt-4 border-t border-slate-100 dark:border-slate-800 text-xs">
           <div className="flex items-center gap-2 text-slate-600 dark:text-slate-400">
             <Award className="w-4 h-4 text-amber-500 shrink-0" />
-            <span><strong>Academic Streak Incentive:</strong> Submitting 2 more assignments on or before Friday unlocks the <em>&quot;Master Scientist&quot;</em> Gold Seal badge!</span>
+            <span>
+              <strong>Academic Progress Note:</strong>{' '}
+              {totalTasks > 0
+                ? `${completedCount} of ${totalTasks} posted assignment(s) submitted (${completionPercentage}%). Early submissions unlock Science EM Merit XP badges.`
+                : 'No coursework assignments are currently pending.'}
+            </span>
           </div>
           <button
             onClick={() => onNavigate('assignments')}
@@ -1119,6 +1200,13 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
               </p>
             </div>
 
+            {pieStatusData.length === 0 ? (
+              <div className="h-60 w-full mt-4 flex flex-col items-center justify-center text-center p-4 border border-dashed border-slate-200 dark:border-slate-800 rounded-2xl">
+                <p className="text-xs font-semibold text-slate-500 dark:text-slate-400">
+                  No coursework assigned yet
+                </p>
+              </div>
+            ) : (
             <div className="relative h-60 w-full mt-4 flex items-center justify-center">
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
@@ -1157,6 +1245,7 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
                 </span>
               </div>
             </div>
+            )}
 
             {/* Custom Legend */}
             <div className="space-y-2 mt-2 text-xs">
@@ -1183,7 +1272,7 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
       </div>
 
       {/* SAVED ATTENDANCE GRAPH (Synced ONLY with Saved Registers on Active/ON Days) */}
-      <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 shadow-xs transition-colors">
+      <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 shadow-xs transition-colors space-y-5">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-100 dark:border-slate-800">
           <div>
             <div className="flex items-center gap-2 flex-wrap">
@@ -1207,18 +1296,87 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
           </button>
         </div>
 
+        {/* 4 Live Attendance Summary Cards (Strictly Real Saved Data) */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <div className="p-3.5 rounded-xl bg-blue-50/60 dark:bg-blue-950/20 border border-blue-100 dark:border-blue-900/40">
+            <span className="text-[11px] font-semibold text-blue-900 dark:text-blue-300 uppercase tracking-wider block">
+              Saved Average
+            </span>
+            <div className="flex items-baseline gap-2 mt-1 flex-wrap">
+              <span className="font-serif text-2xl font-bold text-blue-950 dark:text-blue-100">
+                {studentAttAvgNum !== null ? `${studentAttAvgNum}%` : '—'}
+              </span>
+              {studentAttAvgNum !== null ? (
+                <span
+                  className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                    studentAttAvgNum >= 90
+                      ? 'bg-emerald-100 text-emerald-800'
+                      : 'bg-amber-100 text-amber-800'
+                  }`}
+                >
+                  {studentAttAvgNum >= 90 ? 'Target Met (≥90%)' : 'Needs Focus (<90%)'}
+                </span>
+              ) : (
+                <span className="text-[11px] text-slate-400">No logs yet</span>
+              )}
+            </div>
+          </div>
+
+          <div className="p-3.5 rounded-xl bg-emerald-50/60 dark:bg-emerald-950/20 border border-emerald-100 dark:border-emerald-900/40">
+            <span className="text-[11px] font-semibold text-emerald-900 dark:text-emerald-300 uppercase tracking-wider block">
+              Peak Session Rate
+            </span>
+            <div className="flex items-baseline gap-2 mt-1 flex-wrap">
+              <span className="font-serif text-2xl font-bold text-emerald-950 dark:text-emerald-100">
+                {studentAttPeakRate !== null ? `${studentAttPeakRate}%` : '—'}
+              </span>
+              <span className="text-[11px] text-emerald-700 dark:text-emerald-400 font-medium">
+                {studentAttTotal > 0 ? `${studentAttTotal} saved class(es)` : 'Awaiting roll-call'}
+              </span>
+            </div>
+          </div>
+
+          <div className="p-3.5 rounded-xl bg-sky-50/60 dark:bg-sky-950/20 border border-sky-100 dark:border-sky-900/40">
+            <span className="text-[11px] font-semibold text-sky-900 dark:text-sky-300 uppercase tracking-wider block">
+              Punctuality Rate
+            </span>
+            <div className="flex items-baseline gap-2 mt-1 flex-wrap">
+              <span className="font-serif text-2xl font-bold text-sky-950 dark:text-sky-100">
+                {studentAttPunctualityRate !== null ? `${studentAttPunctualityRate}%` : '—'}
+              </span>
+              <span className="text-[11px] text-sky-700 dark:text-sky-400 font-medium">
+                {studentAttLateCount} late total
+              </span>
+            </div>
+          </div>
+
+          <div className="p-3.5 rounded-xl bg-rose-50/60 dark:bg-rose-950/20 border border-rose-100 dark:border-rose-900/40">
+            <span className="text-[11px] font-semibold text-rose-900 dark:text-rose-300 uppercase tracking-wider block">
+              Total Absences
+            </span>
+            <div className="flex items-baseline gap-2 mt-1 flex-wrap">
+              <span className="font-serif text-2xl font-bold text-rose-950 dark:text-rose-100">
+                {studentAttAbsences}
+              </span>
+              <span className="text-[11px] text-rose-700 dark:text-rose-400 font-medium">
+                Saved student logs
+              </span>
+            </div>
+          </div>
+        </div>
+
         {studentAttendanceTrendData.length === 0 ? (
-          <div className="h-60 w-full mt-5 flex flex-col items-center justify-center text-center p-6 border border-dashed border-slate-200 dark:border-slate-800 rounded-2xl bg-slate-50/50 dark:bg-slate-800/30">
+          <div className="h-60 w-full flex flex-col items-center justify-center text-center p-6 border border-dashed border-slate-200 dark:border-slate-800 rounded-2xl bg-slate-50/50 dark:bg-slate-800/30">
             <LivePaperScannerGraphic accent="emerald" className="w-20 h-20 mb-2" />
             <h4 className="font-bold text-slate-700 dark:text-slate-200 text-sm">
               No Saved Active Attendance Logs Yet
             </h4>
             <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 max-w-md">
-              When your teacher turns Attendance Marking ON and saves your roll-call register for one or more classes, your real attendance graph will appear here automatically.
+              When your teacher turns Attendance Marking ON and saves your roll-call register in the Attendance page, your real attendance trend graph will sync here automatically.
             </p>
           </div>
         ) : (
-          <div className="h-64 w-full mt-5">
+          <div className="h-64 w-full">
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart data={studentAttendanceTrendData} margin={{ top: 10, right: 15, left: -20, bottom: 0 }}>
                 <defs>
@@ -1258,6 +1416,18 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
                     const p = payload?.[0]?.payload;
                     if (!p) return '';
                     return `${p.fullDate} • ${p.sessionLabel}${p.timeSlot ? ` (${p.timeSlot})` : ''} • Status: ${String(p.status).toUpperCase()}`;
+                  }}
+                />
+                <ReferenceLine
+                  y={90}
+                  stroke="#dc2626"
+                  strokeDasharray="4 4"
+                  label={{
+                    value: 'Target: 90%',
+                    fill: '#dc2626',
+                    fontSize: 10,
+                    position: 'insideTopRight',
+                    fontWeight: 'bold',
                   }}
                 />
                 <Legend
@@ -1309,6 +1479,13 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
             <BarChart3 className="w-5 h-5 text-blue-600 dark:text-blue-400" />
           </div>
 
+          {assignmentCompletionData.length === 0 ? (
+            <div className="h-60 w-full mt-6 flex flex-col items-center justify-center text-center p-6 border border-dashed border-slate-200 dark:border-slate-800 rounded-2xl">
+              <p className="text-xs font-semibold text-slate-500 dark:text-slate-400">
+                No monthly assignment records yet
+              </p>
+            </div>
+          ) : (
           <div className="h-60 w-full mt-6">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart
@@ -1323,6 +1500,7 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
                   tickLine={false}
                 />
                 <YAxis
+                  allowDecimals={false}
                   tick={{ fill: textFill, fontSize: 11 }}
                   axisLine={{ stroke: gridStroke }}
                   tickLine={false}
@@ -1351,6 +1529,7 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
               </BarChart>
             </ResponsiveContainer>
           </div>
+          )}
         </div>
 
         {/* Subject Mastery Progress Bars */}
