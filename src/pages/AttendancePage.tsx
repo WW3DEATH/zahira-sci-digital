@@ -3,20 +3,25 @@ import {
   CalendarCheck2,
   Calendar,
   CheckCircle2,
-  Clock,
-  UserX,
   ShieldCheck,
   Save,
-  Check,
-  TrendingUp,
   AlertCircle,
   Users,
   Lock,
-  Download,
-  Info,
   QrCode,
   Camera,
-  Sparkles,
+  Plus,
+  UserPlus,
+  Trash2,
+  Edit2,
+  UploadCloud,
+  X,
+  CheckCheck,
+  FileSpreadsheet,
+  FileText,
+  Eye,
+  GraduationCap,
+  Power,
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import { collection, doc, onSnapshot, setDoc, deleteDoc } from 'firebase/firestore';
@@ -24,7 +29,6 @@ import { db, sanitizeFirestoreDoc, handleFirestoreError, OperationType } from '.
 import { useAuth } from '../context/AuthContext';
 import { AttendanceRecord, AttendanceStatus, AttendanceDayControl, SchoolClass, RosterStudent, ScheduledClass } from '../types';
 import { QRAttendanceModal } from '../components/attendance/QRAttendanceModal';
-import { Plus, UserPlus, Trash2, Edit2, UploadCloud, X, CheckCheck, FileSpreadsheet, FileText, Eye, GraduationCap, Power } from 'lucide-react';
 import { PDFPreviewModal, PDFPreviewData } from '../components/common/PDFPreviewModal';
 import { isFakeSeedRosterStudent } from '../services/dataService';
 import {
@@ -221,15 +225,6 @@ export const AttendancePage: React.FC = () => {
       setRegister(fresh);
     }
   }, [selectedClassId, selectedDate, selectedSessionId, attendanceRecords, students]);
-
-  // Reset selectedSessionId if it does not exist on newly selected date (except 'daily')
-  useEffect(() => {
-    if (selectedSessionId === 'daily') return;
-    const daySessions = getClassesForDate(selectedDate);
-    if (!daySessions.some((s) => s.id === selectedSessionId)) {
-      setSelectedSessionId('daily');
-    }
-  }, [selectedDate, scheduledClasses, dismissedDefaultsByDate]);
 
   // Attendance can ONLY be marked/toggled by teacher or admin
   const isTeacherOrAdmin = activeRole === 'teacher' || activeRole === 'admin';
@@ -494,6 +489,15 @@ export const AttendancePage: React.FC = () => {
     combined.sort((a, b) => (a.timeSlot || '').localeCompare(b.timeSlot || ''));
     return combined;
   };
+
+  // Reset selectedSessionId if it does not exist on newly selected date (except 'daily')
+  useEffect(() => {
+    if (selectedSessionId === 'daily') return;
+    const daySessions = getClassesForDate(selectedDate);
+    if (!daySessions.some((s) => s.id === selectedSessionId)) {
+      setSelectedSessionId('daily');
+    }
+  }, [selectedDate, selectedSessionId, scheduledClasses, dismissedDefaultsByDate]);
 
   // Add new academic session on selectedDate (Teachers & Admins only)
   const handleCreateAcademicSession = async (e: React.FormEvent) => {
@@ -813,7 +817,7 @@ export const AttendancePage: React.FC = () => {
       let scholarsBelow75 = 0;
       let totalCohortRateSum = 0;
 
-      students.forEach((st, idx) => {
+      students.forEach((st) => {
         let pCount = 0;
         let lCount = 0;
         let aCount = 0;
@@ -1661,7 +1665,14 @@ export const AttendancePage: React.FC = () => {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 text-slate-800">
-              {students.length === 0 ? (
+              {loading && students.length === 0 ? (
+                <tr>
+                  <td colSpan={4} className="py-10 text-center text-slate-500">
+                    <Users className="w-8 h-8 mx-auto text-slate-300 mb-2 animate-pulse" />
+                    <p className="font-semibold text-slate-600 text-xs">Loading official scholar register...</p>
+                  </td>
+                </tr>
+              ) : students.length === 0 ? (
                 <tr>
                   <td colSpan={4} className="py-10 text-center text-slate-500">
                     <Users className="w-10 h-10 mx-auto text-slate-400 mb-2" />
