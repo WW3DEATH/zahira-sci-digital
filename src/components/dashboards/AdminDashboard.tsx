@@ -26,8 +26,14 @@ import {
 } from 'lucide-react';
 import { collection, onSnapshot, doc, setDoc } from 'firebase/firestore';
 import { db } from '../../firebase';
-import { SchoolClass, Subject, UserProfile, Announcement, UserRole } from '../../types';
+import { SchoolClass, Subject, UserProfile, Announcement, UserRole, AttendanceRecord, AttendanceDayControl } from '../../types';
 import { SEED_CLASSES, SEED_SUBJECTS, REAL_ADMIN_PROFILE, SEED_ANNOUNCEMENTS, SEED_INITIAL_USERS } from '../../services/dataService';
+import {
+  LiveMorphIcon,
+  LiveOrbitalScienceGraphic,
+  LAB_CYCLE_ICONS,
+} from '../common/LiveVisuals';
+import { isAttendanceRecordActive } from '../../utils/attendanceUtils';
 
 interface AdminDashboardProps {
   onNavigate: (page: string) => void;
@@ -38,6 +44,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [profiles, setProfiles] = useState<UserProfile[]>([]);
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
+  const [attendanceRecords, setAttendanceRecords] = useState<AttendanceRecord[]>([]);
+  const [dayControlsMap, setDayControlsMap] = useState<Record<string, AttendanceDayControl>>({});
   const [loading, setLoading] = useState(true);
 
   // Gemini AI Insights state
@@ -97,6 +105,26 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
               (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
             )
           );
+        })
+      );
+
+      unsubs.push(
+        onSnapshot(collection(db, 'attendance'), (snap) => {
+          const list: AttendanceRecord[] = [];
+          snap.forEach((d) => list.push({ ...(d.data() as AttendanceRecord), id: d.id }));
+          setAttendanceRecords(list);
+        })
+      );
+
+      unsubs.push(
+        onSnapshot(collection(db, 'attendanceDaySettings'), (snap) => {
+          const map: Record<string, AttendanceDayControl> = {};
+          snap.forEach((d) => {
+            const data = d.data() as AttendanceDayControl;
+            const dateKey = data.date || d.id;
+            if (dateKey) map[dateKey] = { ...data, id: d.id, date: dateKey };
+          });
+          setDayControlsMap(map);
         })
       );
     } catch (e) {
@@ -209,7 +237,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
   const totalStudents = profiles.filter((p) => p.role === 'student').length;
   const totalFaculty = profiles.filter((p) => p.role === 'teacher').length;
   const totalClasses = classes.length || 1;
-  const attendanceRate = '98.5%';
+  const activeAttendance = attendanceRecords.filter((rec) => isAttendanceRecordActive(rec, dayControlsMap));
+  let totalAttEntries = 0;
+  let presentWeighted = 0;
+  activeAttendance.forEach((rec) => {
+    Object.values(rec.records || {}).forEach((st) => {
+      totalAttEntries++;
+      if (st === 'present' || st === 'excused') presentWeighted += 1;
+      else if (st === 'late') presentWeighted += 0.5;
+    });
+  });
+  const attendanceRate = totalAttEntries > 0 ? `${Math.round((presentWeighted / totalAttEntries) * 100)}%` : '—';
 
   const generateSchoolInsights = async () => {
     setInsightsLoading(true);
@@ -242,11 +280,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
   return (
     <div className="space-y-8 animate-in fade-in duration-300">
       {/* Top Banner - Blue, White, Red Collegiate Theme */}
-      <div className="rounded-2xl border border-blue-900 bg-gradient-to-r from-blue-950 via-blue-900 to-indigo-950 p-6 md:p-8 text-white shadow-xl relative overflow-hidden">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+      <div className="live-gradient-banner rounded-2xl border border-blue-900 bg-gradient-to-r from-blue-950 via-blue-900 to-indigo-950 p-6 md:p-8 text-white shadow-xl relative overflow-hidden">
+        <LiveOrbitalScienceGraphic className="w-24 h-24 opacity-20 pointer-events-none hidden xl:block absolute right-6 top-3" />
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 relative z-10">
           <div>
             <div className="inline-flex items-center gap-1.5 rounded-full bg-red-600 px-3 py-1 text-xs font-bold text-white shadow-sm">
-              <ShieldCheck className="w-3.5 h-3.5" />
+              <LiveMorphIcon
+                icons={[ShieldCheck, Sparkles, Shield, Layers]}
+                intervalMs={2400}
+                className="w-3.5 h-3.5"
+              />
               <span>Zahira College Mawanella • Master Leadership</span>
             </div>
             <h2 className="font-serif text-2xl md:text-3xl font-bold tracking-tight text-white mt-2">
@@ -269,7 +312,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
               onClick={() => onNavigate('labs')}
               className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 px-4 py-2.5 text-xs font-bold text-white transition-all shadow-md"
             >
-              <FlaskConical className="w-4 h-4 text-emerald-200" />
+              <LiveMorphIcon icons={LAB_CYCLE_ICONS} intervalMs={2100} className="w-4 h-4 text-emerald-200" />
               <span>Virtual Science Labs</span>
             </button>
             <button
@@ -312,7 +355,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
           <div className="flex items-center justify-between text-stone-500">
             <span className="text-xs font-semibold uppercase tracking-wider">Enrolled Scholars</span>
             <div className="p-2 rounded-xl bg-sky-50 text-sky-700">
-              <Users className="w-4 h-4" />
+              <LiveMorphIcon icons={[Users, GraduationCap, TrendingUp]} intervalMs={2500} className="w-4 h-4" />
             </div>
           </div>
           <p className="font-serif text-3xl font-bold text-stone-900 mt-2">{totalStudents}</p>
@@ -326,7 +369,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
           <div className="flex items-center justify-between text-stone-500">
             <span className="text-xs font-semibold uppercase tracking-wider">Faculty & Staff</span>
             <div className="p-2 rounded-xl bg-emerald-50 text-emerald-700">
-              <GraduationCap className="w-4 h-4" />
+              <LiveMorphIcon icons={[GraduationCap, ShieldCheck, BookOpen]} intervalMs={2900} className="w-4 h-4" />
             </div>
           </div>
           <p className="font-serif text-3xl font-bold text-stone-900 mt-2">{totalFaculty}</p>
@@ -339,7 +382,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
           <div className="flex items-center justify-between text-stone-500">
             <span className="text-xs font-semibold uppercase tracking-wider">Active Cohorts</span>
             <div className="p-2 rounded-xl bg-amber-50 text-amber-700">
-              <BookOpen className="w-4 h-4" />
+              <LiveMorphIcon icons={[BookOpen, Layers, Sparkles]} intervalMs={3300} className="w-4 h-4" />
             </div>
           </div>
           <p className="font-serif text-3xl font-bold text-stone-900 mt-2">{totalClasses}</p>
@@ -352,12 +395,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
           <div className="flex items-center justify-between text-stone-500">
             <span className="text-xs font-semibold uppercase tracking-wider">Attendance Rate</span>
             <div className="p-2 rounded-xl bg-purple-50 text-purple-700">
-              <CalendarCheck2 className="w-4 h-4" />
+              <LiveMorphIcon icons={[CalendarCheck2, CheckCircle2, ShieldCheck]} intervalMs={2700} className="w-4 h-4" />
             </div>
           </div>
           <p className="font-serif text-3xl font-bold text-stone-900 mt-2">{attendanceRate}</p>
           <div className="flex items-center gap-1 mt-2 text-[11px] text-emerald-700 font-medium">
-            <span>Above 95% target threshold</span>
+            <span>
+              {activeAttendance.length > 0
+                ? `${activeAttendance.length} saved active session(s)`
+                : 'No saved attendance records yet'}
+            </span>
           </div>
         </div>
       </div>
