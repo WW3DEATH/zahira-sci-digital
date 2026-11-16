@@ -26,6 +26,11 @@ import { useAuth } from '../context/AuthContext';
 import { AcademicTest, TestMark, Subject, RosterStudent } from '../types';
 import { SEED_TESTS, SEED_SUBJECTS, isFakeSeedRosterStudent } from '../services/dataService';
 import { PDFPreviewModal, PDFPreviewData } from '../components/common/PDFPreviewModal';
+import {
+  LiveMorphIcon,
+  LivePaperScannerGraphic,
+  LiveOrbitalScienceGraphic,
+} from '../components/common/LiveVisuals';
 
 interface ActiveReportSubject {
   id: string;
@@ -1369,7 +1374,7 @@ export const AssessmentsPage: React.FC = () => {
 
           {!activeStudent ? (
             <div className="rounded-2xl border border-dashed border-stone-300 dark:border-slate-700 bg-stone-50 dark:bg-slate-800/40 p-12 text-center">
-              <Users className="w-10 h-10 text-stone-300 dark:text-slate-600 mx-auto mb-3" />
+              <LivePaperScannerGraphic accent="amber" className="w-20 h-20 mx-auto mb-2" />
               <h3 className="font-serif text-base font-bold text-stone-800 dark:text-slate-100">
                 No Bulk-Added Students Synced Yet
               </h3>
@@ -1380,10 +1385,11 @@ export const AssessmentsPage: React.FC = () => {
           ) : (
             <>
               {/* STUDENT HERO PERFORMANCE CARD */}
-              <div className="rounded-2xl bg-gradient-to-r from-blue-900 via-indigo-950 to-slate-900 p-6 text-white shadow-lg flex flex-col md:flex-row md:items-center justify-between gap-6">
-                <div className="space-y-1">
+              <div className="live-gradient-banner relative overflow-hidden rounded-2xl bg-gradient-to-r from-blue-900 via-indigo-950 to-slate-900 p-6 text-white shadow-lg flex flex-col md:flex-row md:items-center justify-between gap-6">
+                <LiveOrbitalScienceGraphic className="w-24 h-24 opacity-20 pointer-events-none hidden lg:block absolute right-6 top-3" />
+                <div className="space-y-1 relative z-10">
                   <div className="inline-flex items-center gap-1.5 rounded-full bg-blue-500/20 px-3 py-1 text-xs font-semibold text-blue-200 border border-blue-400/30">
-                    <Sparkles className="w-3.5 h-3.5 text-amber-300" />
+                    <LiveMorphIcon icons={[Sparkles, Award, ShieldCheck]} intervalMs={2300} className="w-3.5 h-3.5 text-amber-300" />
                     <span>Certified G.C.E. A/L Academic Record</span>
                   </div>
                   <h3 className="text-xl sm:text-2xl font-bold font-serif text-white mt-1">
@@ -1409,7 +1415,7 @@ export const AssessmentsPage: React.FC = () => {
                   </div>
                 </div>
 
-                <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 shrink-0">
+                <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 shrink-0 relative z-10">
                   <button
                     onClick={handlePreviewPDF}
                     className="inline-flex items-center justify-center gap-2 rounded-xl bg-white/10 hover:bg-white/20 border border-white/20 px-4 py-3 text-xs font-bold text-white transition-all shadow-xs"
@@ -1511,7 +1517,7 @@ export const AssessmentsPage: React.FC = () => {
                         <tr>
                           <td colSpan={isTeacherOrAdmin ? 9 : 8} className="py-12 px-4 text-center">
                             <div className="flex flex-col items-center justify-center text-stone-400 dark:text-slate-500">
-                              <BookOpen className="w-9 h-9 text-stone-300 dark:text-slate-600 mx-auto mb-2 opacity-60" />
+                              <LivePaperScannerGraphic accent="emerald" className="w-20 h-20 mb-2" />
                               <p className="font-bold text-stone-700 dark:text-slate-200 text-sm">
                                 No evaluated examination marks recorded yet for {activeStudent.fullName}.
                               </p>
@@ -1565,7 +1571,7 @@ export const AssessmentsPage: React.FC = () => {
         <div className="space-y-4">
           {tests.length === 0 ? (
             <div className="rounded-2xl border border-dashed border-stone-300 dark:border-slate-700 bg-white dark:bg-slate-900 p-12 text-center">
-              <FileText className="w-10 h-10 text-stone-300 dark:text-slate-600 mx-auto mb-3" />
+              <LivePaperScannerGraphic accent="emerald" className="w-20 h-20 mx-auto mb-2" />
               <h3 className="font-serif text-base font-bold text-stone-800 dark:text-slate-100">
                 No scheduled examinations yet
               </h3>
