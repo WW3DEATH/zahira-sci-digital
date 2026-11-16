@@ -16,6 +16,11 @@ import {
 } from 'lucide-react';
 import { useSiteConfig } from '../../context/SiteConfigContext';
 import { ZahiraLogo } from '../common/ZahiraLogo';
+import {
+  LiveMorphIcon,
+  LiveOrbitalScienceGraphic,
+  LiveHeroSpotlightCard,
+} from '../common/LiveVisuals';
 
 interface GuestPortalLandingProps {
   onOpenAuthModal: () => void;
@@ -31,7 +36,8 @@ export const GuestPortalLanding: React.FC<GuestPortalLandingProps> = ({
   return (
     <div className="space-y-8 animate-in fade-in duration-300">
       {/* Light Collegiate Welcome Banner */}
-      <div className="rounded-2xl border border-blue-100 bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-800 p-6 md:p-10 text-white shadow-lg relative overflow-hidden">
+      <div className="live-gradient-banner rounded-2xl border border-blue-100 bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-800 p-6 md:p-10 text-white shadow-lg relative overflow-hidden">
+        <LiveOrbitalScienceGraphic className="w-32 h-32 opacity-20 pointer-events-none hidden lg:block absolute right-8 top-4" />
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 relative z-10">
           <div className="max-w-2xl">
             <div className="flex items-center gap-3">
@@ -49,6 +55,7 @@ export const GuestPortalLanding: React.FC<GuestPortalLandingProps> = ({
             <p className="text-blue-200 text-xs italic mt-2">
               "{siteConfig.motto || 'Excellence in Science, Knowledge, and Discipline'}"
             </p>
+            <LiveHeroSpotlightCard onNavigate={onNavigate} className="mt-5 max-w-lg" />
           </div>
 
           <div className="flex flex-col sm:flex-row md:flex-col gap-3 shrink-0">
@@ -108,7 +115,11 @@ export const GuestPortalLanding: React.FC<GuestPortalLandingProps> = ({
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         <div className="rounded-2xl border border-blue-100 bg-white p-6 shadow-xs hover:border-blue-300 transition-all">
           <div className="h-10 w-10 rounded-xl bg-blue-50 text-blue-800 flex items-center justify-center mb-4">
-            <GraduationCap className="w-5 h-5 text-blue-700" />
+            <LiveMorphIcon
+              icons={[GraduationCap, Sparkles, BookOpen, BookMarked]}
+              intervalMs={2400}
+              className="w-5 h-5 text-blue-700"
+            />
           </div>
           <h3 className="font-serif text-lg font-bold text-blue-950">Student Scholars</h3>
           <p className="text-xs text-slate-600 mt-2 leading-relaxed">
@@ -118,7 +129,11 @@ export const GuestPortalLanding: React.FC<GuestPortalLandingProps> = ({
 
         <div className="rounded-2xl border border-blue-100 bg-white p-6 shadow-xs hover:border-blue-300 transition-all">
           <div className="h-10 w-10 rounded-xl bg-red-50 text-red-700 flex items-center justify-center mb-4">
-            <BookOpen className="w-5 h-5 text-red-600" />
+            <LiveMorphIcon
+              icons={[BookOpen, Layers, Calendar, CheckCircle2]}
+              intervalMs={2800}
+              className="w-5 h-5 text-red-600"
+            />
           </div>
           <h3 className="font-serif text-lg font-bold text-blue-950">Faculty & Teachers</h3>
           <p className="text-xs text-slate-600 mt-2 leading-relaxed">
@@ -128,7 +143,11 @@ export const GuestPortalLanding: React.FC<GuestPortalLandingProps> = ({
 
         <div className="rounded-2xl border border-blue-100 bg-white p-6 shadow-xs hover:border-blue-300 transition-all">
           <div className="h-10 w-10 rounded-xl bg-slate-100 text-blue-950 flex items-center justify-center mb-4">
-            <ShieldCheck className="w-5 h-5 text-blue-900" />
+            <LiveMorphIcon
+              icons={[ShieldCheck, School, Sparkles, Layers]}
+              intervalMs={3200}
+              className="w-5 h-5 text-blue-900"
+            />
           </div>
           <h3 className="font-serif text-lg font-bold text-blue-950">Academic Leadership</h3>
           <p className="text-xs text-slate-600 mt-2 leading-relaxed">
