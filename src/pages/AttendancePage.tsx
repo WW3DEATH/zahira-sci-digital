@@ -22,17 +22,25 @@ import { jsPDF } from 'jspdf';
 import { collection, doc, onSnapshot, setDoc, deleteDoc } from 'firebase/firestore';
 import { db, sanitizeFirestoreDoc, handleFirestoreError, OperationType } from '../firebase';
 import { useAuth } from '../context/AuthContext';
-import { AttendanceRecord, AttendanceStatus, SchoolClass, RosterStudent, ScheduledClass } from '../types';
+import { AttendanceRecord, AttendanceStatus, AttendanceDayControl, SchoolClass, RosterStudent, ScheduledClass } from '../types';
 import { QRAttendanceModal } from '../components/attendance/QRAttendanceModal';
-import { Plus, UserPlus, Trash2, Edit2, UploadCloud, X, CheckCheck, FileSpreadsheet, FileText, Eye, GraduationCap } from 'lucide-react';
+import { Plus, UserPlus, Trash2, Edit2, UploadCloud, X, CheckCheck, FileSpreadsheet, FileText, Eye, GraduationCap, Power } from 'lucide-react';
 import { PDFPreviewModal, PDFPreviewData } from '../components/common/PDFPreviewModal';
 import { isFakeSeedRosterStudent } from '../services/dataService';
+import {
+  buildAttendanceRecordId,
+  isAttendanceDateEnabled,
+  isAttendanceRecordActive,
+} from '../utils/attendanceUtils';
 
 export const AttendancePage: React.FC = () => {
   const { activeRole, userProfile } = useAuth();
   const [selectedClassId, setSelectedClassId] = useState('');
   const [selectedDate, setSelectedDate] = useState(() => new Date().toISOString().split('T')[0]);
+  const [selectedSessionId, setSelectedSessionId] = useState<string>('daily');
   const [attendanceRecords, setAttendanceRecords] = useState<AttendanceRecord[]>([]);
+  const [dayControlsMap, setDayControlsMap] = useState<Record<string, AttendanceDayControl>>({});
+  const [togglingDay, setTogglingDay] = useState(false);
   const [classes, setClasses] = useState<SchoolClass[]>([]);
   const [students, setStudents] = useState<RosterStudent[]>([]);
   const [scheduledClasses, setScheduledClasses] = useState<ScheduledClass[]>([]);
@@ -153,32 +161,115 @@ export const AttendancePage: React.FC = () => {
     return () => unsub();
   }, []);
 
+  // Real-time listener for per-date Attendance ON/OFF controls
+  useEffect(() => {
+    const unsub = onSnapshot(
+      collection(db, 'attendanceDaySettings'),
+      (snap) => {
+        const map: Record<string, AttendanceDayControl> = {};
+        snap.forEach((d) => {
+          const data = d.data() as AttendanceDayControl;
+          const dateKey = data.date || d.id;
+          if (dateKey) {
+            map[dateKey] = { ...data, id: d.id, date: dateKey };
+          }
+        });
+        setDayControlsMap(map);
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.LIST, 'attendanceDaySettings');
+      }
+    );
+    return () => unsub();
+  }, []);
+
   // Real-time listener for attendance records
   useEffect(() => {
     const unsub = onSnapshot(collection(db, 'attendance'), (snap) => {
       const list: AttendanceRecord[] = [];
-      snap.forEach((d) => list.push(d.data() as AttendanceRecord));
+      snap.forEach((d) => {
+        const rec = d.data() as AttendanceRecord;
+        list.push({ ...rec, id: rec.id || d.id });
+      });
       setAttendanceRecords(list);
-
-      // Check if current date and class have an existing record
-      const existing = list.find((r) => r.classId === selectedClassId && r.date === selectedDate);
-      if (existing) {
-        setRegister(existing.records);
-      }
     });
     return () => unsub();
-  }, [selectedClassId, selectedDate]);
+  }, []);
 
-  // Attendance can ONLY be marked by teacher or admin
+  // Sync register whenever selectedClassId, selectedDate, selectedSessionId, attendanceRecords, or students change
+  useEffect(() => {
+    const targetRecordId = buildAttendanceRecordId(selectedDate, selectedClassId || 'general', selectedSessionId);
+    const existing =
+      attendanceRecords.find((r) => r.id === targetRecordId) ||
+      (selectedSessionId === 'daily'
+        ? attendanceRecords.find(
+            (r) => r.classId === selectedClassId && r.date === selectedDate && (!r.sessionId || r.sessionId === 'daily')
+          )
+        : undefined);
+
+    if (existing && existing.records) {
+      const merged: Record<string, AttendanceStatus> = {};
+      students.forEach((s) => {
+        merged[s.id] = existing.records[s.id] || 'present';
+      });
+      setRegister(merged);
+    } else if (students.length > 0) {
+      const fresh: Record<string, AttendanceStatus> = {};
+      students.forEach((s) => {
+        fresh[s.id] = 'present';
+      });
+      setRegister(fresh);
+    }
+  }, [selectedClassId, selectedDate, selectedSessionId, attendanceRecords, students]);
+
+  // Reset selectedSessionId if it does not exist on newly selected date (except 'daily')
+  useEffect(() => {
+    if (selectedSessionId === 'daily') return;
+    const daySessions = getClassesForDate(selectedDate);
+    if (!daySessions.some((s) => s.id === selectedSessionId)) {
+      setSelectedSessionId('daily');
+    }
+  }, [selectedDate, scheduledClasses, dismissedDefaultsByDate]);
+
+  // Attendance can ONLY be marked/toggled by teacher or admin
   const isTeacherOrAdmin = activeRole === 'teacher' || activeRole === 'admin';
+  const isDayAttendanceEnabled = isAttendanceDateEnabled(selectedDate, dayControlsMap);
+  const currentDayControl = dayControlsMap[selectedDate];
+
+  const handleToggleDayAttendance = async () => {
+    if (!isTeacherOrAdmin || togglingDay) return;
+    const nextEnabled = !isDayAttendanceEnabled;
+    setTogglingDay(true);
+    try {
+      const payload: AttendanceDayControl = {
+        id: selectedDate,
+        date: selectedDate,
+        enabled: nextEnabled,
+        updatedBy: userProfile?.userId || 'faculty',
+        updatedByName: userProfile?.fullName || 'Faculty Lead',
+        updatedAt: new Date().toISOString(),
+      };
+      await setDoc(doc(db, 'attendanceDaySettings', selectedDate), sanitizeFirestoreDoc(payload));
+      setStatusNotice(
+        nextEnabled
+          ? `Attendance marking turned ON for ${selectedDate}. Teachers can now mark attendance across multiple classes today, and saved records sync with dashboards.`
+          : `Attendance marking turned OFF for ${selectedDate}. No attendance is needed today and this date will not sync with Student & Teacher attendance graphs.`
+      );
+      setTimeout(() => setStatusNotice(null), 4500);
+    } catch (err) {
+      console.error('Failed to toggle attendance setting for date:', err);
+    } finally {
+      setTogglingDay(false);
+    }
+  };
 
   const handleStatusChange = (studentId: string, status: AttendanceStatus) => {
-    if (!isTeacherOrAdmin) return;
+    if (!isTeacherOrAdmin || !isDayAttendanceEnabled) return;
     setRegister((prev) => ({ ...prev, [studentId]: status }));
   };
 
   const handleMarkAllPresent = () => {
-    if (!isTeacherOrAdmin) return;
+    if (!isTeacherOrAdmin || !isDayAttendanceEnabled) return;
     const updated: Record<string, AttendanceStatus> = {};
     students.forEach((s) => {
       updated[s.id] = 'present';
@@ -187,21 +278,48 @@ export const AttendancePage: React.FC = () => {
   };
 
   const handleSaveAttendance = async () => {
-    if (!isTeacherOrAdmin) return;
+    if (!isTeacherOrAdmin || !isDayAttendanceEnabled) return;
     try {
-      const recordId = `att-${selectedDate}-${selectedClassId}`;
-      const record: AttendanceRecord = {
+      const activeSessionObj =
+        selectedSessionId !== 'daily'
+          ? getClassesForDate(selectedDate).find((c) => c.id === selectedSessionId)
+          : undefined;
+
+      const effectiveClassId = selectedClassId || 'general';
+      const recordId = buildAttendanceRecordId(selectedDate, effectiveClassId, selectedSessionId);
+      const record: AttendanceRecord = sanitizeFirestoreDoc({
         id: recordId,
-        classId: selectedClassId,
+        classId: effectiveClassId,
         date: selectedDate,
+        sessionId: selectedSessionId !== 'daily' ? selectedSessionId : undefined,
+        sessionSubject: activeSessionObj ? activeSessionObj.subject : 'General Daily Roll-Call',
+        timeSlot: activeSessionObj ? activeSessionObj.timeSlot : undefined,
         teacherId: userProfile?.userId || 'teacher_official',
         records: register,
         createdAt: new Date().toISOString(),
-      };
+      });
 
-      await setDoc(doc(db, 'attendance', recordId), record);
+      await setDoc(doc(db, 'attendance', recordId), record, { merge: true });
+
+      // Mirror status on custom scheduled class card if applicable
+      if (activeSessionObj && !activeSessionObj.id.startsWith('default-')) {
+        await setDoc(
+          doc(db, 'scheduledClasses', activeSessionObj.id),
+          { attendanceTaken: true, attendanceRecords: register },
+          { merge: true }
+        );
+      }
+
       setSavedSuccess(true);
-      setTimeout(() => setSavedSuccess(false), 3500);
+      setStatusNotice(
+        `Saved attendance for ${
+          activeSessionObj ? `${activeSessionObj.subject} (${activeSessionObj.timeSlot})` : 'Daily Roll-Call'
+        } on ${selectedDate}.`
+      );
+      setTimeout(() => {
+        setSavedSuccess(false);
+        setStatusNotice(null);
+      }, 3500);
     } catch (e) {
       console.error('Failed to save attendance:', e);
     }
@@ -380,7 +498,10 @@ export const AttendancePage: React.FC = () => {
   // Add new academic session on selectedDate (Teachers & Admins only)
   const handleCreateAcademicSession = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!isTeacherOrAdmin || !newSessionSubject.trim()) return;
+    const trimmedSubject = newSessionSubject.trim();
+    const trimmedPeriod = newSessionPeriod.trim();
+    const trimmedTimeSlot = newSessionTimeSlot.trim();
+    if (!isTeacherOrAdmin || !trimmedSubject || !trimmedPeriod || !trimmedTimeSlot) return;
     setSavingSession(true);
     try {
       const classSessionId = `class-session-${Date.now()}`;
@@ -389,9 +510,9 @@ export const AttendancePage: React.FC = () => {
         classId: selectedClassId || 'general',
         className: '2k28 Science EM',
         date: selectedDate,
-        timeSlot: newSessionTimeSlot,
-        periodName: newSessionPeriod,
-        subject: newSessionSubject.trim(),
+        timeSlot: trimmedTimeSlot,
+        periodName: trimmedPeriod,
+        subject: trimmedSubject,
         topic: newSessionTopic.trim() || undefined,
         teacherId: userProfile?.userId || 'faculty',
         teacherName: 'ZNC Science Project management',
@@ -407,9 +528,9 @@ export const AttendancePage: React.FC = () => {
         sanitizeFirestoreDoc({
           id: `ev-class-${classSessionId}`,
           title: `${newSession.subject} (${newSession.timeSlot})`,
-          description: `Academic session: ${newSession.topic || 'Academic Lecture'} | Room: ${newSession.room}`,
+          description: `Academic session (${newSession.periodName}): ${newSession.topic || 'Academic Lecture'} | Room: ${newSession.room}`,
           startDate: selectedDate,
-          time: newSession.timeSlot.split('-')[0].trim(),
+          time: trimmedTimeSlot.split(/[-–]/)[0]?.trim() || trimmedTimeSlot,
           type: 'academic',
           classId: selectedClassId || 'general',
           location: newSession.room,
@@ -421,8 +542,9 @@ export const AttendancePage: React.FC = () => {
 
       setShowAddSessionModal(false);
       setNewSessionTopic('');
-      setStatusNotice(`Added academic session "${newSession.subject}" on ${selectedDate}.`);
-      setTimeout(() => setStatusNotice(null), 3500);
+      setSelectedSessionId(classSessionId);
+      setStatusNotice(`Added academic session "${newSession.subject}" (${newSession.periodName} • ${newSession.timeSlot}) on ${selectedDate}. You can now mark attendance for it separately.`);
+      setTimeout(() => setStatusNotice(null), 4000);
     } catch (err) {
       console.error('Failed to add academic session:', err);
     } finally {
@@ -588,9 +710,8 @@ export const AttendancePage: React.FC = () => {
 
       csv += 'Index / Scholar ID,Scholar Full Name,Email / Reference,Academic Stream,Certified Status,Session Date,Supervisor,Verification Method\n';
 
-      const currentRecord = attendanceRecords.find(
-        (r) => r.classId === selectedClassId && r.date === selectedDate
-      );
+      const currentRecordId = buildAttendanceRecordId(selectedDate, selectedClassId || 'general', selectedSessionId);
+      const currentRecord = attendanceRecords.find((r) => r.id === currentRecordId);
 
       students.forEach((st) => {
         const status = register[st.id] || 'present';
@@ -796,7 +917,7 @@ export const AttendancePage: React.FC = () => {
   const lateCount = students.filter((s) => register[s.id] === 'late').length;
   const attendanceRate = totalStudents > 0 ? Math.round((presentCount / totalStudents) * 100) : 0;
 
-  // Compute logged-in student's real attendance metrics from recorded Firestore attendance logs
+  // Compute logged-in student's real attendance metrics strictly from active (ON) saved Firestore logs
   const studentMatchingRosterIds = students
     .filter(
       (s) =>
@@ -806,11 +927,13 @@ export const AttendancePage: React.FC = () => {
     )
     .map((s) => s.id);
   const candidateIds = Array.from(new Set([userProfile?.userId, ...studentMatchingRosterIds].filter(Boolean) as string[]));
-  const studentRecordedSessions = attendanceRecords.filter((rec) =>
-    candidateIds.some((cid) => rec.records && rec.records[cid] !== undefined)
+  const studentRecordedSessions = attendanceRecords.filter(
+    (rec) =>
+      isAttendanceRecordActive(rec, dayControlsMap) &&
+      candidateIds.some((cid) => rec.records && rec.records[cid] !== undefined)
   );
   const studentPresentSessions = studentRecordedSessions.filter((rec) =>
-    candidateIds.some((cid) => rec.records?.[cid] === 'present' || rec.records?.[cid] === 'late')
+    candidateIds.some((cid) => rec.records?.[cid] === 'present' || rec.records?.[cid] === 'late' || rec.records?.[cid] === 'excused')
   ).length;
   const studentAbsentSessions = studentRecordedSessions.filter((rec) =>
     candidateIds.some((cid) => rec.records?.[cid] === 'absent')
@@ -820,10 +943,21 @@ export const AttendancePage: React.FC = () => {
       ? `${Math.round((studentPresentSessions / studentRecordedSessions.length) * 100)}%`
       : '—';
 
-  // Student's personal attendance status for selectedDate
-  const studentUserRecord =
-    candidateIds.map((cid) => register[cid]).find(Boolean) ||
-    (studentRecordedSessions.length > 0 ? 'present' : 'not marked');
+  // Active session & saved records info on selectedDate
+  const classesToday = getClassesForDate(selectedDate);
+  const activeSessionObj =
+    selectedSessionId !== 'daily' ? classesToday.find((c) => c.id === selectedSessionId) : undefined;
+  const activeRecordId = buildAttendanceRecordId(selectedDate, selectedClassId || 'general', selectedSessionId);
+  const savedSessionsCountToday = attendanceRecords.filter(
+    (r) => r.date === selectedDate && Object.keys(r.records || {}).length > 0
+  ).length;
+
+  // Student's personal attendance status for selectedDate & selectedSessionId
+  const activeSavedRecord = attendanceRecords.find((r) => r.id === activeRecordId);
+  const studentUserRecord = !isDayAttendanceEnabled
+    ? 'attendance off'
+    : (activeSavedRecord && candidateIds.map((cid) => activeSavedRecord.records?.[cid]).find(Boolean)) ||
+      (studentRecordedSessions.length > 0 ? 'not marked' : 'not marked');
 
   return (
     <div className="space-y-6 animate-in fade-in duration-300">
@@ -1039,103 +1173,209 @@ export const AttendancePage: React.FC = () => {
         </div>
       )}
 
-      {/* Date & Cohort Selector Bar */}
-      <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4 text-xs">
-        <div className="flex flex-wrap items-center gap-3">
-          <div>
-            <label className="font-semibold text-slate-500 uppercase tracking-wider block mb-1 text-[10px]">
-              Class Cohort
-            </label>
-            <div className="flex items-center gap-1.5">
+      {/* Date, Class Session & Teacher/Admin ON-OFF Control Bar */}
+      <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 shadow-xs space-y-4 text-xs">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+          <div className="flex flex-wrap items-center gap-3">
+            <div>
+              <label className="font-semibold text-slate-500 uppercase tracking-wider block mb-1 text-[10px]">
+                Class Cohort
+              </label>
+              <div className="flex items-center gap-1.5">
+                <select
+                  value={selectedClassId}
+                  onChange={(e) => setSelectedClassId(e.target.value)}
+                  className="rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3 py-1.5 text-slate-800 dark:text-slate-100 font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                >
+                  {classes.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name} ({c.grade})
+                    </option>
+                  ))}
+                </select>
+
+                {isTeacherOrAdmin && selectedClassId && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const targetCohort = classes.find((c) => c.id === selectedClassId);
+                      if (targetCohort) setCohortToDelete(targetCohort);
+                    }}
+                    className="p-2 rounded-lg border border-rose-200 bg-rose-50 hover:bg-rose-100 text-rose-700 transition-colors"
+                    title="Remove this class cohort"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+            </div>
+
+            <div>
+              <label className="font-semibold text-slate-500 uppercase tracking-wider block mb-1 text-[10px]">
+                Session Date
+              </label>
+              <input
+                type="date"
+                value={selectedDate}
+                onChange={(e) => setSelectedDate(e.target.value)}
+                className="rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3 py-1.5 text-slate-800 dark:text-slate-100 font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+              />
+            </div>
+
+            <div>
+              <label className="font-semibold text-slate-500 uppercase tracking-wider block mb-1 text-[10px]">
+                Class / Period to Mark Today
+              </label>
               <select
-                value={selectedClassId}
-                onChange={(e) => setSelectedClassId(e.target.value)}
-                className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-slate-800 font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                value={selectedSessionId}
+                onChange={(e) => setSelectedSessionId(e.target.value)}
+                className="rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3 py-1.5 text-slate-800 dark:text-slate-100 font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500/20"
               >
-                {classes.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name} ({c.grade})
+                <option value="daily">General Daily Roll-Call (All Day)</option>
+                {classesToday.map((cls) => (
+                  <option key={cls.id} value={cls.id}>
+                    {cls.subject} ({cls.periodName ? `${cls.periodName} • ` : ''}{cls.timeSlot})
                   </option>
                 ))}
               </select>
+            </div>
+          </div>
 
-              {isTeacherOrAdmin && selectedClassId && (
+          {/* Teacher / Admin Master Attendance ON/OFF Button + Action buttons */}
+          <div className="flex flex-wrap items-center gap-2">
+            {isTeacherOrAdmin ? (
+              <>
                 <button
                   type="button"
-                  onClick={() => {
-                    const targetCohort = classes.find((c) => c.id === selectedClassId);
-                    if (targetCohort) setCohortToDelete(targetCohort);
-                  }}
-                  className="p-2 rounded-lg border border-rose-200 bg-rose-50 hover:bg-rose-100 text-rose-700 transition-colors"
-                  title="Remove this class cohort"
+                  onClick={handleToggleDayAttendance}
+                  disabled={togglingDay}
+                  role="switch"
+                  aria-checked={isDayAttendanceEnabled}
+                  className={`inline-flex items-center gap-2 rounded-xl px-3.5 py-2 text-xs font-bold transition-all border shadow-xs ${
+                    isDayAttendanceEnabled
+                      ? 'bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-700'
+                      : 'bg-slate-700 hover:bg-slate-800 text-white border-slate-600'
+                  }`}
+                  title="Turn attendance marking ON or OFF for this day. When OFF, no attendance is needed and records do not sync with Student or Teacher graphs."
                 >
-                  <Trash2 className="w-3.5 h-3.5" />
+                  <Power className="w-3.5 h-3.5" />
+                  <span>
+                    Attendance: {isDayAttendanceEnabled ? 'ON' : 'OFF'}
+                  </span>
+                  <span
+                    className={`w-8 h-4 rounded-full p-0.5 flex items-center transition-colors ${
+                      isDayAttendanceEnabled ? 'bg-emerald-900/50 justify-end' : 'bg-slate-900/60 justify-start'
+                    }`}
+                  >
+                    <span className="w-3 h-3 rounded-full bg-white shadow-xs" />
+                  </span>
                 </button>
-              )}
-            </div>
-          </div>
 
-          <div>
-            <label className="font-semibold text-slate-500 uppercase tracking-wider block mb-1 text-[10px]">
-              Session Date
-            </label>
-            <input
-              type="date"
-              value={selectedDate}
-              onChange={(e) => setSelectedDate(e.target.value)}
-              className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-slate-800 font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500/20"
-            />
+                <button
+                  onClick={() => {
+                    setQrModalMode('generate');
+                    setShowQrModal(true);
+                  }}
+                  disabled={!isDayAttendanceEnabled}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 disabled:opacity-45 disabled:pointer-events-none px-3.5 py-2 text-xs font-bold text-white transition-all shadow-sm"
+                >
+                  <QrCode className="w-3.5 h-3.5 text-white" />
+                  <span>Project Classroom QR</span>
+                </button>
+
+                <button
+                  onClick={handleMarkAllPresent}
+                  disabled={!isDayAttendanceEnabled}
+                  className="rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-45 disabled:pointer-events-none px-3.5 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 transition-colors shadow-2xs"
+                >
+                  Mark All Present
+                </button>
+
+                <button
+                  onClick={handleSaveAttendance}
+                  disabled={!isDayAttendanceEnabled}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-45 disabled:pointer-events-none px-4 py-2 text-xs font-bold text-white transition-colors shadow-sm"
+                >
+                  <Save className="w-3.5 h-3.5 text-white" />
+                  <span>Save Register</span>
+                </button>
+              </>
+            ) : (
+              <div className="flex items-center gap-2">
+                <span
+                  className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-bold border ${
+                    isDayAttendanceEnabled
+                      ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                      : 'bg-slate-100 text-slate-600 border-slate-200'
+                  }`}
+                >
+                  <Power className="w-3 h-3" />
+                  <span>Day Status: {isDayAttendanceEnabled ? 'Attendance Active' : 'Attendance OFF'}</span>
+                </span>
+                {isDayAttendanceEnabled && (
+                  <button
+                    onClick={() => {
+                      setQrModalMode('scan');
+                      setShowQrModal(true);
+                    }}
+                    className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 px-4 py-2 text-xs font-bold text-white transition-all shadow-md animate-pulse"
+                  >
+                    <Camera className="w-4 h-4 text-white" />
+                    <span>Scan Classroom Attendance QR</span>
+                  </button>
+                )}
+              </div>
+            )}
           </div>
         </div>
 
-        {/* Action buttons */}
-        <div className="flex flex-wrap items-center gap-2">
-          {isTeacherOrAdmin ? (
-            <>
+        {/* Status Indicator Banner for Day Control */}
+        {!isDayAttendanceEnabled ? (
+          <div className="rounded-xl border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs text-amber-950 dark:text-amber-200">
+            <div className="flex items-start sm:items-center gap-2.5">
+              <AlertCircle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5 sm:mt-0" />
+              <div>
+                <span className="font-bold">Attendance Marking is OFF for {selectedDate}</span>
+                <span className="mx-1.5 text-amber-400">•</span>
+                <span>
+                  No attendance needs to be marked today. Any records on this date are excluded from Student &amp; Teacher Dashboard attendance graphs
+                  {currentDayControl?.updatedByName ? ` (set by ${currentDayControl.updatedByName})` : ''}.
+                </span>
+              </div>
+            </div>
+            {isTeacherOrAdmin && (
               <button
-                onClick={() => {
-                  setQrModalMode('generate');
-                  setShowQrModal(true);
-                }}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 px-3.5 py-2 text-xs font-bold text-white transition-all shadow-sm"
+                type="button"
+                onClick={handleToggleDayAttendance}
+                disabled={togglingDay}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 text-[11px] font-bold shrink-0 shadow-2xs"
               >
-                <QrCode className="w-3.5 h-3.5 text-white" />
-                <span>Project Classroom QR</span>
+                <Power className="w-3 h-3" />
+                <span>Turn ON Attendance</span>
               </button>
-
-              <button
-                onClick={handleMarkAllPresent}
-                className="rounded-lg border border-slate-200 hover:bg-slate-50 px-3.5 py-2 text-xs font-semibold text-slate-700 transition-colors shadow-2xs"
-              >
-                Mark All Present
-              </button>
-              <button
-                onClick={handleSaveAttendance}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 px-4 py-2 text-xs font-bold text-white transition-colors shadow-sm"
-              >
-                <Save className="w-3.5 h-3.5 text-white" />
-                <span>Save Register</span>
-              </button>
-            </>
-          ) : (
+            )}
+          </div>
+        ) : (
+          <div className="rounded-xl border border-emerald-200 dark:border-emerald-900/60 bg-emerald-50/60 dark:bg-emerald-950/20 px-3.5 py-2 flex flex-wrap items-center justify-between gap-2 text-[11px] text-emerald-900 dark:text-emerald-300">
             <div className="flex items-center gap-2">
-              <button
-                onClick={() => {
-                  setQrModalMode('scan');
-                  setShowQrModal(true);
-                }}
-                className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 px-4 py-2 text-xs font-bold text-white transition-all shadow-md animate-pulse"
-              >
-                <Camera className="w-4 h-4 text-white" />
-                <span>Scan Classroom Attendance QR</span>
-              </button>
+              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+              <span>
+                Marking Register:{' '}
+                <strong>
+                  {activeSessionObj ? `${activeSessionObj.subject} (${activeSessionObj.timeSlot})` : 'General Daily Roll-Call'}
+                </strong>{' '}
+                on <strong>{selectedDate}</strong> • Syncs live with Student &amp; Teacher graphs when saved.
+              </span>
             </div>
-          )}
-        </div>
+            <span className="font-bold text-emerald-700 dark:text-emerald-400">
+              {savedSessionsCountToday} saved register(s) on {selectedDate}
+            </span>
+          </div>
+        )}
       </div>
 
       {/* Student QR Check-In Banner */}
-      {!isTeacherOrAdmin && (
+      {!isTeacherOrAdmin && isDayAttendanceEnabled && (
         <div className="rounded-2xl border-2 border-emerald-500/80 bg-gradient-to-r from-emerald-500/10 via-blue-500/10 to-transparent p-4 md:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-xs">
           <div className="flex items-center gap-3">
             <div className="p-2.5 rounded-2xl bg-emerald-600 text-white shadow-sm shrink-0">
@@ -1189,7 +1429,7 @@ export const AttendancePage: React.FC = () => {
         </div>
       </div>
 
-      {/* Classes Occurring on Selected Date */}
+      {/* Classes Occurring on Selected Date (Select any class or add as many classes as needed to mark attendance) */}
       <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4 shadow-xs space-y-2.5">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
           <div>
@@ -1197,12 +1437,12 @@ export const AttendancePage: React.FC = () => {
               Classes Occurring on {selectedDate}
             </span>
             <p className="text-xs font-bold text-slate-900 mt-0.5">
-              Scheduled academic sessions &amp; laboratory periods
+              Select a class below to mark separate attendance, or add as many classes today as needed
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-[11px] font-semibold text-slate-500">
-              {getClassesForDate(selectedDate).length} class session(s)
+              {classesToday.length} class session(s)
             </span>
             {isTeacherOrAdmin && (
               <button
@@ -1217,32 +1457,83 @@ export const AttendancePage: React.FC = () => {
           </div>
         </div>
 
-        {getClassesForDate(selectedDate).length === 0 ? (
-          <div className="rounded-xl border border-dashed border-slate-300 bg-white/80 p-4 text-center text-xs text-slate-500">
-            No academic sessions scheduled on {selectedDate}.
-            {isTeacherOrAdmin && (
-              <span className="block text-[11px] text-slate-400 mt-0.5">
-                Click &quot;Add Academic Session&quot; above to add a lecture or practical period for teachers/admins.
-              </span>
-            )}
-          </div>
-        ) : (
-          <div className="flex flex-wrap gap-2.5 pt-1">
-            {getClassesForDate(selectedDate).map((cls) => (
+        <div className="flex flex-wrap gap-2.5 pt-1">
+          {/* General Daily Roll Call Card */}
+          {(() => {
+            const dailyDocId = buildAttendanceRecordId(selectedDate, selectedClassId || 'general', 'daily');
+            const isDailySaved = attendanceRecords.some(
+              (r) =>
+                (r.id === dailyDocId || (r.date === selectedDate && r.classId === selectedClassId && !r.sessionId)) &&
+                Object.keys(r.records || {}).length > 0
+            );
+            const isSelected = selectedSessionId === 'daily';
+            return (
+              <button
+                type="button"
+                onClick={() => setSelectedSessionId('daily')}
+                className={`flex items-center gap-2.5 px-3 py-2 rounded-xl border text-xs font-semibold shadow-2xs transition-all text-left ${
+                  isSelected
+                    ? 'border-blue-600 bg-blue-50 ring-2 ring-blue-500/20'
+                    : 'border-slate-200 bg-white hover:border-blue-300'
+                }`}
+              >
+                <CalendarCheck2 className={`w-4 h-4 shrink-0 ${isSelected ? 'text-blue-600' : 'text-slate-500'}`} />
+                <div>
+                  <div className="flex items-center gap-1.5">
+                    <p className="font-bold text-[11px] text-slate-900">General Daily Roll-Call</p>
+                    {isDailySaved && (
+                      <span className="rounded bg-emerald-100 text-emerald-800 px-1.5 py-0.2 text-[9px] font-bold">
+                        Saved
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-[10px] text-slate-500">Full-day cohort register</p>
+                </div>
+              </button>
+            );
+          })()}
+
+          {classesToday.map((cls) => {
+            const sessDocId = buildAttendanceRecordId(selectedDate, selectedClassId || 'general', cls.id);
+            const isSessSaved = attendanceRecords.some(
+              (r) => r.id === sessDocId && Object.keys(r.records || {}).length > 0
+            );
+            const isSelected = selectedSessionId === cls.id;
+
+            return (
               <div
                 key={cls.id}
-                className="flex items-center gap-2.5 px-3 py-2 rounded-xl border border-slate-200 bg-white text-xs font-semibold shadow-2xs"
+                className={`flex items-center gap-2 px-3 py-2 rounded-xl border text-xs font-semibold shadow-2xs transition-all ${
+                  isSelected
+                    ? 'border-blue-600 bg-blue-50 ring-2 ring-blue-500/20'
+                    : 'border-slate-200 bg-white hover:border-blue-300'
+                }`}
               >
-                <GraduationCap className="w-4 h-4 text-blue-600 shrink-0" />
-                <div className="text-left min-w-0">
-                  <p className="font-bold text-[11px] text-slate-900">{cls.subject}</p>
-                  <p className="text-[10px] text-slate-500">{cls.timeSlot} • {cls.room}</p>
-                </div>
+                <button
+                  type="button"
+                  onClick={() => setSelectedSessionId(cls.id)}
+                  className="flex items-center gap-2.5 text-left min-w-0"
+                >
+                  <GraduationCap className={`w-4 h-4 shrink-0 ${isSelected ? 'text-blue-600' : 'text-slate-500'}`} />
+                  <div className="text-left min-w-0">
+                    <div className="flex items-center gap-1.5">
+                      <p className="font-bold text-[11px] text-slate-900 truncate">{cls.subject}</p>
+                      {isSessSaved && (
+                        <span className="rounded bg-emerald-100 text-emerald-800 px-1.5 py-0.2 text-[9px] font-bold shrink-0">
+                          Saved
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-[10px] text-slate-500">
+                      {cls.periodName ? `${cls.periodName} • ` : ''}{cls.timeSlot} • {cls.room}
+                    </p>
+                  </div>
+                </button>
                 {isTeacherOrAdmin && (
                   <button
                     type="button"
                     onClick={() => setSessionToDelete(cls)}
-                    className="min-h-[32px] min-w-[32px] flex items-center justify-center p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors shrink-0"
+                    className="min-h-[30px] min-w-[30px] flex items-center justify-center p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors shrink-0"
                     title="Remove this academic session"
                     aria-label={`Remove ${cls.subject}`}
                   >
@@ -1250,9 +1541,9 @@ export const AttendancePage: React.FC = () => {
                   </button>
                 )}
               </div>
-            ))}
-          </div>
-        )}
+            );
+          })}
+        </div>
       </div>
 
       {/* GOOGLE CALENDAR VIEW SECTION */}
@@ -1385,9 +1676,7 @@ export const AttendancePage: React.FC = () => {
               ) : (
                 students.map((student) => {
                   const status = register[student.id] || 'present';
-                  const currentRecord = attendanceRecords.find(
-                    (r) => r.classId === selectedClassId && r.date === selectedDate
-                  );
+                  const currentRecord = attendanceRecords.find((r) => r.id === activeRecordId);
                   const checkIn = currentRecord?.checkInLogs?.find((l) => l.studentId === student.id);
                   const isEditingThisStudent = editingStudentId === student.id;
 
@@ -1481,8 +1770,10 @@ export const AttendancePage: React.FC = () => {
 
                       <td className="py-3 px-4 text-right whitespace-nowrap">
                         {isTeacherOrAdmin ? (
-                          <div className="inline-flex items-center rounded-lg border border-slate-200 bg-white p-0.5 shadow-2xs whitespace-nowrap">
+                          <div className={`inline-flex items-center rounded-lg border border-slate-200 bg-white p-0.5 shadow-2xs whitespace-nowrap ${!isDayAttendanceEnabled ? 'opacity-45 pointer-events-none' : ''}`}>
                             <button
+                              type="button"
+                              disabled={!isDayAttendanceEnabled}
                               onClick={() => handleStatusChange(student.id, 'present')}
                               className={`rounded px-2.5 py-1.5 text-[11px] font-bold whitespace-nowrap transition-colors ${
                                 status === 'present' ? 'bg-emerald-600 text-white' : 'text-slate-600 hover:bg-slate-100'
@@ -1491,6 +1782,8 @@ export const AttendancePage: React.FC = () => {
                               Present
                             </button>
                             <button
+                              type="button"
+                              disabled={!isDayAttendanceEnabled}
                               onClick={() => handleStatusChange(student.id, 'absent')}
                               className={`rounded px-2.5 py-1.5 text-[11px] font-bold whitespace-nowrap transition-colors ${
                                 status === 'absent' ? 'bg-red-600 text-white' : 'text-slate-600 hover:bg-slate-100'
@@ -1499,6 +1792,8 @@ export const AttendancePage: React.FC = () => {
                               Absent
                             </button>
                             <button
+                              type="button"
+                              disabled={!isDayAttendanceEnabled}
                               onClick={() => handleStatusChange(student.id, 'late')}
                               className={`rounded px-2.5 py-1.5 text-[11px] font-bold whitespace-nowrap transition-colors ${
                                 status === 'late' ? 'bg-amber-500 text-white' : 'text-slate-600 hover:bg-slate-100'
@@ -1530,6 +1825,9 @@ export const AttendancePage: React.FC = () => {
         classId={selectedClassId}
         className={classes.find((c) => c.id === selectedClassId)?.name || '2k28 Science EM'}
         selectedDate={selectedDate}
+        sessionId={selectedSessionId}
+        sessionSubject={activeSessionObj?.subject}
+        defaultRoom={activeSessionObj?.room}
         mode={qrModalMode}
       />
 
@@ -1631,40 +1929,72 @@ export const AttendancePage: React.FC = () => {
                 <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1">
                   Subject *
                 </label>
-                <select
+                <input
+                  type="text"
+                  required
+                  list="attendance-subject-suggestions"
                   value={newSessionSubject}
                   onChange={(e) => setNewSessionSubject(e.target.value)}
-                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-slate-900 font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500"
-                >
-                  <option value="Combined Mathematics">Combined Mathematics</option>
-                  <option value="Physics">Physics</option>
-                  <option value="Chemistry">Chemistry</option>
-                  <option value="Biology">Biology</option>
-                  <option value="Information & Communication Technology (ICT)">ICT</option>
-                  <option value="General English">General English</option>
-                </select>
+                  placeholder="e.g. Combined Mathematics, Physics Revision"
+                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-slate-900 font-semibold focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+                <datalist id="attendance-subject-suggestions">
+                  <option value="Combined Mathematics" />
+                  <option value="Physics" />
+                  <option value="Chemistry" />
+                  <option value="Biology" />
+                  <option value="Information & Communication Technology (ICT)" />
+                  <option value="General English" />
+                </datalist>
               </div>
 
-              <div>
-                <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1">
-                  Period &amp; Time Slot *
-                </label>
-                <select
-                  value={newSessionTimeSlot}
-                  onChange={(e) => {
-                    setNewSessionTimeSlot(e.target.value);
-                    if (e.target.value.includes('08:00')) setNewSessionPeriod('Period 1');
-                    else if (e.target.value.includes('09:45')) setNewSessionPeriod('Period 2');
-                    else if (e.target.value.includes('11:30')) setNewSessionPeriod('Period 3');
-                    else setNewSessionPeriod('Period 4');
-                  }}
-                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-slate-900 font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500"
-                >
-                  <option value="08:00 - 09:30">Period 1 (08:00 - 09:30)</option>
-                  <option value="09:45 - 11:15">Period 2 (09:45 - 11:15)</option>
-                  <option value="11:30 - 13:00">Period 3 (11:30 - 13:00)</option>
-                  <option value="13:45 - 15:15">Period 4 (13:45 - 15:15)</option>
-                </select>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1">
+                    Time Period *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    list="attendance-period-suggestions"
+                    value={newSessionPeriod}
+                    onChange={(e) => setNewSessionPeriod(e.target.value)}
+                    placeholder="e.g. Period 1, Extra Class"
+                    className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-slate-900 font-semibold focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                  <datalist id="attendance-period-suggestions">
+                    <option value="Period 1" />
+                    <option value="Period 2" />
+                    <option value="Period 3" />
+                    <option value="Period 4" />
+                    <option value="Period 5" />
+                    <option value="Morning Revision" />
+                    <option value="Evening Extra Class" />
+                    <option value="Practical Lab" />
+                  </datalist>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1">
+                    Time Slot *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    list="attendance-timeslot-suggestions"
+                    value={newSessionTimeSlot}
+                    onChange={(e) => setNewSessionTimeSlot(e.target.value)}
+                    placeholder="e.g. 08:00 - 09:30"
+                    className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-slate-900 font-semibold focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                  <datalist id="attendance-timeslot-suggestions">
+                    <option value="08:00 - 09:30" />
+                    <option value="09:45 - 11:15" />
+                    <option value="11:30 - 13:00" />
+                    <option value="13:45 - 15:15" />
+                    <option value="15:30 - 17:00" />
+                  </datalist>
+                </div>
               </div>
 
               <div>
@@ -1703,7 +2033,7 @@ export const AttendancePage: React.FC = () => {
                 </button>
                 <button
                   type="submit"
-                  disabled={savingSession}
+                  disabled={savingSession || !newSessionSubject.trim() || !newSessionPeriod.trim() || !newSessionTimeSlot.trim()}
                   className="rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-50 px-4 py-2 font-bold text-white shadow-xs"
                 >
                   {savingSession ? 'Adding...' : 'Add Session'}
