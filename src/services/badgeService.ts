@@ -268,6 +268,7 @@ export const ALL_BADGE_DEFINITIONS: Omit<StudentBadge, 'currentValue' | 'progres
  */
 export function calculateStudentBadges(params: {
   studentId: string;
+  candidateIds?: string[];
   submissions: Submission[];
   quizAttempts: QuizAttempt[];
   attendanceRecords: AttendanceRecord[];
@@ -278,6 +279,7 @@ export function calculateStudentBadges(params: {
 }): StudentBadgeSummary {
   const {
     studentId,
+    candidateIds,
     submissions,
     quizAttempts,
     attendanceRecords,
@@ -286,6 +288,8 @@ export function calculateStudentBadges(params: {
     discussionReplies = [],
     totalAssignmentsCount = 5,
   } = params;
+
+  const lookupIds = candidateIds && candidateIds.length > 0 ? candidateIds : [studentId];
 
   // 1. Calculate Activity Streak
   let currentStreak = 5;
@@ -312,28 +316,23 @@ export function calculateStudentBadges(params: {
     ? studentAttempts.filter((q) => (q.score / (q.maxScore || 20)) * 100 >= 99.9).length
     : 1;
 
-  // 3. Calculate Attendance Metrics
+  // 3. Calculate Attendance Metrics strictly from saved active records
   let presentSessions = 0;
   let totalSessions = 0;
 
   attendanceRecords.forEach((rec) => {
     if (rec.records && typeof rec.records === 'object') {
-      const status = rec.records[studentId];
-      if (status) {
+      const matchedStatus = lookupIds.map((cid) => rec.records[cid]).find(Boolean);
+      if (matchedStatus) {
         totalSessions++;
-        if (status === 'present' || status === 'late') {
+        if (matchedStatus === 'present' || matchedStatus === 'late' || matchedStatus === 'excused') {
           presentSessions++;
         }
       }
     }
   });
 
-  if (totalSessions === 0) {
-    totalSessions = 12;
-    presentSessions = 12;
-  }
-
-  const attendancePercentage = totalSessions > 0 ? Math.round((presentSessions / totalSessions) * 100) : 96;
+  const attendancePercentage = totalSessions > 0 ? Math.round((presentSessions / totalSessions) * 100) : 0;
 
   // 4. Calculate Assignment & Early Submission Metrics
   const userSubmissions = submissions.filter((s) => s.studentId === studentId);
