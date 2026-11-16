@@ -27,7 +27,7 @@ import { jsPDF } from 'jspdf';
 import { collection, doc, onSnapshot, setDoc, deleteDoc } from 'firebase/firestore';
 import { db, sanitizeFirestoreDoc, handleFirestoreError, OperationType } from '../firebase';
 import { useAuth } from '../context/AuthContext';
-import { AttendanceRecord, AttendanceStatus, AttendanceDayControl, SchoolClass, RosterStudent, ScheduledClass } from '../types';
+import { AttendanceRecord, AttendanceStatus, AttendanceDayControl, SchoolClass, RosterStudent, ScheduledClass, StudentStream } from '../types';
 import { QRAttendanceModal } from '../components/attendance/QRAttendanceModal';
 import { PDFPreviewModal, PDFPreviewData } from '../components/common/PDFPreviewModal';
 import { isFakeSeedRosterStudent } from '../services/dataService';
@@ -72,8 +72,11 @@ export const AttendancePage: React.FC = () => {
   // Direct Student Roll-Call Entry state (no student account creation required)
   const [newStudentName, setNewStudentName] = useState('');
   const [newStudentIndex, setNewStudentIndex] = useState('');
+  const [newStudentStream, setNewStudentStream] = useState<StudentStream>('bio');
   const [showBulkModal, setShowBulkModal] = useState(false);
   const [bulkStudentText, setBulkStudentText] = useState('');
+  const [bulkStudentStream, setBulkStudentStream] = useState<StudentStream>('bio');
+  const [streamFilter, setStreamFilter] = useState<'all' | 'bio' | 'physical' | 'unassigned'>('all');
   const [editingStudentId, setEditingStudentId] = useState<string | null>(null);
   const [editingNameValue, setEditingNameValue] = useState('');
 
@@ -332,23 +335,42 @@ export const AttendancePage: React.FC = () => {
       id: studentId,
       fullName: name,
       indexNumber: index,
+      stream: newStudentStream,
       classId: selectedClassId || 'general',
       createdAt: new Date().toISOString(),
     };
 
     try {
-      await setDoc(doc(db, 'attendanceRoster', studentId), newStudent);
+      await setDoc(doc(db, 'attendanceRoster', studentId), sanitizeFirestoreDoc(newStudent));
       setRegister((prev) => ({ ...prev, [studentId]: 'present' }));
       setNewStudentName('');
       setNewStudentIndex('');
       setSavedSuccess(true);
       setTimeout(() => setSavedSuccess(false), 3000);
     } catch (err) {
-      console.error('Failed to add student to roll call:', err);
+      handleFirestoreError(err, OperationType.WRITE, `attendanceRoster/${studentId}`);
     }
   };
 
-  // Bulk add multiple student names & indexes directly into attendanceRoster
+  // Update a student's Academic Stream (Bio / Physical) and sync directly to Firestore (Teachers & Admins Only)
+  const handleUpdateStudentStream = async (studentId: string, nextStream: StudentStream) => {
+    if (!isTeacherOrAdmin) return;
+    try {
+      await setDoc(
+        doc(db, 'attendanceRoster', studentId),
+        { stream: nextStream },
+        { merge: true }
+      );
+      setStatusNotice(
+        `Updated stream to ${nextStream === 'bio' ? 'Bio Stream' : 'Physical Stream'} — synced live with Marks & Assessments.`
+      );
+      setTimeout(() => setStatusNotice(null), 3500);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `attendanceRoster/${studentId}`);
+    }
+  };
+
+  // Bulk add multiple student names, indexes & streams directly into attendanceRoster
   const handleBulkAddStudents = async () => {
     if (!bulkStudentText.trim() || !isTeacherOrAdmin) return;
     const lines = bulkStudentText.split('\n').map((l) => l.trim()).filter(Boolean);
@@ -360,15 +382,23 @@ export const AttendancePage: React.FC = () => {
         if (!name) continue;
         count++;
         const index = parts[1] || `286${String(count).padStart(4, '0')}`;
+        const rawStream = (parts[2] || '').toLowerCase();
+        const parsedStream: StudentStream =
+          rawStream.includes('phys') || rawStream.includes('math')
+            ? 'physical'
+            : rawStream.includes('bio')
+            ? 'bio'
+            : bulkStudentStream;
         const studentId = `roster_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
         const newStudent: RosterStudent = {
           id: studentId,
           fullName: name,
           indexNumber: index,
+          stream: parsedStream,
           classId: selectedClassId || 'general',
           createdAt: new Date().toISOString(),
         };
-        await setDoc(doc(db, 'attendanceRoster', studentId), newStudent);
+        await setDoc(doc(db, 'attendanceRoster', studentId), sanitizeFirestoreDoc(newStudent));
         setRegister((prev) => ({ ...prev, [studentId]: 'present' }));
       }
       setBulkStudentText('');
@@ -376,7 +406,7 @@ export const AttendancePage: React.FC = () => {
       setSavedSuccess(true);
       setTimeout(() => setSavedSuccess(false), 3000);
     } catch (err) {
-      console.error('Failed to bulk add students:', err);
+      handleFirestoreError(err, OperationType.WRITE, 'attendanceRoster');
     }
   };
 
@@ -728,8 +758,11 @@ export const AttendancePage: React.FC = () => {
 
         const escape = (val: string) => `"${(val || '').replace(/"/g, '""')}"`;
 
+        const streamLabel =
+          st.stream === 'bio' ? 'Bio Stream' : st.stream === 'physical' ? 'Physical Stream' : '2k28 Science EM';
+
         csv += `${escape(indexOrId)},${escape(st.fullName)},${escape(st.indexNumber)},${escape(
-          '2k28 Science EM'
+          streamLabel
         )},${escape(status.toUpperCase())},${escape(selectedDate)},${escape(
           'ZNC Science Project management'
         )},${escape(method)}\n`;
@@ -1638,7 +1671,7 @@ export const AttendancePage: React.FC = () => {
           </div>
 
           <form onSubmit={handleAddStudent} className="grid grid-cols-1 sm:grid-cols-12 gap-2 text-xs">
-            <div className="sm:col-span-6">
+            <div className="sm:col-span-5">
               <input
                 type="text"
                 placeholder="Enter real student full name..."
@@ -1648,57 +1681,141 @@ export const AttendancePage: React.FC = () => {
               />
             </div>
 
-            <div className="sm:col-span-3">
+            <div className="sm:col-span-2">
               <input
                 type="text"
-                placeholder="Index / Reg No (optional)"
+                placeholder="Index No (opt.)"
                 value={newStudentIndex}
                 onChange={(e) => setNewStudentIndex(e.target.value)}
-                className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3.5 py-2 text-xs text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-xs text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-blue-500 focus:outline-none"
               />
+            </div>
+
+            <div className="sm:col-span-2">
+              <select
+                value={newStudentStream}
+                onChange={(e) => setNewStudentStream(e.target.value as StudentStream)}
+                aria-label="Select Student Stream"
+                className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-xs font-semibold text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-blue-500 focus:outline-none"
+              >
+                <option value="bio">Bio Stream</option>
+                <option value="physical">Physical Stream</option>
+              </select>
             </div>
 
             <div className="sm:col-span-3">
               <button
                 type="submit"
                 disabled={!newStudentName.trim()}
-                className="w-full h-full inline-flex items-center justify-center gap-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-50 px-4 py-2 text-xs font-bold text-white transition-all shadow-xs"
+                className="w-full h-full inline-flex items-center justify-center gap-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-50 px-4 py-2 text-xs font-bold text-white transition-all shadow-xs whitespace-nowrap"
               >
-                <Plus className="w-4 h-4" />
-                <span>Add & Mark Present</span>
+                <Plus className="w-4 h-4 shrink-0" />
+                <span>Add &amp; Mark Present</span>
               </button>
             </div>
           </form>
         </div>
       )}
 
+      {/* STUDENT STREAM ALLOCATION & FILTER BAR (Synced with Marks & Assessments) */}
+      {(() => {
+        const bioCount = students.filter((s) => s.stream === 'bio').length;
+        const physicalCount = students.filter((s) => s.stream === 'physical').length;
+        const unassignedCount = students.filter((s) => s.stream !== 'bio' && s.stream !== 'physical').length;
+
+        return (
+          <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-3 shadow-2xs flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="space-y-0.5">
+              <p className="text-xs font-bold text-slate-900 dark:text-slate-100">
+                Academic Stream Classification (Bio &amp; Physical Science)
+              </p>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                {isTeacherOrAdmin
+                  ? 'Select Bio or Physical stream for each student below — changes sync automatically to Term Exams in Marks & Assessments.'
+                  : 'Filtered view of students by Bio Stream and Physical Stream.'}
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-1.5 bg-slate-100 dark:bg-slate-800 p-1 rounded-xl text-xs">
+              <button
+                type="button"
+                onClick={() => setStreamFilter('all')}
+                className={`px-3 py-1.5 rounded-lg font-semibold transition-colors whitespace-nowrap tabular-nums ${
+                  streamFilter === 'all'
+                    ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-2xs'
+                    : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
+                }`}
+              >
+                All ({students.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setStreamFilter('bio')}
+                className={`px-3 py-1.5 rounded-lg font-semibold transition-colors whitespace-nowrap tabular-nums ${
+                  streamFilter === 'bio'
+                    ? 'bg-emerald-600 text-white shadow-2xs'
+                    : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
+                }`}
+              >
+                Bio Stream ({bioCount})
+              </button>
+              <button
+                type="button"
+                onClick={() => setStreamFilter('physical')}
+                className={`px-3 py-1.5 rounded-lg font-semibold transition-colors whitespace-nowrap tabular-nums ${
+                  streamFilter === 'physical'
+                    ? 'bg-blue-600 text-white shadow-2xs'
+                    : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
+                }`}
+              >
+                Physical Stream ({physicalCount})
+              </button>
+              {unassignedCount > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setStreamFilter('unassigned')}
+                  className={`px-3 py-1.5 rounded-lg font-semibold transition-colors whitespace-nowrap tabular-nums ${
+                    streamFilter === 'unassigned'
+                      ? 'bg-amber-600 text-white shadow-2xs'
+                      : 'text-amber-700 dark:text-amber-300 hover:bg-amber-50 dark:hover:bg-amber-950/30'
+                  }`}
+                >
+                  Unassigned ({unassignedCount})
+                </button>
+              )}
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Attendance Roll Call Table */}
-      <div className="rounded-2xl border border-slate-200 bg-white shadow-xs overflow-hidden">
+      <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-xs overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs">
             <thead>
-              <tr className="border-b border-slate-200 bg-slate-50 text-slate-600 font-semibold uppercase tracking-wider text-[11px]">
+              <tr className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/70 text-slate-600 dark:text-slate-300 font-semibold uppercase tracking-wider text-[11px]">
                 <th className="py-3 px-4">Student Scholar</th>
                 <th className="py-3 px-4">Student Index</th>
+                <th className="py-3 px-4">Academic Stream</th>
                 <th className="py-3 px-4">Certified Status ({selectedDate})</th>
                 <th className="py-3 px-4 text-right">
                   {isTeacherOrAdmin ? 'Teacher Action' : 'Verification'}
                 </th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100 text-slate-800">
+            <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-slate-800 dark:text-slate-100">
               {loading && students.length === 0 ? (
                 <tr>
-                  <td colSpan={4} className="py-10 text-center text-slate-500">
+                  <td colSpan={5} className="py-10 text-center text-slate-500">
                     <Users className="w-8 h-8 mx-auto text-slate-300 mb-2 animate-pulse" />
                     <p className="font-semibold text-slate-600 text-xs">Loading official scholar register...</p>
                   </td>
                 </tr>
               ) : students.length === 0 ? (
                 <tr>
-                  <td colSpan={4} className="py-10 text-center text-slate-500">
+                  <td colSpan={5} className="py-10 text-center text-slate-500">
                     <Users className="w-10 h-10 mx-auto text-slate-400 mb-2" />
-                    <p className="font-semibold text-slate-700 text-sm">No students registered yet in the attendance register.</p>
+                    <p className="font-semibold text-slate-700 dark:text-slate-200 text-sm">No students registered yet in the attendance register.</p>
                     <p className="text-xs text-slate-400 mt-1 max-w-sm mx-auto">
                       {isTeacherOrAdmin
                         ? 'Enter real student names above or use Bulk Import Names & Indexes to populate your class register.'
@@ -1707,14 +1824,21 @@ export const AttendancePage: React.FC = () => {
                   </td>
                 </tr>
               ) : (
-                students.map((student) => {
+                students
+                  .filter((student) => {
+                    if (streamFilter === 'all') return true;
+                    if (streamFilter === 'bio') return student.stream === 'bio';
+                    if (streamFilter === 'physical') return student.stream === 'physical';
+                    return student.stream !== 'bio' && student.stream !== 'physical';
+                  })
+                  .map((student) => {
                   const status = register[student.id] || 'present';
                   const currentRecord = attendanceRecords.find((r) => r.id === activeRecordId);
                   const checkIn = currentRecord?.checkInLogs?.find((l) => l.studentId === student.id);
                   const isEditingThisStudent = editingStudentId === student.id;
 
                   return (
-                    <tr key={student.id} className="hover:bg-slate-50/50 transition-colors">
+                    <tr key={student.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/40 transition-colors">
                       <td className="py-3 px-4">
                         <div className="flex items-center gap-2.5">
                           <div className="h-8 w-8 rounded-full bg-blue-600 text-white flex items-center justify-center font-bold text-xs shrink-0">
@@ -1748,8 +1872,8 @@ export const AttendancePage: React.FC = () => {
                           ) : (
                             <div className="flex items-center gap-2 group">
                               <div>
-                                <p className="font-bold text-slate-900">{student.fullName}</p>
-                                <p className="text-[10px] text-slate-400">Index: {student.indexNumber} • 2k28 Science EM Scholar</p>
+                                <p className="font-bold text-slate-900 dark:text-slate-100">{student.fullName}</p>
+                                <p className="text-[10px] text-slate-400">Index: {student.indexNumber} · {student.stream === 'bio' ? 'Bio Stream' : student.stream === 'physical' ? 'Physical Stream' : 'Stream Unassigned'}</p>
                               </div>
                               {isTeacherOrAdmin && (
                                 <div className="opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity flex items-center gap-1">
@@ -1777,7 +1901,56 @@ export const AttendancePage: React.FC = () => {
                         </div>
                       </td>
 
-                      <td className="py-3 px-4 font-mono font-bold text-blue-900">{student.indexNumber}</td>
+                      <td className="py-3 px-4 font-mono font-bold text-blue-900 dark:text-blue-300 tabular-nums">{student.indexNumber}</td>
+
+                      <td className="py-3 px-4 whitespace-nowrap">
+                        {isTeacherOrAdmin ? (
+                          <div
+                            role="group"
+                            aria-label={`Stream selection for ${student.fullName}`}
+                            className="inline-flex items-center rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 p-0.5 shadow-2xs"
+                          >
+                            <button
+                              type="button"
+                              onClick={() => handleUpdateStudentStream(student.id, 'bio')}
+                              className={`px-2.5 py-1 rounded-md text-[11px] font-bold transition-colors whitespace-nowrap ${
+                                student.stream === 'bio'
+                                  ? 'bg-emerald-600 text-white shadow-2xs'
+                                  : 'text-slate-600 dark:text-slate-300 hover:bg-white dark:hover:bg-slate-700'
+                              }`}
+                            >
+                              Bio
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleUpdateStudentStream(student.id, 'physical')}
+                              className={`px-2.5 py-1 rounded-md text-[11px] font-bold transition-colors whitespace-nowrap ${
+                                student.stream === 'physical'
+                                  ? 'bg-blue-600 text-white shadow-2xs'
+                                  : 'text-slate-600 dark:text-slate-300 hover:bg-white dark:hover:bg-slate-700'
+                              }`}
+                            >
+                              Physical
+                            </button>
+                          </div>
+                        ) : (
+                          <span
+                            className={`text-xs font-semibold ${
+                              student.stream === 'bio'
+                                ? 'text-emerald-700 dark:text-emerald-400'
+                                : student.stream === 'physical'
+                                ? 'text-blue-700 dark:text-blue-400'
+                                : 'text-slate-400'
+                            }`}
+                          >
+                            {student.stream === 'bio'
+                              ? 'Bio Stream'
+                              : student.stream === 'physical'
+                              ? 'Physical Stream'
+                              : 'Unassigned'}
+                          </span>
+                        )}
+                      </td>
 
                       <td className="py-3 px-4">
                         <div className="flex items-center flex-wrap gap-1.5">
@@ -1883,19 +2056,49 @@ export const AttendancePage: React.FC = () => {
               </button>
             </div>
 
-            <div className="space-y-2 text-xs">
+            <div className="space-y-3 text-xs">
+              <div>
+                <label className="block text-[11px] font-bold text-slate-700 dark:text-slate-300 uppercase tracking-wider mb-1">
+                  Default Stream for Imported Students
+                </label>
+                <div className="inline-flex items-center rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 p-1">
+                  <button
+                    type="button"
+                    onClick={() => setBulkStudentStream('bio')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${
+                      bulkStudentStream === 'bio'
+                        ? 'bg-emerald-600 text-white shadow-2xs'
+                        : 'text-slate-600 dark:text-slate-300'
+                    }`}
+                  >
+                    Bio Stream
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setBulkStudentStream('physical')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${
+                      bulkStudentStream === 'physical'
+                        ? 'bg-blue-600 text-white shadow-2xs'
+                        : 'text-slate-600 dark:text-slate-300'
+                    }`}
+                  >
+                    Physical Stream
+                  </button>
+                </div>
+              </div>
+
               <p className="text-slate-600 dark:text-slate-300">
-                Paste student names from your attendance register sheet (one scholar per line). You can optionally include their index number separated by comma (e.g. <code>Mohamed Bilal, 2K28-042</code>).
+                Paste student names from your attendance register sheet (one scholar per line). Optionally add Index Number and Stream (<code>Bio</code> or <code>Physical</code>), e.g. <code>Mohamed Bilal, 2860101, Physical</code>.
               </p>
               <textarea
-                rows={7}
-                placeholder={`Student Full Name 1, 2860101\nStudent Full Name 2, 2860102`}
+                rows={6}
+                placeholder={`Student Full Name 1, 2860101, Bio\nStudent Full Name 2, 2860102, Physical`}
                 value={bulkStudentText}
                 onChange={(e) => setBulkStudentText(e.target.value)}
                 className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 p-3 text-xs text-slate-900 dark:text-slate-100 font-mono focus:ring-2 focus:ring-blue-500 focus:outline-none"
               />
               <p className="text-[11px] text-slate-400">
-                No accounts needed — students are immediately added to the roll-call register so you can mark attendance right away.
+                Students and their Bio / Physical stream sync directly to Attendance and Marks &amp; Assessments.
               </p>
             </div>
 
