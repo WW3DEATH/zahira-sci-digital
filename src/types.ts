@@ -29,10 +29,13 @@ export interface UserProfile {
   updatedAt?: string;
 }
 
+export type StudentStream = 'bio' | 'physical';
+
 export interface RosterStudent {
   id: string; // e.g. 'roster_2860001'
   fullName: string;
   indexNumber: string; // e.g. '2860001' or '2K28-SCI-001'
+  stream?: StudentStream; // 'bio' (Biological Science) or 'physical' (Physical Science)
   classId?: string; // class cohort or 'general'
   createdAt: string;
 }
@@ -136,6 +139,30 @@ export interface TestMark {
   maxMarks: number;
   feedback?: string;
   createdAt: string;
+}
+
+export interface TermExamSubjectMark {
+  id: string;
+  subject: string;
+  marksObtained: number;
+  maxMarks: number;
+}
+
+export interface TermExamReport {
+  id: string; // `${termSlug}__${studentId}`
+  term: string;
+  studentId: string;
+  studentName: string;
+  studentIndex: string;
+  stream?: StudentStream;
+  subjects: TermExamSubjectMark[];
+  totalMarks: number;
+  totalMaxMarks: number;
+  average: number;
+  position?: string;
+  teacherRemark?: string;
+  updatedBy?: string;
+  updatedAt: string;
 }
 
 export type AttendanceStatus = 'present' | 'absent' | 'late' | 'excused';
