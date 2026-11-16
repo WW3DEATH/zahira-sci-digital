@@ -245,6 +245,13 @@ export const FAKE_ATTENDANCE_ROSTER_IDS = new Set([
   'roster_2860006',
 ]);
 
+export const FAKE_STUDENT_USER_IDS = new Set([
+  'student_aadhil',
+  'student_nuha',
+  'student_faris',
+  'student_scholar',
+]);
+
 export const FAKE_ATTENDANCE_ROSTER_NAMES = new Set([
   'm. r. mohamed aadhil',
   'fathima zahra',
@@ -262,7 +269,13 @@ export function isFakeSeedRosterStudent(docId?: string, fullName?: string): bool
   return false;
 }
 
-// Purge all legacy dummy profiles, classes, and fake attendance roster entries from Firestore
+export function isFakeAttendanceStudentKey(studentKey?: string): boolean {
+  const clean = (studentKey || '').trim();
+  if (!clean) return true;
+  return FAKE_ATTENDANCE_ROSTER_IDS.has(clean) || FAKE_STUDENT_USER_IDS.has(clean);
+}
+
+// Purge all legacy dummy profiles, classes, fake attendance roster entries, and dummy attendance logs from Firestore
 export async function purgeDummyProfilesAndClasses() {
   const dummyUserIds = [
     'student_aadhil',
@@ -303,6 +316,32 @@ export async function purgeDummyProfilesAndClasses() {
         .filter((d) => isFakeSeedRosterStudent(d.id, d.data()?.fullName))
         .map((d) => deleteDoc(doc(db, 'attendanceRoster', d.id)))
     );
+  } catch {
+    // ignore if unavailable
+  }
+
+  // Purge legacy dummy/seed attendance logs containing only fake seed student keys
+  try {
+    const attSnap = await getDocs(collection(db, 'attendance'));
+    for (const d of attSnap.docs) {
+      const data = d.data() as AttendanceRecord;
+      if (d.id.startsWith('att-seed-') || d.id.startsWith('att-demo-')) {
+        await deleteDoc(doc(db, 'attendance', d.id)).catch(() => {});
+        continue;
+      }
+      const entries = Object.entries(data?.records || {});
+      if (entries.length === 0) continue;
+      const realEntries = entries.filter(([key]) => !isFakeAttendanceStudentKey(key));
+      if (realEntries.length === 0) {
+        await deleteDoc(doc(db, 'attendance', d.id)).catch(() => {});
+      } else if (realEntries.length !== entries.length) {
+        await setDoc(
+          doc(db, 'attendance', d.id),
+          { records: Object.fromEntries(realEntries) },
+          { merge: true }
+        ).catch(() => {});
+      }
+    }
   } catch {
     // ignore if unavailable
   }
