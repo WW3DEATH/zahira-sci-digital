@@ -231,9 +231,8 @@ export const AttendancePage: React.FC = () => {
   const isDayAttendanceEnabled = isAttendanceDateEnabled(selectedDate, dayControlsMap);
   const currentDayControl = dayControlsMap[selectedDate];
 
-  const handleToggleDayAttendance = async () => {
+  const handleSetDayAttendance = async (nextEnabled: boolean) => {
     if (!isTeacherOrAdmin || togglingDay) return;
-    const nextEnabled = !isDayAttendanceEnabled;
     setTogglingDay(true);
     try {
       const payload: AttendanceDayControl = {
@@ -257,6 +256,8 @@ export const AttendancePage: React.FC = () => {
       setTogglingDay(false);
     }
   };
+
+  const handleToggleDayAttendance = () => handleSetDayAttendance(!isDayAttendanceEnabled);
 
   const handleStatusChange = (studentId: string, status: AttendanceStatus) => {
     if (!isTeacherOrAdmin || !isDayAttendanceEnabled) return;
@@ -1255,18 +1256,24 @@ export const AttendancePage: React.FC = () => {
                   disabled={togglingDay}
                   role="switch"
                   aria-checked={isDayAttendanceEnabled}
-                  className={`inline-flex items-center gap-2 rounded-xl px-3.5 py-2 text-xs font-bold transition-all border shadow-xs ${
+                  aria-label={
+                    isDayAttendanceEnabled
+                      ? `Attendance is ON for ${selectedDate}. Click to turn OFF attendance marking.`
+                      : `Attendance is OFF for ${selectedDate}. Click to turn ON attendance marking.`
+                  }
+                  className={`inline-flex items-center gap-2 rounded-xl px-3.5 py-2 text-xs font-bold transition-all border shadow-xs disabled:opacity-60 ${
                     isDayAttendanceEnabled
                       ? 'bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-700'
                       : 'bg-slate-700 hover:bg-slate-800 text-white border-slate-600'
                   }`}
                   title="Turn attendance marking ON or OFF for this day. When OFF, no attendance is needed and records do not sync with Student or Teacher graphs."
                 >
-                  <Power className="w-3.5 h-3.5" />
+                  <Power className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
                   <span>
                     Attendance: {isDayAttendanceEnabled ? 'ON' : 'OFF'}
                   </span>
                   <span
+                    aria-hidden="true"
                     className={`w-8 h-4 rounded-full p-0.5 flex items-center transition-colors ${
                       isDayAttendanceEnabled ? 'bg-emerald-900/50 justify-end' : 'bg-slate-900/60 justify-start'
                     }`}
@@ -1350,19 +1357,20 @@ export const AttendancePage: React.FC = () => {
             {isTeacherOrAdmin && (
               <button
                 type="button"
-                onClick={handleToggleDayAttendance}
+                onClick={() => handleSetDayAttendance(true)}
                 disabled={togglingDay}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 text-[11px] font-bold shrink-0 shadow-2xs"
+                aria-label={`Turn ON attendance for ${selectedDate}`}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white px-3 py-1.5 text-[11px] font-bold shrink-0 shadow-2xs"
               >
-                <Power className="w-3 h-3" />
+                <Power className="w-3 h-3" aria-hidden="true" />
                 <span>Turn ON Attendance</span>
               </button>
             )}
           </div>
         ) : (
-          <div className="rounded-xl border border-emerald-200 dark:border-emerald-900/60 bg-emerald-50/60 dark:bg-emerald-950/20 px-3.5 py-2 flex flex-wrap items-center justify-between gap-2 text-[11px] text-emerald-900 dark:text-emerald-300">
+          <div className="rounded-xl border border-emerald-200 dark:border-emerald-900/60 bg-emerald-50/60 dark:bg-emerald-950/20 px-3.5 py-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-[11px] text-emerald-900 dark:text-emerald-300">
             <div className="flex items-center gap-2">
-              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" aria-hidden="true" />
               <span>
                 Marking Register:{' '}
                 <strong>
@@ -1371,9 +1379,23 @@ export const AttendancePage: React.FC = () => {
                 on <strong>{selectedDate}</strong> • Syncs live with Student &amp; Teacher graphs when saved.
               </span>
             </div>
-            <span className="font-bold text-emerald-700 dark:text-emerald-400">
-              {savedSessionsCountToday} saved register(s) on {selectedDate}
-            </span>
+            <div className="flex flex-wrap items-center gap-2 shrink-0">
+              <span className="font-bold text-emerald-700 dark:text-emerald-400">
+                {savedSessionsCountToday} saved register(s) on {selectedDate}
+              </span>
+              {isTeacherOrAdmin && (
+                <button
+                  type="button"
+                  onClick={() => handleSetDayAttendance(false)}
+                  disabled={togglingDay}
+                  aria-label={`Turn OFF attendance for ${selectedDate}`}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-slate-700 hover:bg-slate-800 disabled:opacity-60 text-white px-3 py-1.5 text-[11px] font-bold shadow-2xs"
+                >
+                  <Power className="w-3 h-3" aria-hidden="true" />
+                  <span>Turn OFF Attendance</span>
+                </button>
+              )}
+            </div>
           </div>
         )}
       </div>
