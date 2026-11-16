@@ -18,8 +18,20 @@ import { jsPDF } from 'jspdf';
 import { collection, onSnapshot } from 'firebase/firestore';
 import { db } from '../../firebase';
 import { useAuth } from '../../context/AuthContext';
-import { UserProfile, TestMark } from '../../types';
+import {
+  UserProfile,
+  TestMark,
+  AttendanceRecord,
+  AttendanceDayControl,
+  RosterStudent,
+} from '../../types';
 import { PDFPreviewModal, PDFPreviewData } from '../common/PDFPreviewModal';
+import { LiveMorphIcon, LiveOrbitalScienceGraphic } from '../common/LiveVisuals';
+import {
+  getMatchingStudentIds,
+  isAttendanceRecordActive,
+  resolveStudentStatusInRecord,
+} from '../../utils/attendanceUtils';
 
 interface ParentDashboardProps {
   onNavigate: (page: string) => void;
@@ -35,6 +47,9 @@ export const ParentDashboard: React.FC<ParentDashboardProps> = ({
   const [students, setStudents] = useState<UserProfile[]>([]);
   const [selectedStudentId, setSelectedStudentId] = useState('');
   const [testMarks, setTestMarks] = useState<TestMark[]>([]);
+  const [attendanceRecords, setAttendanceRecords] = useState<AttendanceRecord[]>([]);
+  const [dayControlsMap, setDayControlsMap] = useState<Record<string, AttendanceDayControl>>({});
+  const [rosterStudents, setRosterStudents] = useState<RosterStudent[]>([]);
 
   useEffect(() => {
     const unsubUsers = onSnapshot(collection(db, 'userProfiles'), (snap) => {
@@ -55,9 +70,34 @@ export const ParentDashboard: React.FC<ParentDashboardProps> = ({
       setTestMarks(list);
     });
 
+    const unsubAttendance = onSnapshot(collection(db, 'attendance'), (snap) => {
+      const list: AttendanceRecord[] = [];
+      snap.forEach((d) => list.push({ ...(d.data() as AttendanceRecord), id: d.id }));
+      setAttendanceRecords(list);
+    });
+
+    const unsubDaySettings = onSnapshot(collection(db, 'attendanceDaySettings'), (snap) => {
+      const map: Record<string, AttendanceDayControl> = {};
+      snap.forEach((d) => {
+        const data = d.data() as AttendanceDayControl;
+        const dateKey = data.date || d.id;
+        if (dateKey) map[dateKey] = { ...data, id: d.id, date: dateKey };
+      });
+      setDayControlsMap(map);
+    });
+
+    const unsubRoster = onSnapshot(collection(db, 'attendanceRoster'), (snap) => {
+      const list: RosterStudent[] = [];
+      snap.forEach((d) => list.push({ ...(d.data() as RosterStudent), id: d.id }));
+      setRosterStudents(list);
+    });
+
     return () => {
       unsubUsers();
       unsubMarks();
+      unsubAttendance();
+      unsubDaySettings();
+      unsubRoster();
     };
   }, [selectedStudentId]);
 
@@ -66,7 +106,7 @@ export const ParentDashboard: React.FC<ParentDashboardProps> = ({
       userId: 'zahira_student',
       fullName: 'Enrolled Scholar',
       email: 'scholar@zahira.edu',
-      role: 'student',
+      role: 'student' as const,
       bio: 'Zahira College 2k28 Science EM Scholar',
       createdAt: '',
     };
@@ -75,6 +115,23 @@ export const ParentDashboard: React.FC<ParentDashboardProps> = ({
   const totalScore = studentMarks.reduce((sum, m) => sum + m.marksObtained, 0);
   const totalMax = studentMarks.reduce((sum, m) => sum + m.maxMarks, 0);
   const averagePercent = totalMax > 0 ? Math.round((totalScore / totalMax) * 100) : 92.5;
+
+  const candidateIds = getMatchingStudentIds(currentStudent, rosterStudents);
+  const activeStudentAttRecords = attendanceRecords.filter(
+    (rec) =>
+      isAttendanceRecordActive(rec, dayControlsMap) &&
+      resolveStudentStatusInRecord(rec, candidateIds) !== undefined
+  );
+  const presentWeighted = activeStudentAttRecords.reduce((sum, rec) => {
+    const st = resolveStudentStatusInRecord(rec, candidateIds);
+    if (st === 'present' || st === 'excused') return sum + 1;
+    if (st === 'late') return sum + 0.5;
+    return sum;
+  }, 0);
+  const realAttendanceRate =
+    activeStudentAttRecords.length > 0
+      ? `${Math.round((presentWeighted / activeStudentAttRecords.length) * 100)}%`
+      : '—';
 
   const subjects = [
     { code: 'CMATH-28', name: 'Combined Mathematics', score: 92, max: 100, grade: 'A', remarks: 'Exceptional calculus problem-solving and trigonometry fluency.' },
@@ -158,7 +215,15 @@ export const ParentDashboard: React.FC<ParentDashboardProps> = ({
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(10);
     doc.setTextColor(15, 23, 42);
-    doc.text('Term Attendance Rate: 98.5% (Exemplary)', 20, y);
+    doc.text(
+      `Term Attendance Rate: ${realAttendanceRate} (${
+        activeStudentAttRecords.length > 0
+          ? `${activeStudentAttRecords.length} saved session(s)`
+          : 'No saved attendance yet'
+      })`,
+      20,
+      y
+    );
 
     y += 18;
     doc.setFont('helvetica', 'normal');
@@ -205,11 +270,12 @@ export const ParentDashboard: React.FC<ParentDashboardProps> = ({
   return (
     <div className="space-y-8 animate-in fade-in duration-300">
       {/* Top Banner */}
-      <div className="rounded-2xl border border-stone-200 bg-gradient-to-r from-stone-900 via-stone-800 to-stone-900 p-6 md:p-8 text-white shadow-xl">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+      <div className="live-gradient-banner relative overflow-hidden rounded-2xl border border-stone-200 bg-gradient-to-r from-stone-900 via-stone-800 to-stone-900 p-6 md:p-8 text-white shadow-xl">
+        <LiveOrbitalScienceGraphic className="w-24 h-24 opacity-20 pointer-events-none hidden lg:block absolute right-6 top-3" />
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 relative z-10">
           <div>
             <div className="inline-flex items-center gap-1.5 rounded-full bg-amber-400/20 px-3 py-1 text-xs font-semibold text-amber-300 border border-amber-400/30">
-              <Users className="w-3.5 h-3.5" />
+              <LiveMorphIcon icons={[Users, ShieldCheck, Sparkles]} intervalMs={2500} className="w-3.5 h-3.5" />
               <span>Parent / Guardian Portal</span>
             </div>
             <h2 className="font-serif text-2xl md:text-3xl font-bold tracking-tight text-white mt-2">
@@ -265,7 +331,7 @@ export const ParentDashboard: React.FC<ParentDashboardProps> = ({
           <div className="flex items-center justify-between text-stone-500">
             <span className="text-xs font-semibold uppercase tracking-wider">Overall Standing</span>
             <div className="p-2 rounded-xl bg-emerald-50 text-emerald-700">
-              <Award className="w-4 h-4" />
+              <LiveMorphIcon icons={[Award, Sparkles, CheckCircle2]} intervalMs={2600} className="w-4 h-4" />
             </div>
           </div>
           <p className="font-serif text-3xl font-bold text-stone-900 mt-2">{averagePercent}%</p>
@@ -276,18 +342,22 @@ export const ParentDashboard: React.FC<ParentDashboardProps> = ({
           <div className="flex items-center justify-between text-stone-500">
             <span className="text-xs font-semibold uppercase tracking-wider">Attendance Rate</span>
             <div className="p-2 rounded-xl bg-purple-50 text-purple-700">
-              <CalendarCheck2 className="w-4 h-4" />
+              <LiveMorphIcon icons={[CalendarCheck2, Clock, CheckCircle2]} intervalMs={3000} className="w-4 h-4" />
             </div>
           </div>
-          <p className="font-serif text-3xl font-bold text-stone-900 mt-2">98.5%</p>
-          <p className="text-[11px] text-emerald-700 font-medium mt-2">Full attendance record</p>
+          <p className="font-serif text-3xl font-bold text-stone-900 mt-2">{realAttendanceRate}</p>
+          <p className="text-[11px] text-emerald-700 font-medium mt-2">
+            {activeStudentAttRecords.length > 0
+              ? `${activeStudentAttRecords.length} saved session(s)`
+              : 'No saved attendance yet'}
+          </p>
         </div>
 
         <div className="rounded-2xl border border-stone-200 bg-white p-5 shadow-xs">
           <div className="flex items-center justify-between text-stone-500">
             <span className="text-xs font-semibold uppercase tracking-wider">Completed Assignments</span>
             <div className="p-2 rounded-xl bg-sky-50 text-sky-700">
-              <FileText className="w-4 h-4" />
+              <LiveMorphIcon icons={[FileText, Award, CheckCircle2]} intervalMs={3400} className="w-4 h-4" />
             </div>
           </div>
           <p className="font-serif text-3xl font-bold text-stone-900 mt-2">100%</p>
@@ -298,7 +368,7 @@ export const ParentDashboard: React.FC<ParentDashboardProps> = ({
           <div className="flex items-center justify-between text-stone-500">
             <span className="text-xs font-semibold uppercase tracking-wider">Faculty Authority</span>
             <div className="p-2 rounded-xl bg-amber-50 text-amber-700">
-              <MessageSquare className="w-4 h-4" />
+              <LiveMorphIcon icons={[MessageSquare, ShieldCheck, Users]} intervalMs={2800} className="w-4 h-4" />
             </div>
           </div>
           <p className="font-serif text-base font-bold text-stone-900 mt-2">Zahira College Mawanella Science Project management</p>
