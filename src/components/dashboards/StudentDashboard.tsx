@@ -52,10 +52,28 @@ import {
   Cell,
 } from 'recharts';
 import { collection, onSnapshot } from 'firebase/firestore';
-import { db } from '../../firebase';
-import { Assignment, Quiz, TestMark, Submission, AttendanceRecord, QuizAttempt, Discussion, DiscussionReply } from '../../types';
+import { db, handleFirestoreError, OperationType } from '../../firebase';
+import {
+  Assignment,
+  Quiz,
+  TestMark,
+  Submission,
+  AttendanceRecord,
+  AttendanceDayControl,
+  RosterStudent,
+  QuizAttempt,
+  Discussion,
+  DiscussionReply,
+} from '../../types';
 import { useAuth } from '../../context/AuthContext';
 import { useTheme } from '../../context/ThemeContext';
+import {
+  LiveMorphIcon,
+  LivePaperScannerGraphic,
+  LiveOrbitalScienceGraphic,
+  HERO_SCIENCE_ICONS,
+  LAB_CYCLE_ICONS,
+} from '../common/LiveVisuals';
 import {
   SEED_ASSIGNMENTS,
   SEED_SUBMISSIONS,
@@ -70,6 +88,11 @@ import { checkUpcomingDeadlinesAndNotify, requestNotificationPermission } from '
 import { QRAttendanceModal } from '../attendance/QRAttendanceModal';
 import { AIStudyPlannerModal } from '../study/AIStudyPlannerModal';
 import { ensureStudentIndexNumber } from '../../services/studentIndexService';
+import {
+  getMatchingStudentIds,
+  isAttendanceRecordActive,
+  resolveStudentStatusInRecord,
+} from '../../utils/attendanceUtils';
 
 interface StudentDashboardProps {
   onNavigate: (page: string) => void;
@@ -87,6 +110,8 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
   const [quizzes, setQuizzes] = useState<Quiz[]>([]);
   const [marks, setMarks] = useState<TestMark[]>([]);
   const [attendance, setAttendance] = useState<AttendanceRecord[]>(SEED_ATTENDANCE);
+  const [dayControlsMap, setDayControlsMap] = useState<Record<string, AttendanceDayControl>>({});
+  const [rosterStudents, setRosterStudents] = useState<RosterStudent[]>([]);
   const [quizAttempts, setQuizAttempts] = useState<QuizAttempt[]>([]);
   const [discussions, setDiscussions] = useState<Discussion[]>(SEED_DISCUSSIONS);
   const [discussionReplies, setDiscussionReplies] = useState<DiscussionReply[]>(SEED_DISCUSSION_REPLIES);
@@ -137,8 +162,31 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
 
     const unsubAttendance = onSnapshot(collection(db, 'attendance'), (snap) => {
       const list: AttendanceRecord[] = [];
-      snap.forEach((d) => list.push(d.data() as AttendanceRecord));
-      if (list.length > 0) setAttendance(list);
+      snap.forEach((d) => {
+        const rec = d.data() as AttendanceRecord;
+        list.push({ ...rec, id: rec.id || d.id });
+      });
+      setAttendance(list);
+    });
+
+    const unsubDaySettings = onSnapshot(
+      collection(db, 'attendanceDaySettings'),
+      (snap) => {
+        const map: Record<string, AttendanceDayControl> = {};
+        snap.forEach((d) => {
+          const data = d.data() as AttendanceDayControl;
+          const dateKey = data.date || d.id;
+          if (dateKey) map[dateKey] = { ...data, id: d.id, date: dateKey };
+        });
+        setDayControlsMap(map);
+      },
+      (error) => handleFirestoreError(error, OperationType.LIST, 'attendanceDaySettings')
+    );
+
+    const unsubRoster = onSnapshot(collection(db, 'attendanceRoster'), (snap) => {
+      const list: RosterStudent[] = [];
+      snap.forEach((d) => list.push({ ...(d.data() as RosterStudent), id: d.id }));
+      setRosterStudents(list);
     });
 
     const unsubAttempts = onSnapshot(collection(db, 'quizAttempts'), (snap) => {
@@ -177,6 +225,8 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
       unsubSubmissions();
       unsubQuizzes();
       unsubAttendance();
+      unsubDaySettings();
+      unsubRoster();
       unsubAttempts();
       unsubDiscussions();
       unsubReplies();
@@ -196,11 +246,102 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
     setBrowserPermission(res);
   };
 
+  // Match logged-in student across Auth profile ID & Attendance Roll-Call roster, strictly on active (ON) days
+  const candidateStudentIds = React.useMemo(
+    () => getMatchingStudentIds(userProfile, rosterStudents),
+    [userProfile, rosterStudents]
+  );
+
+  const activeAttendanceRecords = React.useMemo(
+    () => attendance.filter((rec) => isAttendanceRecordActive(rec, dayControlsMap)),
+    [attendance, dayControlsMap]
+  );
+
+  const studentAttendanceTrendData = React.useMemo(() => {
+    const sorted = [...activeAttendanceRecords].sort((a, b) => {
+      const dateCmp = (a.date || '').localeCompare(b.date || '');
+      if (dateCmp !== 0) return dateCmp;
+      return (a.createdAt || '').localeCompare(b.createdAt || '');
+    });
+
+    // Include sessions where the student has an explicit entry
+    const matched = sorted
+      .map((rec) => {
+        const status = resolveStudentStatusInRecord(rec, candidateStudentIds);
+        if (!status) return null;
+        return { rec, status };
+      })
+      .filter((x): x is NonNullable<typeof x> => x !== null);
+
+    const countByDate = new Map<string, number>();
+    matched.forEach((m) => countByDate.set(m.rec.date, (countByDate.get(m.rec.date) || 0) + 1));
+
+    let presentOrExcusedCount = 0;
+    let lateCount = 0;
+
+    return matched.map(({ rec, status }, idx) => {
+      if (status === 'present' || status === 'excused') presentOrExcusedCount++;
+      else if (status === 'late') lateCount++;
+
+      const sessionScore =
+        status === 'present' || status === 'excused' ? 100 : status === 'late' ? 50 : 0;
+      const cumulativeRate = Math.round(
+        ((presentOrExcusedCount + lateCount * 0.5) / (idx + 1)) * 100
+      );
+
+      const parsedDate = new Date(`${rec.date}T00:00:00`);
+      const validDate = !Number.isNaN(parsedDate.getTime());
+      const shortDate = validDate
+        ? parsedDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+        : rec.date;
+      const fullDate = validDate
+        ? parsedDate.toLocaleDateString('en-US', {
+            weekday: 'short',
+            month: 'short',
+            day: 'numeric',
+            year: 'numeric',
+          })
+        : rec.date;
+      const sessionLabel = rec.sessionSubject || 'Daily Roll-Call';
+      const hasMultipleToday = (countByDate.get(rec.date) || 0) > 1;
+      const shortSubject = sessionLabel.length > 9 ? `${sessionLabel.slice(0, 8)}…` : sessionLabel;
+
+      return {
+        id: rec.id,
+        date: rec.date,
+        displayDate: hasMultipleToday ? `${shortDate} (${shortSubject})` : shortDate,
+        fullDate,
+        sessionLabel,
+        timeSlot: rec.timeSlot || '',
+        status,
+        sessionScore,
+        cumulativeRate,
+      };
+    });
+  }, [activeAttendanceRecords, candidateStudentIds]);
+
+  const studentAttTotal = studentAttendanceTrendData.length;
+  const studentAttPresent = studentAttendanceTrendData.filter(
+    (d) => d.status === 'present' || d.status === 'late' || d.status === 'excused'
+  ).length;
+  const studentAttRate =
+    studentAttTotal > 0
+      ? `${Math.round(
+          (studentAttendanceTrendData.reduce(
+            (sum, d) => sum + (d.status === 'present' || d.status === 'excused' ? 1 : d.status === 'late' ? 0.5 : 0),
+            0
+          ) /
+            studentAttTotal) *
+            100
+        )}%`
+      : '—';
+
   const badgeSummary = calculateStudentBadges({
     studentId: userProfile?.userId || 'student_scholar',
+    candidateIds: candidateStudentIds,
     submissions,
     quizAttempts,
-    attendanceRecords: attendance,
+    attendanceRecords: activeAttendanceRecords,
     totalAssignmentsCount: assignments.length,
     assignments,
     discussions,
@@ -327,11 +468,12 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
   return (
     <div className="space-y-8 animate-in fade-in duration-300">
       {/* Top Banner - Collegiate Royal Blue & Crimson */}
-      <div className="rounded-2xl border border-blue-900 bg-gradient-to-r from-blue-950 via-blue-900 to-indigo-950 p-6 md:p-8 text-white shadow-xl">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+      <div className="live-gradient-banner relative overflow-hidden rounded-2xl border border-blue-900 bg-gradient-to-r from-blue-950 via-blue-900 to-indigo-950 p-6 md:p-8 text-white shadow-xl">
+        <LiveOrbitalScienceGraphic className="w-24 h-24 opacity-20 pointer-events-none hidden xl:block absolute right-6 top-3" />
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 relative z-10">
           <div>
             <div className="inline-flex items-center gap-1.5 rounded-full bg-red-600 px-3 py-1 text-xs font-bold text-white shadow-sm">
-              <Sparkles className="w-3.5 h-3.5" />
+              <LiveMorphIcon icons={HERO_SCIENCE_ICONS} intervalMs={2200} className="w-3.5 h-3.5" />
               <span>Zahira College Mawanella • 2k28 Science EM Scholar Portal</span>
             </div>
             <h2 className="font-serif text-2xl md:text-3xl font-bold tracking-tight text-white mt-2 flex items-center flex-wrap gap-2">
@@ -402,11 +544,11 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
       </div>
 
       {/* VIRTUAL SCIENCE LABS QUICK ACCESS FEATURE BANNER */}
-      <div className="rounded-2xl border border-emerald-500/30 bg-gradient-to-r from-emerald-500/10 via-teal-500/10 to-indigo-500/10 dark:from-emerald-950/40 dark:via-teal-950/30 dark:to-slate-900/40 p-5 md:p-6 shadow-sm">
+      <div className="live-gradient-banner rounded-2xl border border-emerald-500/30 bg-gradient-to-r from-emerald-500/10 via-teal-500/10 to-indigo-500/10 dark:from-emerald-950/40 dark:via-teal-950/30 dark:to-slate-900/40 p-5 md:p-6 shadow-sm">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div className="flex items-start gap-3.5">
             <div className="p-3 rounded-xl bg-emerald-600 text-white shadow-md shrink-0">
-              <FlaskConical className="w-6 h-6" />
+              <LiveMorphIcon icons={LAB_CYCLE_ICONS} intervalMs={2000} className="w-6 h-6" />
             </div>
             <div>
               <div className="flex items-center gap-2">
@@ -524,7 +666,7 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
           <div className="flex items-center justify-between text-slate-500 dark:text-slate-400">
             <span className="text-xs font-semibold uppercase tracking-wider">Overall Academic Average</span>
             <div className="p-2 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-400">
-              <Award className="w-4 h-4" />
+              <LiveMorphIcon icons={[Award, TrendingUp, Sparkles]} intervalMs={2500} className="w-4 h-4" />
             </div>
           </div>
           <p className="font-serif text-3xl font-bold text-slate-900 dark:text-slate-100 mt-2">{gpaPercent}</p>
@@ -547,7 +689,7 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
           <div className="flex items-center justify-between text-slate-500 dark:text-slate-400">
             <span className="text-xs font-semibold uppercase tracking-wider">Task Completion Rate</span>
             <div className="p-2 rounded-xl bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-400">
-              <CheckCircle2 className="w-4 h-4" />
+              <LiveMorphIcon icons={[CheckCircle2, FileCheck2, Target]} intervalMs={2900} className="w-4 h-4" />
             </div>
           </div>
           <p className="font-serif text-3xl font-bold text-blue-600 dark:text-blue-400 mt-2">{completionPercentage}%</p>
@@ -556,22 +698,27 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
           </p>
         </div>
 
-        <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 shadow-xs transition-colors">
+        <div
+          onClick={() => onNavigate('attendance')}
+          className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 shadow-xs transition-colors cursor-pointer hover:border-purple-400"
+        >
           <div className="flex items-center justify-between text-slate-500 dark:text-slate-400">
             <span className="text-xs font-semibold uppercase tracking-wider">Attendance Standing</span>
             <div className="p-2 rounded-xl bg-purple-50 dark:bg-purple-950/40 text-purple-700 dark:text-purple-400">
-              <CalendarCheck2 className="w-4 h-4" />
+              <LiveMorphIcon icons={[CalendarCheck2, Clock, CheckCircle]} intervalMs={3300} className="w-4 h-4" />
             </div>
           </div>
-          <p className="font-serif text-3xl font-bold text-slate-900 dark:text-slate-100 mt-2">98.5%</p>
-          <p className="text-[11px] text-emerald-700 dark:text-emerald-400 font-medium mt-2">Certified Faculty Record</p>
+          <p className="font-serif text-3xl font-bold text-slate-900 dark:text-slate-100 mt-2">{studentAttRate}</p>
+          <p className="text-[11px] text-emerald-700 dark:text-emerald-400 font-medium mt-2">
+            {studentAttTotal > 0 ? `${studentAttPresent} of ${studentAttTotal} active session(s)` : 'No saved attendance yet'}
+          </p>
         </div>
 
         <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 shadow-xs transition-colors">
           <div className="flex items-center justify-between text-slate-500 dark:text-slate-400">
             <span className="text-xs font-semibold uppercase tracking-wider">Active Stream Rank</span>
             <div className="p-2 rounded-xl bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-400">
-              <Sparkles className="w-4 h-4" />
+              <LiveMorphIcon icons={[Sparkles, Flame, Zap]} intervalMs={2700} className="w-4 h-4" />
             </div>
           </div>
           <p className="font-serif text-3xl font-bold text-slate-900 dark:text-slate-100 mt-2">Top 5%</p>
@@ -829,7 +976,7 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
             {/* Area & Line Chart or Clean Empty State */}
             {gradeTrendsData.length === 0 ? (
               <div className="h-64 w-full mt-6 flex flex-col items-center justify-center text-center p-6 border border-dashed border-slate-200 dark:border-slate-800 rounded-2xl">
-                <FileText className="w-10 h-10 text-slate-300 dark:text-slate-600 mb-2 opacity-60" />
+                <LivePaperScannerGraphic accent="emerald" className="w-20 h-20 mb-2" />
                 <h4 className="font-bold text-slate-700 dark:text-slate-200 text-sm">No examination marks evaluated yet</h4>
                 <p className="text-xs text-slate-400 mt-1 max-w-sm">
                   Marks recorded in "Marks and Assessments" will automatically plot your academic trajectory curve here.
@@ -1033,6 +1180,117 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
             <ArrowRight className="w-3.5 h-3.5" />
           </button>
         </div>
+      </div>
+
+      {/* SAVED ATTENDANCE GRAPH (Synced ONLY with Saved Registers on Active/ON Days) */}
+      <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 shadow-xs transition-colors">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-100 dark:border-slate-800">
+          <div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <h3 className="font-serif text-lg font-bold text-slate-900 dark:text-slate-100">
+                My Attendance Record Over Time
+              </h3>
+              <span className="rounded-full bg-purple-100 dark:bg-purple-950 text-purple-700 dark:text-purple-300 text-[10px] font-bold px-2.5 py-0.5">
+                {studentAttTotal > 0 ? `${studentAttRate} • ${studentAttTotal} Saved Log(s)` : 'Synced Live'}
+              </span>
+            </div>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+              Synced strictly with teacher-saved registers on active attendance days (days turned OFF are automatically excluded)
+            </p>
+          </div>
+          <button
+            onClick={() => onNavigate('attendance')}
+            className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 dark:border-slate-700 px-3 py-1.5 text-xs font-bold text-blue-600 dark:text-blue-400 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors shrink-0 self-start sm:self-auto"
+          >
+            <span>Open Attendance Register</span>
+            <ArrowRight className="w-3.5 h-3.5" />
+          </button>
+        </div>
+
+        {studentAttendanceTrendData.length === 0 ? (
+          <div className="h-60 w-full mt-5 flex flex-col items-center justify-center text-center p-6 border border-dashed border-slate-200 dark:border-slate-800 rounded-2xl bg-slate-50/50 dark:bg-slate-800/30">
+            <LivePaperScannerGraphic accent="emerald" className="w-20 h-20 mb-2" />
+            <h4 className="font-bold text-slate-700 dark:text-slate-200 text-sm">
+              No Saved Active Attendance Logs Yet
+            </h4>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 max-w-md">
+              When your teacher turns Attendance Marking ON and saves your roll-call register for one or more classes, your real attendance graph will appear here automatically.
+            </p>
+          </div>
+        ) : (
+          <div className="h-64 w-full mt-5">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={studentAttendanceTrendData} margin={{ top: 10, right: 15, left: -20, bottom: 0 }}>
+                <defs>
+                  <linearGradient id="studentAttendanceCumGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#7c3aed" stopOpacity={0.35} />
+                    <stop offset="95%" stopColor="#7c3aed" stopOpacity={0.0} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} vertical={false} />
+                <XAxis
+                  dataKey="displayDate"
+                  tick={{ fill: textFill, fontSize: 11 }}
+                  axisLine={{ stroke: gridStroke }}
+                  tickLine={false}
+                />
+                <YAxis
+                  domain={[0, 100]}
+                  tick={{ fill: textFill, fontSize: 11 }}
+                  axisLine={{ stroke: gridStroke }}
+                  tickLine={false}
+                  tickFormatter={(v) => `${v}%`}
+                />
+                <Tooltip
+                  contentStyle={{
+                    backgroundColor: tooltipBg,
+                    borderColor: tooltipBorder,
+                    borderRadius: '12px',
+                    fontSize: '12px',
+                    color: isDark ? '#f8fafc' : '#0f172a',
+                    boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.1)',
+                  }}
+                  formatter={(val: any, name?: any) => [
+                    `${val}%`,
+                    name === 'cumulativeRate' ? 'Cumulative Attendance Rate' : 'Session Score',
+                  ]}
+                  labelFormatter={(_label, payload) => {
+                    const p = payload?.[0]?.payload;
+                    if (!p) return '';
+                    return `${p.fullDate} • ${p.sessionLabel}${p.timeSlot ? ` (${p.timeSlot})` : ''} • Status: ${String(p.status).toUpperCase()}`;
+                  }}
+                />
+                <Legend
+                  verticalAlign="top"
+                  align="right"
+                  height={30}
+                  formatter={(val) => (
+                    <span className="text-[11px] font-semibold text-slate-700 dark:text-slate-300">
+                      {val === 'cumulativeRate' ? 'Running Attendance Rate (%)' : 'Session Attendance (%)'}
+                    </span>
+                  )}
+                />
+                <Area
+                  type="monotone"
+                  dataKey="cumulativeRate"
+                  stroke="#7c3aed"
+                  strokeWidth={2.5}
+                  fillOpacity={1}
+                  fill="url(#studentAttendanceCumGrad)"
+                  dot={{ r: 3.5, fill: '#7c3aed' }}
+                />
+                <Line
+                  type="monotone"
+                  dataKey="sessionScore"
+                  stroke="#10b981"
+                  strokeWidth={2}
+                  strokeDasharray="4 4"
+                  dot={{ r: 3, fill: '#10b981' }}
+                />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        )}
       </div>
 
       {/* CHART 3: MONTHLY ASSIGNMENT FLOW & SUBJECT MASTERY ROW */}
