@@ -21,6 +21,7 @@ import {
   KeyRound,
   Eye,
   EyeOff,
+  Atom,
 } from 'lucide-react';
 import * as math from 'mathjs';
 import { collection, onSnapshot } from 'firebase/firestore';
@@ -29,6 +30,7 @@ import { useAuth } from '../../context/AuthContext';
 import { Assignment, Submission, SchoolEvent } from '../../types';
 import { SEED_ASSIGNMENTS, SEED_SUBMISSIONS, SEED_SCHOOL_EVENTS } from '../../services/dataService';
 import { AIMarkdownMath } from './AIMarkdownMath';
+import { LiveMorphIcon } from './LiveVisuals';
 import { getApiUrl } from '../../services/apiConfig';
 import { generateClientStudentAssistantFallback } from '../../services/localTutorFallback';
 
@@ -766,7 +768,7 @@ export const StudentAIChatWidget: React.FC<StudentAIChatWidgetProps> = ({ onNavi
         className={`group relative flex items-center gap-2.5 rounded-full p-3 sm:px-4 sm:py-3 shadow-xl transition-all duration-300 cursor-pointer ${
           isOpen
             ? 'bg-slate-900 text-white hover:bg-slate-800'
-            : 'bg-gradient-to-r from-blue-700 via-blue-600 to-blue-800 text-white hover:scale-105 active:scale-95 shadow-blue-500/25 ring-4 ring-white/80'
+            : 'live-gradient-banner bg-gradient-to-r from-blue-700 via-blue-600 to-indigo-800 text-white hover:scale-105 active:scale-95 shadow-blue-500/25 ring-4 ring-white/80'
         }`}
       >
         {isOpen ? (
@@ -777,7 +779,11 @@ export const StudentAIChatWidget: React.FC<StudentAIChatWidgetProps> = ({ onNavi
         ) : (
           <>
             <div className="relative flex items-center justify-center">
-              <Bot className="w-5 h-5 text-amber-300" />
+              <LiveMorphIcon
+                icons={[Bot, Sparkles, Calculator, Atom]}
+                intervalMs={2200}
+                className="w-5 h-5 text-amber-300"
+              />
               <span className="absolute -top-1 -right-1 flex h-2.5 w-2.5">
                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75" />
                 <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-red-500" />
