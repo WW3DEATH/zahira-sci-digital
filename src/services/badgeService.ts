@@ -291,30 +291,31 @@ export function calculateStudentBadges(params: {
 
   const lookupIds = candidateIds && candidateIds.length > 0 ? candidateIds : [studentId];
 
-  // 1. Calculate Activity Streak
-  let currentStreak = 5;
+  // 1. Calculate Activity Streak strictly from real stored or recorded activity
+  let currentStreak = 0;
   try {
     const stored = localStorage.getItem(`zahira_streak_${studentId}`);
     if (stored) {
-      currentStreak = Math.max(1, parseInt(stored, 10));
+      const parsed = parseInt(stored, 10);
+      if (!Number.isNaN(parsed) && parsed > 0) currentStreak = parsed;
     }
   } catch {
     // fallback ok
   }
 
-  // 2. Calculate Quiz Metrics
+  // 2. Calculate Quiz Metrics strictly from real attempts
   const studentAttempts = quizAttempts.filter((q) => q.studentId === studentId);
   const highestQuizScore = studentAttempts.length > 0
     ? Math.max(...studentAttempts.map((q) => (q.score / (q.maxScore || 20)) * 100))
-    : 100;
+    : 0;
 
-  const highQuizCount = studentAttempts.length > 0
-    ? studentAttempts.filter((q) => (q.score / (q.maxScore || 20)) * 100 >= 90).length
-    : 3;
+  const highQuizCount = studentAttempts.filter(
+    (q) => (q.score / (q.maxScore || 20)) * 100 >= 90
+  ).length;
 
-  const perfectScoreCount = studentAttempts.length > 0
-    ? studentAttempts.filter((q) => (q.score / (q.maxScore || 20)) * 100 >= 99.9).length
-    : 1;
+  const perfectScoreCount = studentAttempts.filter(
+    (q) => (q.score / (q.maxScore || 20)) * 100 >= 99.9
+  ).length;
 
   // 3. Calculate Attendance Metrics strictly from saved active records
   let presentSessions = 0;
@@ -334,15 +335,15 @@ export function calculateStudentBadges(params: {
 
   const attendancePercentage = totalSessions > 0 ? Math.round((presentSessions / totalSessions) * 100) : 0;
 
-  // 4. Calculate Assignment & Early Submission Metrics
+  // 4. Calculate Assignment & Early Submission Metrics strictly from real submissions
   const userSubmissions = submissions.filter((s) => s.studentId === studentId);
-  const submittedCount = Math.max(userSubmissions.length, 4);
-  const totalTasks = Math.max(totalAssignmentsCount, submittedCount);
-  const submissionRate = Math.round((submittedCount / totalTasks) * 100);
+  const submittedCount = userSubmissions.length;
+  const totalTasks = Math.max(totalAssignmentsCount, submittedCount, 0);
+  const submissionRate = totalTasks > 0 ? Math.round((submittedCount / totalTasks) * 100) : 0;
 
   const highestAssignmentMark = userSubmissions.length > 0
-    ? Math.max(...userSubmissions.map((s) => s.marksObtained ?? 92))
-    : 95;
+    ? Math.max(...userSubmissions.map((s) => s.marksObtained ?? 0))
+    : 0;
 
   // Calculate early submissions
   let earlySubmissionsCount = 0;
@@ -358,20 +359,10 @@ export function calculateStudentBadges(params: {
     }
   });
 
-  // Provide realistic benchmark for exemplary student if data is seeding
-  if (earlySubmissionsCount === 0 && userSubmissions.length > 0) {
-    earlySubmissionsCount = 2; // Seeded scholar accomplishment
-  }
-
-  // 5. Calculate Discussion Participation Metrics
+  // 5. Calculate Discussion Participation Metrics strictly from real forum activity
   const topicsAuthored = discussions.filter((d) => d.authorId === studentId).length;
   const repliesAuthored = discussionReplies.filter((r) => r.authorId === studentId).length;
-  let totalDiscussionContributions = topicsAuthored + repliesAuthored;
-
-  // Benchmark for 2k28 Science scholar
-  if (totalDiscussionContributions === 0) {
-    totalDiscussionContributions = 3; // Seeded community participation
-  }
+  const totalDiscussionContributions = topicsAuthored + repliesAuthored;
 
   // Evaluate each badge
   const badges: StudentBadge[] = ALL_BADGE_DEFINITIONS.map((def) => {
@@ -384,12 +375,12 @@ export function calculateStudentBadges(params: {
       case 'streak-3-days':
         currentValue = currentStreak;
         isUnlocked = currentStreak >= 3;
-        if (isUnlocked) unlockedAt = 'Term 1, Week 2';
+        if (isUnlocked) unlockedAt = 'Active Streak';
         break;
       case 'streak-7-days':
         currentValue = currentStreak;
         isUnlocked = currentStreak >= 7;
-        if (isUnlocked) unlockedAt = 'Term 1, Week 3';
+        if (isUnlocked) unlockedAt = 'Active Streak';
         break;
       case 'streak-14-days':
         currentValue = currentStreak;
@@ -404,20 +395,20 @@ export function calculateStudentBadges(params: {
       case 'quiz-sharp-mind':
         currentValue = Math.min(100, Math.round(highestQuizScore));
         isUnlocked = highestQuizScore >= 85;
-        if (isUnlocked) unlockedAt = 'Physics Mid-Term';
+        if (isUnlocked) unlockedAt = 'Verified Quiz';
         break;
       case 'quiz-master-3':
         currentValue = highQuizCount;
         isUnlocked = highQuizCount >= 3;
-        if (isUnlocked) unlockedAt = 'Calculus & Mechanics';
+        if (isUnlocked) unlockedAt = '3 Distinctions';
         break;
       case 'quiz-century-100':
         currentValue = Math.min(100, Math.round(highestQuizScore));
         isUnlocked = perfectScoreCount >= 1 || highestQuizScore >= 100;
-        if (isUnlocked) unlockedAt = 'Dynamics Quiz 1';
+        if (isUnlocked) unlockedAt = 'Perfect Score';
         break;
       case 'quiz-speed-demon':
-        currentValue = studentAttempts.length || 3;
+        currentValue = studentAttempts.length;
         isUnlocked = studentAttempts.length >= 5 && highestQuizScore >= 92;
         break;
 
