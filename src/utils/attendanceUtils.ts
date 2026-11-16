@@ -5,12 +5,8 @@ import {
   RosterStudent,
   UserProfile,
 } from '../types';
+import { isFakeAttendanceStudentKey } from '../services/dataService';
 
-/**
- * Builds a deterministic Firestore document ID for an attendance register.
- * Backwards-compatible with daily records (`att-${date}-${classId}`),
- * while supporting multiple distinct class/period sessions on the same date.
- */
 export function buildAttendanceRecordId(
   date: string,
   classId?: string,
@@ -24,10 +20,6 @@ export function buildAttendanceRecordId(
   return `att-${date}-${safeClassId}__${safeSessionId}`;
 }
 
-/**
- * Determines whether attendance marking & dashboard graph sync is turned ON for a given YYYY-MM-DD date.
- * Defaults to ON (true) unless explicitly turned OFF by a Teacher or Admin.
- */
 export function isAttendanceDateEnabled(
   date: string,
   dayControlsMap: Record<string, AttendanceDayControl>
@@ -37,23 +29,31 @@ export function isAttendanceDateEnabled(
   return control ? control.enabled !== false : true;
 }
 
-/**
- * Checks whether a saved AttendanceRecord should be synced to Teacher/Student/Admin/Parent graphs & KPIs.
- * Strictly requires non-empty saved records AND the day's attendance toggle to be ON.
- */
-export function isAttendanceRecordActive(
+export function getValidAttendanceRecordsMap(
   rec: AttendanceRecord,
-  dayControlsMap: Record<string, AttendanceDayControl>
-): boolean {
-  if (!rec || !rec.date || !rec.records) return false;
-  if (Object.keys(rec.records).length === 0) return false;
-  return isAttendanceDateEnabled(rec.date, dayControlsMap);
+  validStudentIds?: Set<string>
+): Record<string, AttendanceStatus> {
+  if (!rec?.records) return {};
+  const result: Record<string, AttendanceStatus> = {};
+  for (const [key, status] of Object.entries(rec.records)) {
+    if (isFakeAttendanceStudentKey(key)) continue;
+    if (validStudentIds && validStudentIds.size > 0 && !validStudentIds.has(key)) continue;
+    if (status) result[key] = status;
+  }
+  return result;
 }
 
-/**
- * Resolves all candidate student IDs (Firebase UID + matching roll-call roster IDs by index or name)
- * so attendance marked for roster entries accurately syncs to the logged-in student's account.
- */
+export function isAttendanceRecordActive(
+  rec: AttendanceRecord,
+  dayControlsMap: Record<string, AttendanceDayControl>,
+  validStudentIds?: Set<string>
+): boolean {
+  if (!rec || !rec.date || !rec.records) return false;
+  if (rec.id?.startsWith('att-seed-') || rec.id?.startsWith('att-demo-')) return false;
+  if (!isAttendanceDateEnabled(rec.date, dayControlsMap)) return false;
+  return Object.keys(getValidAttendanceRecordsMap(rec, validStudentIds)).length > 0;
+}
+
 export function getMatchingStudentIds(
   userProfile: Pick<UserProfile, 'userId' | 'indexNumber' | 'fullName'> | null | undefined,
   rosterStudents: RosterStudent[]
@@ -77,9 +77,6 @@ export function getMatchingStudentIds(
   return Array.from(new Set([userProfile?.userId, ...matchingRosterIds].filter(Boolean) as string[]));
 }
 
-/**
- * Looks up a student's attendance status inside a single AttendanceRecord across candidate IDs.
- */
 export function resolveStudentStatusInRecord(
   rec: AttendanceRecord,
   candidateIds: string[]
