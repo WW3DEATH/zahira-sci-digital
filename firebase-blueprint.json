@@ -150,6 +150,42 @@
       },
       "required": ["id", "testId", "studentId", "marksObtained", "maxMarks"]
     },
+    "attendanceRosterStudent": {
+      "title": "Attendance Roster Student",
+      "description": "Roll-call student entry with index number and assigned academic stream (bio or physical)",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "fullName": { "type": "string" },
+        "indexNumber": { "type": "string" },
+        "stream": { "type": "string", "enum": ["bio", "physical"] },
+        "classId": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "fullName", "indexNumber"]
+    },
+    "termExamReport": {
+      "title": "Term Exam Report Sheet",
+      "description": "Per-student, per-term exam mark sheet containing subjects, marks, total, average, and stream position for official report cards",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "term": { "type": "string" },
+        "studentId": { "type": "string" },
+        "studentName": { "type": "string" },
+        "studentIndex": { "type": "string" },
+        "stream": { "type": "string", "enum": ["bio", "physical"] },
+        "subjects": { "type": "array" },
+        "totalMarks": { "type": "number" },
+        "totalMaxMarks": { "type": "number" },
+        "average": { "type": "number" },
+        "position": { "type": "string" },
+        "teacherRemark": { "type": "string" },
+        "updatedBy": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "term", "studentId", "studentName", "subjects", "totalMarks", "totalMaxMarks", "average"]
+    },
     "attendance": {
       "title": "Daily Attendance",
       "description": "Daily attendance roster log for a class or academic session",
@@ -473,6 +509,14 @@
     "/attendance/{attendanceId}": {
       "schema": { "$ref": "attendance" },
       "description": "Class daily and session-level attendance registers"
+    },
+    "/attendanceRoster/{studentId}": {
+      "schema": { "$ref": "attendanceRosterStudent" },
+      "description": "Roll-call student roster synced across Attendance and Marks & Assessments with Bio/Physical stream assignment"
+    },
+    "/termExamReports/{reportId}": {
+      "schema": { "$ref": "termExamReport" },
+      "description": "Term exam marks, averages, totals, and positions per student for certified PDF report cards"
     },
     "/attendanceDaySettings/{date}": {
       "schema": { "$ref": "attendanceDayControl" },
