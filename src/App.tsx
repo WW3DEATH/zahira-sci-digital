@@ -32,6 +32,7 @@ import { PvPQuizArenaPage } from './pages/PvPQuizArenaPage';
 import { AboutUsPage } from './pages/AboutUsPage';
 import { AuthModal } from './components/common/AuthModal';
 import { StudentAIChatWidget } from './components/common/StudentAIChatWidget';
+import { CursorEffect } from './components/common/CursorEffect';
 import {
   LayoutDashboard,
   Calendar,
@@ -309,6 +310,9 @@ const MainApp: React.FC = () => {
 
       {/* Floating AI Chat Widget */}
       <StudentAIChatWidget onNavigate={setCurrentPage} />
+
+      {/* Global Interactive Cursor & Tap Burst Effect */}
+      <CursorEffect />
     </div>
   );
 };
