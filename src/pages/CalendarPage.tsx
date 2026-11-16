@@ -27,12 +27,13 @@ import {
   Layers,
   CheckSquare,
   Eye,
+  Power,
 } from 'lucide-react';
 import { collection, doc, onSnapshot, setDoc, deleteDoc } from 'firebase/firestore';
 import { jsPDF } from 'jspdf';
 import { db, sanitizeFirestoreDoc, handleFirestoreError, OperationType } from '../firebase';
 import { useAuth } from '../context/AuthContext';
-import { SchoolEvent, SchoolEventType, AttendanceRecord, AttendanceStatus, UserProfile, SchoolClass, ScheduledClass, RosterStudent } from '../types';
+import { SchoolEvent, SchoolEventType, AttendanceRecord, AttendanceStatus, AttendanceDayControl, UserProfile, SchoolClass, ScheduledClass, RosterStudent } from '../types';
 import {
   syncGoogleCalendarToFirestore,
   createGoogleCalendarEvent,
@@ -40,6 +41,11 @@ import {
 } from '../services/googleCalendarService';
 import { PDFPreviewModal, PDFPreviewData } from '../components/common/PDFPreviewModal';
 import { isFakeSeedRosterStudent } from '../services/dataService';
+import {
+  buildAttendanceRecordId,
+  isAttendanceDateEnabled,
+  isAttendanceRecordActive,
+} from '../utils/attendanceUtils';
 
 export interface CalendarPageProps {
   initialTab?: 'events' | 'attendance';
@@ -86,6 +92,8 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
   const [attendanceDate, setAttendanceDate] = useState(() => new Date().toISOString().split('T')[0]);
   const [register, setRegister] = useState<Record<string, AttendanceStatus>>({});
   const [attendanceSaved, setAttendanceSaved] = useState(false);
+  const [dayControlsMap, setDayControlsMap] = useState<Record<string, AttendanceDayControl>>({});
+  const [togglingDay, setTogglingDay] = useState(false);
 
   // Scheduled Classes State
   const [scheduledClasses, setScheduledClasses] = useState<ScheduledClass[]>([]);
@@ -159,6 +167,24 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
     });
     return () => unsub();
   }, [selectedClassId, attendanceDate]);
+
+  // 2b. Real-time listener for per-date Attendance ON/OFF controls
+  useEffect(() => {
+    const unsub = onSnapshot(
+      collection(db, 'attendanceDaySettings'),
+      (snap) => {
+        const map: Record<string, AttendanceDayControl> = {};
+        snap.forEach((d) => {
+          const data = d.data() as AttendanceDayControl;
+          const dateKey = data.date || d.id;
+          if (dateKey) map[dateKey] = { ...data, id: d.id, date: dateKey };
+        });
+        setDayControlsMap(map);
+      },
+      (error) => handleFirestoreError(error, OperationType.LIST, 'attendanceDaySettings')
+    );
+    return () => unsub();
+  }, []);
 
   // 3. Real-time listener for student roster (strictly real entries; purges legacy fake seed rows)
   useEffect(() => {
@@ -525,25 +551,60 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
     }
   };
 
+  const isDayAttendanceEnabled = isAttendanceDateEnabled(attendanceDate, dayControlsMap);
+
+  const handleToggleCalendarDayAttendance = async () => {
+    if (!isTeacherOrAdmin || togglingDay) return;
+    const nextEnabled = !isDayAttendanceEnabled;
+    setTogglingDay(true);
+    try {
+      const payload: AttendanceDayControl = {
+        id: attendanceDate,
+        date: attendanceDate,
+        enabled: nextEnabled,
+        updatedBy: userProfile?.userId || 'faculty',
+        updatedByName: userProfile?.fullName || 'Faculty Lead',
+        updatedAt: new Date().toISOString(),
+      };
+      await setDoc(doc(db, 'attendanceDaySettings', attendanceDate), sanitizeFirestoreDoc(payload));
+      setSyncMessage(
+        nextEnabled
+          ? `Attendance marking turned ON for ${attendanceDate}.`
+          : `Attendance marking turned OFF for ${attendanceDate} (excluded from Student & Teacher graphs).`
+      );
+      setTimeout(() => setSyncMessage(null), 4000);
+    } catch (err) {
+      console.error('Failed to toggle attendance setting:', err);
+    } finally {
+      setTogglingDay(false);
+    }
+  };
+
   // Save attendance for the selected class session
   const handleSaveClassAttendance = async (targetClass?: ScheduledClass) => {
+    if (!isTeacherOrAdmin || !isDayAttendanceEnabled) return;
     const activeClass = targetClass || (selectedScheduledClassId ? scheduledClasses.find((c) => c.id === selectedScheduledClassId) : null);
     const activeSubject = activeClass ? activeClass.subject : 'General Roll-Call';
-    const activeClassId = activeClass?.classId || selectedClassId;
+    const activeClassId = activeClass?.classId || selectedClassId || 'general';
     const activeDate = attendanceDate;
 
     try {
-      // 1. Save to attendance collection
-      const recordId = `att-${activeDate}-${activeClassId}-${activeSubject.replace(/[^a-zA-Z0-9]/g, '_')}`;
-      const record: AttendanceRecord = {
+      // 1. Save to attendance collection with session isolation so multiple classes per day never overwrite each other
+      const recordId = activeClass
+        ? buildAttendanceRecordId(activeDate, activeClassId, activeClass.id)
+        : buildAttendanceRecordId(activeDate, activeClassId, 'daily');
+      const record: AttendanceRecord = sanitizeFirestoreDoc({
         id: recordId,
         classId: activeClassId,
         date: activeDate,
+        sessionId: activeClass?.id,
+        sessionSubject: activeSubject,
+        timeSlot: activeClass?.timeSlot,
         teacherId: userProfile?.userId || 'faculty_lead',
         records: register,
         createdAt: new Date().toISOString(),
-      };
-      await setDoc(doc(db, 'attendance', recordId), record);
+      });
+      await setDoc(doc(db, 'attendance', recordId), record, { merge: true });
 
       // 2. If it's a scheduledClass doc in Firestore, update it
       if (activeClass && !activeClass.id.startsWith('default-')) {
@@ -573,6 +634,7 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
   };
 
   const handleMarkAllPresent = () => {
+    if (!isTeacherOrAdmin || !isDayAttendanceEnabled) return;
     const updated: Record<string, AttendanceStatus> = {};
     students.forEach((st) => {
       updated[st.id] = 'present';
@@ -581,6 +643,7 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
   };
 
   const handleAttendanceStatusChange = (studentId: string, status: AttendanceStatus) => {
+    if (!isTeacherOrAdmin || !isDayAttendanceEnabled) return;
     setRegister((prev) => ({
       ...prev,
       [studentId]: status,
@@ -832,7 +895,12 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
   };
 
   const getAttendanceSummaryForDate = (dateStr: string) => {
-    const rec = attendanceRecords.find((r) => r.date === dateStr && r.classId === selectedClassId);
+    const rec = attendanceRecords.find(
+      (r) =>
+        r.date === dateStr &&
+        (!r.classId || r.classId === selectedClassId || selectedClassId === '') &&
+        isAttendanceRecordActive(r, dayControlsMap)
+    );
     if (!rec) return null;
     const values = Object.values(rec.records);
     const present = values.filter((v) => v === 'present').length;
@@ -1477,6 +1545,23 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
               {isTeacherOrAdmin && (
                 <>
                   <button
+                    type="button"
+                    onClick={handleToggleCalendarDayAttendance}
+                    disabled={togglingDay}
+                    role="switch"
+                    aria-checked={isDayAttendanceEnabled}
+                    className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold border transition-all ${
+                      isDayAttendanceEnabled
+                        ? 'bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-700'
+                        : 'bg-slate-700 hover:bg-slate-800 text-white border-slate-600'
+                    }`}
+                    title="Turn attendance marking ON or OFF for this date"
+                  >
+                    <Power className="w-3.5 h-3.5" />
+                    <span>Attendance: {isDayAttendanceEnabled ? 'ON' : 'OFF'}</span>
+                  </button>
+
+                  <button
                     onClick={() => {
                       setNewClassDate(attendanceDate);
                       setIsScheduleClassModalOpen(true);
@@ -1489,7 +1574,8 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
 
                   <button
                     onClick={handleMarkAllPresent}
-                    className="rounded-lg border border-stone-200 hover:bg-stone-50 px-3 py-1.5 text-xs font-semibold text-stone-700 transition-colors"
+                    disabled={!isDayAttendanceEnabled}
+                    className="rounded-lg border border-stone-200 hover:bg-stone-50 disabled:opacity-45 disabled:pointer-events-none px-3 py-1.5 text-xs font-semibold text-stone-700 transition-colors"
                   >
                     Mark All Present
                   </button>
@@ -1501,7 +1587,8 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
                         : getClassesForDate(attendanceDate)[0];
                       handleSaveClassAttendance(activeClass);
                     }}
-                    className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-800 px-4 py-1.5 text-xs font-bold text-white transition-colors shadow-xs"
+                    disabled={!isDayAttendanceEnabled}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-800 disabled:opacity-45 disabled:pointer-events-none px-4 py-1.5 text-xs font-bold text-white transition-colors shadow-xs"
                   >
                     <Save className="w-3.5 h-3.5 text-white" />
                     <span>Save Class Attendance</span>
@@ -1510,6 +1597,28 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
               )}
             </div>
           </div>
+
+          {!isDayAttendanceEnabled && (
+            <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-xs text-amber-950 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+                <span>
+                  <strong>Attendance Marking is OFF for {attendanceDate}:</strong> No need to mark attendance today, and records from this day are not synced to Student &amp; Teacher Dashboard graphs.
+                </span>
+              </div>
+              {isTeacherOrAdmin && (
+                <button
+                  type="button"
+                  onClick={handleToggleCalendarDayAttendance}
+                  disabled={togglingDay}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 text-[11px] font-bold shrink-0"
+                >
+                  <Power className="w-3 h-3" />
+                  <span>Turn ON Attendance</span>
+                </button>
+              )}
+            </div>
+          )}
 
           {/* Daily Multi-Class Session Selector */}
           <div className="rounded-2xl border border-stone-200 bg-stone-50/70 p-4 shadow-xs space-y-2.5">
@@ -1673,8 +1782,10 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
 
                           <td className="py-3 px-4 text-right whitespace-nowrap">
                             {isTeacherOrAdmin ? (
-                              <div className="inline-flex items-center rounded-lg border border-stone-200 bg-white p-0.5 shadow-2xs whitespace-nowrap">
+                              <div className={`inline-flex items-center rounded-lg border border-stone-200 bg-white p-0.5 shadow-2xs whitespace-nowrap ${!isDayAttendanceEnabled ? 'opacity-45 pointer-events-none' : ''}`}>
                                 <button
+                                  type="button"
+                                  disabled={!isDayAttendanceEnabled}
                                   onClick={() => handleAttendanceStatusChange(student.id, 'present')}
                                   className={`rounded px-2.5 py-1.5 text-[11px] font-bold whitespace-nowrap transition-colors ${
                                     status === 'present'
@@ -1685,6 +1796,8 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
                                   Present
                                 </button>
                                 <button
+                                  type="button"
+                                  disabled={!isDayAttendanceEnabled}
                                   onClick={() => handleAttendanceStatusChange(student.id, 'absent')}
                                   className={`rounded px-2.5 py-1.5 text-[11px] font-bold whitespace-nowrap transition-colors ${
                                     status === 'absent'
@@ -1695,6 +1808,8 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
                                   Absent
                                 </button>
                                 <button
+                                  type="button"
+                                  disabled={!isDayAttendanceEnabled}
                                   onClick={() => handleAttendanceStatusChange(student.id, 'late')}
                                   className={`rounded px-2.5 py-1.5 text-[11px] font-bold whitespace-nowrap transition-colors ${
                                     status === 'late'
@@ -1705,6 +1820,8 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
                                   Late
                                 </button>
                                 <button
+                                  type="button"
+                                  disabled={!isDayAttendanceEnabled}
                                   onClick={() => handleAttendanceStatusChange(student.id, 'excused')}
                                   className={`rounded px-2.5 py-1.5 text-[11px] font-bold whitespace-nowrap transition-colors ${
                                     status === 'excused'
