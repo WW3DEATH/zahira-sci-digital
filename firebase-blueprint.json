@@ -152,17 +152,34 @@
     },
     "attendance": {
       "title": "Daily Attendance",
-      "description": "Daily attendance roster log for a class",
+      "description": "Daily attendance roster log for a class or academic session",
       "type": "object",
       "properties": {
         "id": { "type": "string" },
         "classId": { "type": "string" },
         "date": { "type": "string" },
+        "sessionId": { "type": "string" },
+        "sessionSubject": { "type": "string" },
+        "timeSlot": { "type": "string" },
         "teacherId": { "type": "string" },
         "records": { "type": "object" },
         "createdAt": { "type": "string" }
       },
       "required": ["id", "classId", "date", "teacherId", "records"]
+    },
+    "attendanceDayControl": {
+      "title": "Attendance Day Control",
+      "description": "Teacher/Admin ON-OFF toggle per date controlling whether attendance marking is active and synced to Student & Teacher dashboards",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "date": { "type": "string" },
+        "enabled": { "type": "boolean" },
+        "updatedBy": { "type": "string" },
+        "updatedByName": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "date", "enabled"]
     },
     "announcement": {
       "title": "School Announcement",
@@ -455,7 +472,11 @@
     },
     "/attendance/{attendanceId}": {
       "schema": { "$ref": "attendance" },
-      "description": "Class daily attendance registers"
+      "description": "Class daily and session-level attendance registers"
+    },
+    "/attendanceDaySettings/{date}": {
+      "schema": { "$ref": "attendanceDayControl" },
+      "description": "Per-date Teacher/Admin attendance ON/OFF controls"
     },
     "/announcements/{announcementId}": {
       "schema": { "$ref": "announcement" },
