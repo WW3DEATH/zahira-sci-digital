@@ -1,903 +1,623 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
-  MessageSquare,
-  Send,
-  User,
-  Search,
-  CheckCheck,
+  BookMarked,
+  FileText,
+  FileCode,
+  Download,
   Plus,
-  Shield,
-  GraduationCap,
-  Users,
-  Check,
+  Search,
+  Filter,
+  ExternalLink,
   X,
-  Clock,
+  Eye,
+  CheckCircle2,
+  BookOpen,
+  Sparkles,
+  Upload,
+  File,
   AlertCircle,
-  UserCheck,
-  Lock,
-  ArrowLeft,
-  Trash2,
+  Loader2,
+  Check,
 } from 'lucide-react';
-import {
-  collection,
-  doc,
-  setDoc,
-  deleteDoc,
-  getDocs,
-  query,
-  where,
-  onSnapshot,
-} from 'firebase/firestore';
-import { db, sanitizeFirestoreDoc } from '../firebase';
+import { collection, doc, onSnapshot, setDoc } from 'firebase/firestore';
+import { db } from '../firebase';
 import { useAuth } from '../context/AuthContext';
-import { Conversation, DirectMessage, UserProfile } from '../types';
-import { sendDirectNotification } from '../services/notificationService';
+import { LearningMaterial, Subject } from '../types';
+import { SEED_MATERIALS, SEED_SUBJECTS } from '../services/dataService';
+import { broadcastSystemNotification } from '../services/notificationService';
+import {
+  LiveMorphIcon,
+  LivePaperScannerGraphic,
+  LiveOrbitalScienceGraphic,
+} from '../components/common/LiveVisuals';
 
-export const MessagesPage: React.FC = () => {
-  const { userProfile, activeRole } = useAuth();
-  const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [activeConversationId, setActiveConversationId] = useState<string>('conv-zahira-lead');
-  const [messages, setMessages] = useState<DirectMessage[]>([]);
-  const [inputText, setInputText] = useState('');
-  const [searchContact, setSearchContact] = useState('');
+export const MaterialsPage: React.FC = () => {
+  const { activeRole, userProfile } = useAuth();
+  const [materials, setMaterials] = useState<LearningMaterial[]>(SEED_MATERIALS);
+  const [subjects, setSubjects] = useState<Subject[]>(SEED_SUBJECTS);
+  const [loading, setLoading] = useState(true);
+  const [filterType, setFilterType] = useState<string>('all');
+  const [filterSubject, setFilterSubject] = useState<string>('all');
+  const [searchQuery, setSearchQuery] = useState('');
 
-  // New Chat Modal state
-  const [showNewChatModal, setShowNewChatModal] = useState(false);
-  const [availableUsers, setAvailableUsers] = useState<UserProfile[]>([]);
-  const [modalSearch, setModalSearch] = useState('');
-  const [mobileView, setMobileView] = useState<'list' | 'chat'>('list');
+  // Upload Material Modal
+  const [showUploadModal, setShowUploadModal] = useState(false);
+  const [newTitle, setNewTitle] = useState('');
+  const [newDesc, setNewDesc] = useState('');
+  const [newSubjectId, setNewSubjectId] = useState('sub-cmath');
+  const [newType, setNewType] = useState<'pdf' | 'document' | 'presentation' | 'image' | 'link'>('pdf');
+  const [newLink, setNewLink] = useState('');
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [fileBase64, setFileBase64] = useState<string | null>(null);
+  const [fileError, setFileError] = useState<string | null>(null);
+  const [isUploading, setIsUploading] = useState(false);
+  const [useManualUrl, setUseManualUrl] = useState(false);
 
-  // Delete confirmation & feedback states
-  const [confirmDeleteMsgId, setConfirmDeleteMsgId] = useState<string | null>(null);
-  const [confirmDeleteConvId, setConfirmDeleteConvId] = useState<string | null>(null);
-  const [deleteFeedback, setDeleteFeedback] = useState<string | null>(null);
-
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
-
-  // Real-time user profiles for initiating direct consultations
-  useEffect(() => {
-    const unsub = onSnapshot(collection(db, 'userProfiles'), (snap) => {
-      const list: UserProfile[] = [];
-      snap.forEach((d) => {
-        const u = d.data() as UserProfile;
-        if (u.userId !== userProfile?.userId) {
-          list.push(u);
-        }
-      });
-      setAvailableUsers(list);
-    });
-    return () => unsub();
-  }, [userProfile?.userId]);
-
-  // Real-time conversations listener
+  // Real-time listener for materials
   useEffect(() => {
     const unsub = onSnapshot(
-      collection(db, 'conversations'),
+      collection(db, 'learningMaterials'),
       (snap) => {
-        const list: Conversation[] = [];
-        snap.forEach((d) => {
-          const conv = { ...(d.data() as Conversation), id: d.id };
-          // Non-admin users only view conversations they are part of
-          if (
-            activeRole === 'admin' ||
-            (conv.participantIds && conv.participantIds.includes(userProfile?.userId || ''))
-          ) {
-            list.push(conv);
-          }
-        });
-
+        const list: LearningMaterial[] = [];
+        snap.forEach((d) => list.push(d.data() as LearningMaterial));
         if (list.length > 0) {
-          setConversations(list);
-          if (!list.some((c) => c.id === activeConversationId)) {
-            setActiveConversationId(list[0].id);
-          }
+          setMaterials(list);
         } else {
-          // Initialize default Zahira 2k28 academic conversation
-          const defaultConv: Conversation = {
-            id: 'conv-zahira-lead',
-            participantIds: ['faculty_lead', userProfile?.userId || 'student_user'],
-            participantNames: {
-              faculty_lead: 'Science Academic Faculty Lead',
-              [userProfile?.userId || 'student_user']: userProfile?.fullName || 'Scholar',
-            },
-            requestStatus: 'accepted',
-            requestedBy: 'faculty_lead',
-            requestedTo: userProfile?.userId || 'student_user',
-            lastMessage: 'Welcome to Zahira College 2k28 Science EM academic messaging.',
-            lastMessageAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-          };
-          setDoc(doc(db, 'conversations', defaultConv.id), sanitizeFirestoreDoc(defaultConv)).catch(() => {});
-          setConversations([defaultConv]);
-          setActiveConversationId(defaultConv.id);
+          setMaterials(SEED_MATERIALS);
         }
+        setLoading(false);
       },
       (error) => {
-        console.warn('Real-time conversations note:', error);
+        console.warn('Real-time materials note:', error);
+        setMaterials(SEED_MATERIALS);
+        setLoading(false);
       }
     );
     return () => unsub();
-  }, [userProfile?.userId, userProfile?.fullName, activeRole, activeConversationId]);
+  }, []);
 
-  // Listen to messages for active conversation in real time
+  // Real-time listener for subjects
   useEffect(() => {
-    if (!activeConversationId) return;
+    const unsub = onSnapshot(collection(db, 'subjects'), (snap) => {
+      const list: Subject[] = [];
+      snap.forEach((d) => list.push(d.data() as Subject));
+      if (list.length > 0) setSubjects(list);
+    });
+    return () => unsub();
+  }, []);
 
-    try {
-      const q = query(
-        collection(db, 'messages'),
-        where('conversationId', '==', activeConversationId)
-      );
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setFileError(null);
+    const file = e.target.files?.[0];
+    if (!file) return;
 
-      const unsub = onSnapshot(q, (snapshot) => {
-        const msgs: DirectMessage[] = [];
-        snapshot.forEach((d) => msgs.push({ ...(d.data() as DirectMessage), id: d.id }));
-        setMessages(msgs.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()));
-      });
-
-      return () => unsub();
-    } catch (e) {
-      console.warn('Messages snapshot listener note:', e);
-    }
-  }, [activeConversationId]);
-
-  const activeConv = conversations.find((c) => c.id === activeConversationId);
-  const otherParticipantEntry = activeConv
-    ? Object.entries(activeConv.participantNames || {}).find(([id]) => id !== userProfile?.userId)
-    : null;
-  const otherParticipantId = otherParticipantEntry ? otherParticipantEntry[0] : null;
-  const otherParticipantName = otherParticipantEntry ? otherParticipantEntry[1] : 'Academic Contact';
-
-  // Request status check
-  const requestStatus = activeConv?.requestStatus || 'accepted';
-  const isSenderOfRequest = activeConv?.requestedBy === userProfile?.userId;
-  const isReceiverOfRequest = activeConv?.requestedTo === userProfile?.userId || (!isSenderOfRequest && requestStatus === 'pending');
-  const isChatUnlocked = requestStatus === 'accepted';
-
-  // Accept direct message request
-  const handleAcceptRequest = async () => {
-    if (!activeConv || !activeConversationId) return;
-    try {
-      await setDoc(
-        doc(db, 'conversations', activeConversationId),
-        {
-          requestStatus: 'accepted',
-          updatedAt: new Date().toISOString(),
-          lastMessage: `${userProfile?.fullName || 'User'} accepted the consultation request.`,
-          lastMessageAt: new Date().toISOString(),
-        },
-        { merge: true }
-      );
-
-      // Notify the requester directly that their request was accepted
-      if (activeConv.requestedBy && activeConv.requestedBy !== userProfile?.userId) {
-        await sendDirectNotification({
-          recipientId: activeConv.requestedBy,
-          title: `✅ Academic Chat Request Accepted`,
-          message: `${userProfile?.fullName || 'Academic member'} has accepted your consultation request. You can now chat in 1-on-1 messages!`,
-          link: 'messages',
-          type: 'message',
-        });
-      }
-    } catch (e) {
-      console.error('Failed to accept chat request:', e);
-    }
-  };
-
-  // Decline direct message request
-  const handleDeclineRequest = async () => {
-    if (!activeConv || !activeConversationId) return;
-    try {
-      await setDoc(
-        doc(db, 'conversations', activeConversationId),
-        {
-          requestStatus: 'declined',
-          updatedAt: new Date().toISOString(),
-          lastMessage: `Consultation request declined by ${userProfile?.fullName || 'user'}.`,
-          lastMessageAt: new Date().toISOString(),
-        },
-        { merge: true }
-      );
-    } catch (e) {
-      console.error('Failed to decline chat request:', e);
-    }
-  };
-
-  // Re-send consultation request after decline
-  const handleResendRequest = async () => {
-    if (!activeConv || !activeConversationId || !otherParticipantId) return;
-    const myId = userProfile?.userId || 'user_anon';
-    const myName = userProfile?.fullName || 'Scholar';
-
-    try {
-      await setDoc(
-        doc(db, 'conversations', activeConversationId),
-        {
-          requestStatus: 'pending',
-          requestedBy: myId,
-          requestedTo: otherParticipantId,
-          updatedAt: new Date().toISOString(),
-          lastMessage: `Consultation request re-sent by ${myName}. Awaiting acceptance.`,
-          lastMessageAt: new Date().toISOString(),
-        },
-        { merge: true }
-      );
-
-      await sendDirectNotification({
-        recipientId: otherParticipantId,
-        title: `💬 New Academic Consultation Request`,
-        message: `${myName} has re-sent a 1-on-1 consultation request. Please accept or decline in Messages.`,
-        link: 'messages',
-        type: 'message',
-      });
-    } catch (e) {
-      console.error('Failed to resend request:', e);
-    }
-  };
-
-  // Start new direct consultation request with a user
-  const handleStartConsultation = async (targetUser: UserProfile) => {
-    setShowNewChatModal(false);
-    const myId = userProfile?.userId || 'user_anon';
-    const myName = userProfile?.fullName || 'Scholar';
-
-    // Check if conversation already exists with this user
-    const existing = conversations.find(
-      (c) => c.participantIds?.includes(myId) && c.participantIds?.includes(targetUser.userId)
-    );
-
-    if (existing) {
-      setActiveConversationId(existing.id);
-      setMobileView('chat');
+    const MAX_SIZE = 10 * 1024 * 1024; // 10 MB
+    if (file.size > MAX_SIZE) {
+      setFileError(`File size exceeds the 10 MB limit (${(file.size / (1024 * 1024)).toFixed(2)} MB). Please select a file under 10 MB.`);
+      setSelectedFile(null);
+      setFileBase64(null);
       return;
     }
 
-    // Create new pending conversation
-    const newConvId = `conv-${myId}-${targetUser.userId}`;
-    const newConv: Conversation = {
-      id: newConvId,
-      participantIds: [myId, targetUser.userId],
-      participantNames: {
-        [myId]: myName,
-        [targetUser.userId]: targetUser.fullName || 'Academic Member',
-      },
-      requestStatus: 'pending',
-      requestedBy: myId,
-      requestedTo: targetUser.userId,
-      lastMessage: 'Consultation request sent. Awaiting acceptance.',
-      lastMessageAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-
-    try {
-      await setDoc(doc(db, 'conversations', newConvId), sanitizeFirestoreDoc(newConv));
-      setActiveConversationId(newConvId);
-      setMobileView('chat');
-
-      // Send direct notification ONLY to the recipient in Notification Center
-      await sendDirectNotification({
-        recipientId: targetUser.userId,
-        title: `💬 New Academic Consultation Request`,
-        message: `${myName} (${userProfile?.role || 'scholar'}) has requested a 1-on-1 academic consultation with you. Please accept or decline in Messages.`,
-        link: 'messages',
-        type: 'message',
-      });
-    } catch (e) {
-      console.error('Failed to create new conversation:', e);
+    setSelectedFile(file);
+    if (!newTitle.trim()) {
+      // Auto-populate title with cleaned file name
+      const cleanName = file.name.replace(/\.[^/.]+$/, '').replace(/[_-]/g, ' ');
+      setNewTitle(cleanName);
     }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      setFileBase64(reader.result as string);
+    };
+    reader.onerror = () => {
+      setFileError('Failed to read the file from your device. Please try again.');
+    };
+    reader.readAsDataURL(file);
   };
 
-  // Send message in accepted chat
-  const handleSendMessage = async () => {
-    if (!inputText.trim() || !activeConversationId || !isChatUnlocked) return;
-    const text = inputText.trim();
-    setInputText('');
+  const handleUploadMaterial = async () => {
+    if (!newTitle.trim()) {
+      setFileError('Please provide a title for this study material.');
+      return;
+    }
+
+    if (!selectedFile && !newLink.trim()) {
+      setFileError('Please select a PDF file from your device or specify a valid link.');
+      return;
+    }
 
     try {
-      const msgId = `msg-${Date.now()}`;
-      const newMsg: DirectMessage = {
-        id: msgId,
-        conversationId: activeConversationId,
-        senderId: userProfile?.userId || 'zahira_user',
-        senderName: userProfile?.fullName || 'Zahira Member',
-        text,
+      setIsUploading(true);
+      setFileError(null);
+
+      let finalUrl = newLink.trim();
+      let finalSize = '2.5 MB';
+
+      if (selectedFile && fileBase64) {
+        try {
+          const uploadRes = await fetch('/api/upload', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              filename: selectedFile.name,
+              fileData: fileBase64,
+              fileType: selectedFile.type || 'application/pdf',
+            }),
+          });
+
+          if (!uploadRes.ok) {
+            const errData = await uploadRes.json().catch(() => ({}));
+            throw new Error(errData.error || 'Server upload failed');
+          }
+
+          const uploadData = await uploadRes.json();
+          finalUrl = uploadData.url || fileBase64;
+          finalSize = uploadData.size || `${(selectedFile.size / (1024 * 1024)).toFixed(2)} MB`;
+        } catch (uploadErr: any) {
+          console.warn('Backend upload notice, using persistent data URL:', uploadErr);
+          finalUrl = fileBase64;
+          finalSize = `${(selectedFile.size / (1024 * 1024)).toFixed(2)} MB`;
+        }
+      }
+
+      const id = `mat-${Date.now()}`;
+      const mat: LearningMaterial = {
+        id,
+        title: newTitle.trim(),
+        description: newDesc.trim() || 'Curriculum resource for Zahira College 2k28 Science EM.',
+        classId: 'general',
+        subjectId: newSubjectId,
+        teacherId: userProfile?.userId || 'faculty',
+        teacherName: userProfile?.fullName || 'Faculty Lead',
+        fileType: newType,
+        fileUrl: finalUrl,
+        fileSize: finalSize,
         createdAt: new Date().toISOString(),
       };
 
-      await setDoc(doc(db, 'messages', msgId), sanitizeFirestoreDoc(newMsg));
+      await setDoc(doc(db, 'learningMaterials', id), mat);
+      await broadcastSystemNotification({
+        title: 'New Study Material Uploaded',
+        message: `${userProfile?.fullName || 'Faculty'} uploaded "${mat.title}" for 2k28 Science EM.`,
+        type: 'material',
+        link: 'materials',
+      });
 
-      // Update conversation lastMessage
-      await setDoc(
-        doc(db, 'conversations', activeConversationId),
-        {
-          lastMessage: text,
-          lastMessageAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        },
-        { merge: true }
-      );
-
-      // Direct message notification sent EXCLUSIVELY to the other participant
-      if (otherParticipantId) {
-        sendDirectNotification({
-          recipientId: otherParticipantId,
-          title: `💬 Direct Message from ${userProfile?.fullName || 'Academic Contact'}`,
-          message: text.length > 90 ? text.substring(0, 90) + '...' : text,
-          link: 'messages',
-          type: 'message',
-        });
-      }
-    } catch (e) {
-      console.error('Failed to send message:', e);
+      setShowUploadModal(false);
+      setNewTitle('');
+      setNewDesc('');
+      setSelectedFile(null);
+      setFileBase64(null);
+      setNewLink('');
+      setFileError(null);
+    } catch (e: any) {
+      console.error('Failed to publish material:', e);
+      setFileError(e.message || 'Failed to publish material. Please try again.');
+    } finally {
+      setIsUploading(false);
     }
   };
 
-  // Delete an individual direct message from UI & Firestore
-  const handleDeleteMessage = async (msgId: string) => {
-    const remaining = messages.filter((m) => m.id !== msgId);
-    setMessages(remaining);
-    setConfirmDeleteMsgId(null);
+  const filtered = materials.filter((m) => {
+    const subj = subjects.find((s) => s.id === m.subjectId);
+    const matchesType = filterType === 'all' || m.fileType === filterType;
+    const matchesSubject = filterSubject === 'all' || m.subjectId === filterSubject;
+    
+    const query = searchQuery.toLowerCase().trim();
+    if (!query) return matchesType && matchesSubject;
 
-    try {
-      await deleteDoc(doc(db, 'messages', msgId));
+    const matchesSearch =
+      m.title.toLowerCase().includes(query) ||
+      (m.description || '').toLowerCase().includes(query) ||
+      (subj?.name || '').toLowerCase().includes(query) ||
+      (subj?.code || '').toLowerCase().includes(query) ||
+      (m.teacherName || '').toLowerCase().includes(query) ||
+      m.fileType.toLowerCase().includes(query);
 
-      if (activeConversationId) {
-        const lastRemaining = remaining[remaining.length - 1];
-        await setDoc(
-          doc(db, 'conversations', activeConversationId),
-          {
-            lastMessage: lastRemaining ? lastRemaining.text : 'Message deleted',
-            lastMessageAt: lastRemaining ? lastRemaining.createdAt : new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-          },
-          { merge: true }
-        );
-      }
-      setDeleteFeedback('Message deleted from chat & database.');
-      setTimeout(() => setDeleteFeedback(null), 3000);
-    } catch (e) {
-      console.error('Failed to delete message:', e);
-      setDeleteFeedback('Could not delete message. Please retry.');
-      setTimeout(() => setDeleteFeedback(null), 3500);
-    }
-  };
-
-  // Delete a conversation and all its messages from UI & Firestore
-  const handleDeleteConversation = async (convId: string) => {
-    const remainingConvs = conversations.filter((c) => c.id !== convId);
-    setConversations(remainingConvs);
-    setConfirmDeleteConvId(null);
-    if (activeConversationId === convId) {
-      setActiveConversationId(remainingConvs[0]?.id || '');
-      setMessages([]);
-      setMobileView('list');
-    }
-
-    try {
-      const msgsSnap = await getDocs(
-        query(collection(db, 'messages'), where('conversationId', '==', convId))
-      );
-      await Promise.all(msgsSnap.docs.map((d) => deleteDoc(doc(db, 'messages', d.id))));
-      await deleteDoc(doc(db, 'conversations', convId));
-      setDeleteFeedback('Conversation permanently removed.');
-      setTimeout(() => setDeleteFeedback(null), 3000);
-    } catch (e) {
-      console.error('Failed to delete conversation:', e);
-    }
-  };
-
-  const filteredConversations = conversations.filter((c) => {
-    const otherName =
-      Object.entries(c.participantNames || {}).find(([id]) => id !== userProfile?.userId)?.[1] || '';
-    return otherName.toLowerCase().includes(searchContact.toLowerCase());
-  });
-
-  const filteredAvailableUsers = availableUsers.filter((u) => {
-    const q = modalSearch.toLowerCase();
-    return (
-      (u.fullName || '').toLowerCase().includes(q) ||
-      (u.email || '').toLowerCase().includes(q) ||
-      (u.role || '').toLowerCase().includes(q)
-    );
+    return matchesType && matchesSubject && matchesSearch;
   });
 
   return (
     <div className="space-y-6 animate-in fade-in duration-300">
-      {/* Top Banner */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-2">
-            <h2 className="font-serif text-2xl font-bold tracking-tight text-stone-900">
-              Academic Direct Messaging
-            </h2>
-            <span className="rounded-full bg-amber-100 text-amber-900 px-3 py-0.5 text-[11px] font-bold border border-amber-200">
-              Private 1-on-1 Consultations
-            </span>
-          </div>
-          <p className="text-xs text-stone-500 mt-1">
-            Secure consultations for Zahira College 2k28 Science EM students, faculty, and administration with Accept/Decline request approval
-          </p>
-        </div>
-
-        <button
-          onClick={() => setShowNewChatModal(true)}
-          className="inline-flex items-center gap-2 rounded-xl bg-blue-900 hover:bg-blue-950 px-4 py-2.5 text-xs font-bold text-white transition-all shadow-sm shrink-0"
-        >
-          <Plus className="w-4 h-4" />
-          <span>New Direct Consultation</span>
-        </button>
-      </div>
-
-      {/* Main Messaging Layout */}
-      <div className="grid grid-cols-1 md:grid-cols-3 rounded-2xl border border-stone-200 bg-white shadow-xs overflow-hidden h-[calc(100dvh-15rem)] min-h-[480px] md:h-[670px]">
-        {/* Left: Conversation Channels */}
-        <div
-          className={`border-r border-stone-200 flex-col bg-stone-50/50 min-h-0 ${
-            mobileView === 'chat' ? 'hidden md:flex' : 'flex'
-          }`}
-        >
-          <div className="p-4 border-b border-stone-200">
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-stone-400" />
-              <input
-                type="text"
-                placeholder="Search conversations..."
-                value={searchContact}
-                onChange={(e) => setSearchContact(e.target.value)}
-                className="w-full rounded-lg border border-stone-200 bg-white py-1.5 pl-8 pr-3 text-xs text-stone-800 focus:outline-none"
+      {/* Header Banner - Light Royal Blue with Red Accents */}
+      <div className="live-gradient-banner rounded-2xl border border-blue-100 bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-800 p-6 md:p-8 text-white shadow-md relative overflow-hidden">
+        <LiveOrbitalScienceGraphic className="w-24 h-24 opacity-20 pointer-events-none hidden md:block absolute right-6 top-3" />
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 relative z-10">
+          <div>
+            <div className="inline-flex items-center gap-1.5 rounded-full bg-red-600 px-3 py-1 text-xs font-bold text-white shadow-xs">
+              <LiveMorphIcon
+                icons={[BookMarked, BookOpen, FileText, Sparkles]}
+                intervalMs={2300}
+                className="w-3.5 h-3.5"
               />
+              <span>Zahira College Mawanella • 2k28 Science EM</span>
             </div>
+            <h1 className="font-serif text-2xl md:text-3xl font-bold tracking-tight text-white mt-2">
+              Curriculum & Study Materials
+            </h1>
+            <p className="text-blue-100 text-xs md:text-sm mt-1 max-w-xl">
+              Access lecture notes, worked tutorials, laboratory guides, and formula booklets for Advanced Level Science EM.
+            </p>
           </div>
 
-          <div className="flex-1 overflow-y-auto divide-y divide-stone-100">
-            {filteredConversations.length === 0 ? (
-              <div className="p-8 text-center text-xs text-stone-400">
-                <MessageSquare className="w-8 h-8 mx-auto mb-2 opacity-40" />
-                <p>No active conversations found.</p>
-                <button
-                  onClick={() => setShowNewChatModal(true)}
-                  className="mt-2 text-blue-700 font-bold hover:underline"
-                >
-                  Start a consultation
-                </button>
-              </div>
-            ) : (
-              filteredConversations.map((c) => {
-                const otherName =
-                  Object.entries(c.participantNames || {}).find(([id]) => id !== userProfile?.userId)?.[1] ||
-                  'Faculty / Scholar';
-                const isSelected = c.id === activeConversationId;
-                const status = c.requestStatus || 'accepted';
-
-                return (
-                  <button
-                    key={c.id}
-                    onClick={() => {
-                      setActiveConversationId(c.id);
-                      setMobileView('chat');
-                    }}
-                    className={`w-full p-4 min-h-[56px] text-left transition-colors flex items-start gap-3 ${
-                      isSelected ? 'bg-amber-50/80 border-l-4 border-amber-600' : 'hover:bg-stone-100/60'
-                    }`}
-                  >
-                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-stone-900 text-amber-400 text-xs font-bold">
-                      {otherName.charAt(0)}
-                    </div>
-                    <div className="flex-1 overflow-hidden">
-                      <div className="flex items-center justify-between gap-1">
-                        <p className="text-xs font-bold text-stone-900 truncate">{otherName}</p>
-                        {status === 'pending' && (
-                          <span className="rounded bg-amber-100 text-amber-800 px-1.5 py-0.2 text-[9px] font-bold shrink-0">
-                            Pending
-                          </span>
-                        )}
-                        {status === 'declined' && (
-                          <span className="rounded bg-rose-100 text-rose-800 px-1.5 py-0.2 text-[9px] font-bold shrink-0">
-                            Declined
-                          </span>
-                        )}
-                        {status === 'accepted' && c.lastMessageAt && (
-                          <span className="text-[10px] text-stone-400 shrink-0">
-                            {new Date(c.lastMessageAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                          </span>
-                        )}
-                      </div>
-                      <p className="text-[11px] text-stone-500 truncate mt-0.5">
-                        {c.lastMessage || 'Start conversation...'}
-                      </p>
-                    </div>
-                  </button>
-                );
-              })
-            )}
-          </div>
-        </div>
-
-        {/* Right: Message Stream & Action Panel */}
-        <div
-          className={`md:col-span-2 flex-col h-full min-h-0 bg-white ${
-            mobileView === 'list' ? 'hidden md:flex' : 'flex'
-          }`}
-        >
-          {/* Active Contact Header */}
-          <div className="flex items-center justify-between border-b border-stone-200 p-3 sm:p-4 bg-stone-50/60 shrink-0">
-            <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
-              <button
-                type="button"
-                onClick={() => setMobileView('list')}
-                className="md:hidden min-h-[40px] min-w-[40px] flex items-center justify-center rounded-xl border border-stone-200 bg-white text-stone-700 hover:bg-stone-100 shrink-0"
-                title="Back to Conversations"
-                aria-label="Back to Conversations"
-              >
-                <ArrowLeft className="w-4 h-4" />
-              </button>
-              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-stone-900 text-amber-400 text-xs font-bold">
-                {otherParticipantName.charAt(0)}
-              </div>
-              <div>
-                <h4 className="text-xs font-bold text-stone-900">{otherParticipantName}</h4>
-                <div className="flex items-center gap-1.5 mt-0.5">
-                  {requestStatus === 'accepted' && (
-                    <span className="text-[10px] text-emerald-600 font-semibold flex items-center gap-1">
-                      <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-                      Consultation Active • Private 1-on-1
-                    </span>
-                  )}
-                  {requestStatus === 'pending' && (
-                    <span className="text-[10px] text-amber-700 font-semibold flex items-center gap-1">
-                      <Clock className="w-3 h-3 text-amber-600" />
-                      Request Pending Acceptance
-                    </span>
-                  )}
-                  {requestStatus === 'declined' && (
-                    <span className="text-[10px] text-rose-700 font-semibold flex items-center gap-1">
-                      <X className="w-3 h-3 text-rose-600" />
-                      Consultation Declined
-                    </span>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            {activeConv && (
-              <div className="flex items-center gap-2 shrink-0">
-                {deleteFeedback && (
-                  <span className="hidden sm:inline text-[11px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-2.5 py-1">
-                    {deleteFeedback}
-                  </span>
-                )}
-                {confirmDeleteConvId === activeConv.id ? (
-                  <div className="flex items-center gap-1">
-                    <button
-                      type="button"
-                      onClick={() => handleDeleteConversation(activeConv.id)}
-                      className="rounded-lg bg-rose-600 hover:bg-rose-700 px-2.5 py-1.5 text-[11px] font-bold text-white"
-                    >
-                      Confirm Delete
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setConfirmDeleteConvId(null)}
-                      className="rounded-lg border border-stone-200 bg-white px-2 py-1.5 text-[11px] font-semibold text-stone-600 hover:bg-stone-100"
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => setConfirmDeleteConvId(activeConv.id)}
-                    className="inline-flex items-center gap-1 rounded-lg border border-stone-200 bg-white hover:bg-rose-50 hover:border-rose-200 px-2.5 py-1.5 text-[11px] font-semibold text-stone-500 hover:text-rose-600 transition-colors"
-                    title="Delete this conversation"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                    <span className="hidden sm:inline">Delete Chat</span>
-                  </button>
-                )}
-              </div>
-            )}
-          </div>
-
-          {/* REQUEST ACCEPT / DECLINE PROMPT */}
-          {requestStatus === 'pending' && (
-            <div className="p-4 border-b border-amber-200 bg-amber-50/90">
-              {isReceiverOfRequest ? (
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                  <div className="flex items-start gap-2.5">
-                    <Clock className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
-                    <div>
-                      <h4 className="text-xs font-bold text-amber-950">
-                        Academic Consultation Request Received
-                      </h4>
-                      <p className="text-[11px] text-amber-800 mt-0.5">
-                        <strong>{otherParticipantName}</strong> would like to connect in private direct messaging. Accept to begin chatting or decline.
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-2 self-end sm:self-auto shrink-0">
-                    <button
-                      onClick={handleAcceptRequest}
-                      className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 px-3.5 py-1.5 text-xs font-bold text-white transition-colors shadow-2xs"
-                    >
-                      <Check className="w-3.5 h-3.5" />
-                      <span>Accept Request</span>
-                    </button>
-                    <button
-                      onClick={handleDeclineRequest}
-                      className="inline-flex items-center gap-1.5 rounded-xl border border-stone-300 bg-white hover:bg-stone-100 px-3 py-1.5 text-xs font-bold text-stone-700 transition-colors shadow-2xs"
-                    >
-                      <X className="w-3.5 h-3.5 text-rose-600" />
-                      <span>Decline</span>
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <div className="flex items-center gap-2 text-xs text-amber-900">
-                  <Clock className="w-4 h-4 text-amber-600 shrink-0" />
-                  <p>
-                    <strong>Consultation Request Sent:</strong> Awaiting approval from{' '}
-                    <strong>{otherParticipantName}</strong>. Messaging will unlock automatically once accepted.
-                  </p>
-                </div>
-              )}
-            </div>
+          {activeRole !== 'student' && activeRole !== 'parent' && activeRole !== 'guest' && (
+            <button
+              onClick={() => setShowUploadModal(true)}
+              className="inline-flex items-center gap-2 rounded-xl bg-red-600 hover:bg-red-700 px-4 py-2.5 text-xs font-bold text-white transition-all shadow-sm shrink-0"
+            >
+              <Plus className="w-4 h-4" />
+              <span>Publish Learning Material</span>
+            </button>
           )}
-
-          {requestStatus === 'declined' && (
-            <div className="p-4 border-b border-rose-200 bg-rose-50/90 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-rose-900">
-              <div className="flex items-start gap-2.5">
-                <AlertCircle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
-                <div>
-                  <h4 className="font-bold text-rose-950">Consultation Request Declined</h4>
-                  <p className="text-[11px] text-rose-800 mt-0.5">
-                    {isSenderOfRequest
-                      ? 'The user declined your request. You cannot text this person until they accept a consultation request.'
-                      : 'You declined this consultation request. Direct messaging remains locked.'}
-                  </p>
-                </div>
-              </div>
-
-              {isSenderOfRequest && (
-                <button
-                  onClick={handleResendRequest}
-                  className="inline-flex items-center gap-1.5 rounded-xl bg-blue-900 hover:bg-blue-950 text-white px-3.5 py-1.5 text-xs font-bold transition-all shadow-xs shrink-0 self-end sm:self-auto"
-                >
-                  <Send className="w-3.5 h-3.5 text-amber-300" />
-                  <span>Send Request Again</span>
-                </button>
-              )}
-            </div>
-          )}
-
-          {/* Messages Bubble Box */}
-          <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-3.5 bg-[#fcfbfa]">
-            {messages.length === 0 ? (
-              <div className="h-full flex flex-col items-center justify-center text-center p-8 text-stone-400">
-                <MessageSquare className="w-10 h-10 mb-2 opacity-30 text-stone-600" />
-                <p className="text-xs font-semibold text-stone-600">
-                  {requestStatus === 'pending'
-                    ? 'Consultation request awaiting approval'
-                    : 'No messages yet in this consultation'}
-                </p>
-                <p className="text-[11px] text-stone-400 mt-1 max-w-sm">
-                  {requestStatus === 'accepted'
-                    ? 'Send a message below. Notifications are delivered exclusively to the receiver in their Notification Center.'
-                    : 'Messaging will unlock once the recipient accepts this academic consultation request.'}
-                </p>
-              </div>
-            ) : (
-              messages.map((m) => {
-                const isMine = m.senderId === userProfile?.userId || m.senderName === userProfile?.fullName;
-                const canDelete = isMine || activeRole === 'admin';
-                const confirmingMsg = confirmDeleteMsgId === m.id;
-
-                return (
-                  <div
-                    key={m.id}
-                    className={`flex ${isMine ? 'justify-end' : 'justify-start'} animate-in fade-in duration-150`}
-                  >
-                    <div
-                      className={`max-w-[88%] sm:max-w-[75%] rounded-2xl p-3.5 text-xs shadow-2xs leading-relaxed ${
-                        isMine
-                          ? 'bg-blue-900 text-white rounded-br-none'
-                          : 'bg-white border border-stone-200 text-stone-800 rounded-bl-none'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between gap-3 mb-1">
-                        <span className={`text-[10px] font-bold ${isMine ? 'text-amber-300' : 'text-stone-500'}`}>
-                          {m.senderName}
-                        </span>
-                        <div className="flex items-center gap-1.5 shrink-0">
-                          <span className="text-[9px] opacity-60">
-                            {new Date(m.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                          </span>
-                          {canDelete && (
-                            confirmingMsg ? (
-                              <div className="flex items-center gap-1">
-                                <button
-                                  type="button"
-                                  onClick={() => handleDeleteMessage(m.id)}
-                                  className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-rose-600 text-white hover:bg-rose-700"
-                                >
-                                  Confirm
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => setConfirmDeleteMsgId(null)}
-                                  className={`text-[10px] font-semibold px-1 py-0.5 rounded ${
-                                    isMine ? 'text-blue-100 hover:text-white' : 'text-stone-500 hover:text-stone-800'
-                                  }`}
-                                >
-                                  Cancel
-                                </button>
-                              </div>
-                            ) : (
-                              <button
-                                type="button"
-                                onClick={() => setConfirmDeleteMsgId(m.id)}
-                                className={`p-1 rounded transition-colors ${
-                                  isMine
-                                    ? 'text-blue-200 hover:text-white hover:bg-white/10'
-                                    : 'text-stone-400 hover:text-rose-600 hover:bg-rose-50'
-                                }`}
-                                title="Delete message"
-                                aria-label="Delete message"
-                              >
-                                <Trash2 className="w-3 h-3" />
-                              </button>
-                            )
-                          )}
-                        </div>
-                      </div>
-                      <p className="whitespace-pre-wrap">{m.text}</p>
-                    </div>
-                  </div>
-                );
-              })
-            )}
-            <div ref={messagesEndRef} />
-          </div>
-
-          {/* Message Input Box */}
-          <div className="border-t border-stone-200 p-3.5 bg-white">
-            {isChatUnlocked ? (
-              <form
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  handleSendMessage();
-                }}
-                className="flex items-center gap-2"
-              >
-                <input
-                  type="text"
-                  placeholder={`Message ${otherParticipantName}...`}
-                  value={inputText}
-                  onChange={(e) => setInputText(e.target.value)}
-                  className="flex-1 rounded-xl border border-stone-200 bg-stone-50 px-4 py-2.5 text-xs text-stone-800 focus:bg-white focus:outline-none focus:border-blue-900 transition-all shadow-xs"
-                />
-                <button
-                  type="submit"
-                  disabled={!inputText.trim()}
-                  className="rounded-xl bg-blue-900 p-2.5 text-white hover:bg-blue-950 disabled:opacity-40 transition-colors shadow-xs"
-                  title="Send message (Notifies recipient only)"
-                >
-                  <Send className="w-4 h-4 text-amber-300" />
-                </button>
-              </form>
-            ) : (
-              <div className="rounded-xl bg-stone-50 border border-stone-200 p-3 text-center text-xs text-stone-500 flex items-center justify-center gap-2">
-                <Lock className="w-4 h-4 text-stone-400" />
-                <span>
-                  {requestStatus === 'declined'
-                    ? 'Direct messaging is closed because the request was declined.'
-                    : isReceiverOfRequest
-                    ? 'Please accept or decline the consultation request above to unlock messaging.'
-                    : 'Messaging locked while waiting for the recipient to accept the consultation request.'}
-                </span>
-              </div>
-            )}
-          </div>
         </div>
       </div>
 
-      {/* NEW CONSULTATION / USER PICKER MODAL */}
-      {showNewChatModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-stone-900/60 p-4 backdrop-blur-xs">
-          <div className="w-full max-w-lg rounded-2xl border border-stone-200 bg-white p-6 shadow-2xl relative animate-in zoom-in-95 duration-200">
-            <div className="flex items-center justify-between border-b border-stone-100 pb-3 mb-4">
-              <div>
-                <h3 className="font-serif text-lg font-bold text-stone-900">
-                  New Direct Consultation
-                </h3>
-                <p className="text-xs text-stone-500 mt-0.5">
-                  Select a student, teacher, parent, or admin to send a direct message request
-                </p>
-              </div>
+      {/* Prominent Search and Filter Section */}
+      <div className="rounded-2xl border border-blue-100 bg-white p-5 shadow-xs space-y-4">
+        {/* Full-width Search Input */}
+        <div className="relative w-full">
+          <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-blue-600" />
+          <input
+            type="text"
+            placeholder="Search study materials by title, topic, subject (Physics, Chemistry...), or keyword..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="w-full rounded-xl border border-slate-200 bg-slate-50 py-3 pl-11 pr-10 text-xs sm:text-sm text-slate-800 placeholder-slate-400 focus:bg-white focus:border-blue-600 focus:outline-none transition-all shadow-2xs"
+          />
+          {searchQuery && (
+            <button
+              onClick={() => setSearchQuery('')}
+              className="absolute right-3 top-1/2 -translate-y-1/2 p-1 rounded-full text-slate-400 hover:text-slate-600 hover:bg-slate-200 transition-colors"
+              title="Clear search"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          )}
+        </div>
+
+        {/* Filter Badges & Subject Selectors */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-1 border-t border-slate-100">
+          {/* Format Filters */}
+          <div className="flex items-center gap-1.5 overflow-x-auto pb-1 sm:pb-0 scrollbar-none text-xs">
+            <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider mr-1 shrink-0">
+              Format:
+            </span>
+            {['all', 'pdf', 'document', 'presentation', 'link'].map((type) => (
               <button
-                onClick={() => setShowNewChatModal(false)}
-                className="rounded-lg p-1.5 hover:bg-stone-100 text-stone-400"
+                key={type}
+                onClick={() => setFilterType(type)}
+                className={`rounded-lg px-2.5 py-1 text-xs font-semibold capitalize transition-all shrink-0 ${
+                  filterType === type
+                    ? 'bg-blue-900 text-white shadow-2xs'
+                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                }`}
+              >
+                {type === 'all' ? 'All Types' : `${type.toUpperCase()}s`}
+              </button>
+            ))}
+          </div>
+
+          {/* Subject Filter */}
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider shrink-0">
+              Subject:
+            </span>
+            <select
+              value={filterSubject}
+              onChange={(e) => setFilterSubject(e.target.value)}
+              className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-700 focus:bg-white focus:outline-none"
+            >
+              <option value="all">All Subjects ({subjects.length})</option>
+              {subjects.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        {/* Results Counter and Active Filter Pill */}
+        <div className="flex items-center justify-between text-xs text-slate-500 pt-1">
+          <p>
+            Showing <span className="font-bold text-blue-950">{filtered.length}</span> of{' '}
+            <span className="font-bold text-blue-950">{materials.length}</span> materials
+          </p>
+          {(searchQuery || filterType !== 'all' || filterSubject !== 'all') && (
+            <button
+              onClick={() => {
+                setSearchQuery('');
+                setFilterType('all');
+                setFilterSubject('all');
+              }}
+              className="text-xs font-semibold text-red-600 hover:underline"
+            >
+              Reset all filters
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Materials Grid */}
+      {filtered.length === 0 ? (
+        <div className="rounded-2xl border border-blue-100 bg-white p-12 text-center shadow-xs">
+          <LivePaperScannerGraphic accent="blue" className="w-20 h-20 mx-auto mb-2" />
+          <h3 className="font-serif text-lg font-bold text-blue-950">No study materials found</h3>
+          <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto">
+            No materials matched your search query "{searchQuery}". Try searching for another topic or clear filters.
+          </p>
+          <button
+            onClick={() => {
+              setSearchQuery('');
+              setFilterType('all');
+              setFilterSubject('all');
+            }}
+            className="mt-4 px-4 py-2 rounded-xl bg-blue-900 text-white font-bold text-xs hover:bg-blue-950 transition-colors"
+          >
+            Clear Search & Filters
+          </button>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+          {filtered.map((mat) => {
+            const subj = subjects.find((s) => s.id === mat.subjectId);
+            return (
+              <div
+                key={mat.id}
+                className="rounded-2xl border border-blue-100 bg-white p-6 shadow-xs hover:shadow-md hover:border-blue-300 transition-all flex flex-col justify-between"
+              >
+                <div>
+                  <div className="flex items-center justify-between mb-3">
+                    <span
+                      className="rounded-md px-2.5 py-0.5 text-[10px] font-bold text-white uppercase tracking-wider shadow-2xs"
+                      style={{ backgroundColor: subj?.color || '#1e3a8a' }}
+                    >
+                      {subj?.code || 'SCI-28'}
+                    </span>
+                    <span className="text-[11px] font-semibold text-slate-400">
+                      {mat.fileSize || '3.5 MB'}
+                    </span>
+                  </div>
+
+                  <h3 className="font-serif text-base font-bold text-blue-950 mb-2 leading-snug">
+                    {mat.title}
+                  </h3>
+                  <p className="text-xs text-slate-600 line-clamp-3 leading-relaxed">
+                    {mat.description}
+                  </p>
+                </div>
+
+                <div className="mt-6 pt-4 border-t border-slate-100 flex items-center justify-between">
+                  <div>
+                    <p className="text-[11px] font-bold text-blue-900">{subj?.name || 'Science Stream'}</p>
+                    <p className="text-[10px] text-slate-400">Faculty: {mat.teacherName || 'Science Faculty Lead'}</p>
+                  </div>
+                  <a
+                    href={mat.fileUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="rounded-xl bg-blue-900 hover:bg-blue-950 text-white p-2.5 transition-colors shadow-2xs group"
+                    title="View / Download Resource"
+                  >
+                    <Download className="w-4 h-4 text-white group-hover:scale-110 transition-transform" />
+                  </a>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Upload Modal */}
+      {showUploadModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-blue-950/60 p-4 backdrop-blur-xs">
+          <div className="w-full max-w-md rounded-2xl border border-blue-200 bg-white p-6 shadow-2xl relative animate-in zoom-in-95 duration-200">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3 mb-4">
+              <h3 className="font-serif text-lg font-bold text-blue-950">Publish Learning Material</h3>
+              <button
+                onClick={() => setShowUploadModal(false)}
+                className="rounded-lg p-1.5 hover:bg-slate-100 text-slate-400"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            <div className="mb-4">
-              <div className="relative">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-stone-400" />
+            <div className="space-y-4 text-xs">
+              <div>
+                <label className="font-bold text-blue-950 uppercase tracking-wider block mb-1 text-[11px]">
+                  Material Title
+                </label>
                 <input
                   type="text"
-                  placeholder="Search by name, role, or email..."
-                  value={modalSearch}
-                  onChange={(e) => setModalSearch(e.target.value)}
-                  className="w-full pl-9 pr-3 py-2 border border-stone-200 rounded-xl text-xs bg-stone-50 focus:bg-white focus:outline-none"
+                  value={newTitle}
+                  onChange={(e) => setNewTitle(e.target.value)}
+                  placeholder="e.g. Physics Mechanics Chapter 1 Handout"
+                  className="w-full rounded-xl border border-slate-200 bg-slate-50 p-2.5 text-slate-800 focus:bg-white focus:outline-none"
                 />
               </div>
-            </div>
 
-            <div className="max-h-80 overflow-y-auto divide-y divide-stone-100 rounded-xl border border-stone-100">
-              {filteredAvailableUsers.length === 0 ? (
-                <div className="p-8 text-center text-xs text-stone-400">
-                  No academic users found matching your search.
-                </div>
-              ) : (
-                filteredAvailableUsers.map((u) => (
-                  <div
-                    key={u.userId}
-                    className="p-3 flex items-center justify-between hover:bg-stone-50 transition-colors text-xs"
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="font-bold text-blue-950 uppercase tracking-wider block mb-1 text-[11px]">
+                    Subject
+                  </label>
+                  <select
+                    value={newSubjectId}
+                    onChange={(e) => setNewSubjectId(e.target.value)}
+                    className="w-full rounded-xl border border-slate-200 bg-slate-50 p-2.5 text-slate-800 font-semibold focus:bg-white focus:outline-none"
                   >
-                    <div className="flex items-center gap-3">
-                      <div className="h-9 w-9 rounded-full bg-stone-900 text-amber-400 flex items-center justify-center font-bold text-xs shrink-0">
-                        {u.fullName?.charAt(0) || 'U'}
-                      </div>
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <p className="font-bold text-stone-900">
-                            {u.fullName?.replace(/\s*\(Admin.*?\)/gi, '')}
-                          </p>
-                          <span
-                            className={`rounded px-2 py-0.2 text-[9px] font-bold uppercase ${
-                              u.role === 'admin'
-                                ? 'bg-blue-100 text-blue-900'
-                                : u.role === 'teacher'
-                                ? 'bg-blue-100 text-blue-900'
-                                : u.role === 'parent'
-                                ? 'bg-amber-100 text-amber-800'
-                                : 'bg-emerald-100 text-emerald-800'
-                            }`}
-                          >
-                            {u.role === 'admin' ? 'Faculty Lead' : u.role}
-                          </span>
-                        </div>
-                        <p className="text-[11px] text-stone-500 mt-0.5">
-                          {u.email} {u.stream ? `• ${u.stream}` : u.subject ? `• ${u.subject}` : ''}
-                        </p>
-                      </div>
-                    </div>
+                    {subjects.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
 
-                    <button
-                      onClick={() => handleStartConsultation(u)}
-                      className="px-3 py-1.5 rounded-lg bg-blue-900 hover:bg-blue-950 text-white font-bold text-[11px] transition-colors shrink-0 shadow-2xs"
+                <div>
+                  <label className="font-bold text-blue-950 uppercase tracking-wider block mb-1 text-[11px]">
+                    File Format
+                  </label>
+                  <select
+                    value={newType}
+                    onChange={(e) => setNewType(e.target.value as any)}
+                    className="w-full rounded-xl border border-slate-200 bg-slate-50 p-2.5 text-slate-800 font-semibold uppercase focus:bg-white focus:outline-none"
+                  >
+                    <option value="pdf">PDF Document</option>
+                    <option value="document">Word Doc</option>
+                    <option value="presentation">Slide Deck</option>
+                    <option value="link">Web Resource</option>
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="font-bold text-blue-950 uppercase tracking-wider block mb-1 text-[11px]">
+                  Description / Topics Covered
+                </label>
+                <textarea
+                  rows={3}
+                  value={newDesc}
+                  onChange={(e) => setNewDesc(e.target.value)}
+                  placeholder="Key concepts, equations, and examination focus..."
+                  className="w-full rounded-xl border border-slate-200 bg-slate-50 p-2.5 text-slate-800 focus:bg-white focus:outline-none"
+                />
+              </div>
+
+              {/* Device File Upload Section */}
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="font-bold text-blue-950 uppercase tracking-wider text-[11px] flex items-center gap-1.5">
+                    <Upload className="w-3.5 h-3.5 text-blue-700" />
+                    <span>Upload File From Device (Max 10 MB)</span>
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setUseManualUrl(!useManualUrl);
+                      setFileError(null);
+                    }}
+                    className="text-[10px] font-semibold text-blue-700 hover:underline"
+                  >
+                    {useManualUrl ? 'Switch to Device Upload' : 'Or use URL link'}
+                  </button>
+                </div>
+
+                {!useManualUrl ? (
+                  <div className="space-y-2">
+                    <label
+                      htmlFor="material-file-input"
+                      className={`border-2 border-dashed rounded-xl p-4 flex flex-col items-center justify-center text-center cursor-pointer transition-colors ${
+                        selectedFile
+                          ? 'border-emerald-300 bg-emerald-50/40'
+                          : 'border-blue-200 bg-blue-50/30 hover:bg-blue-50/60 hover:border-blue-300'
+                      }`}
                     >
-                      Request Chat
-                    </button>
-                  </div>
-                ))
-              )}
-            </div>
+                      <input
+                        id="material-file-input"
+                        type="file"
+                        accept=".pdf,application/pdf,.doc,.docx,.ppt,.pptx"
+                        onChange={handleFileChange}
+                        className="hidden"
+                      />
 
-            <div className="mt-4 pt-3 border-t border-stone-100 flex items-center justify-between text-[11px] text-stone-400">
-              <span>A notification will be sent solely to the recipient.</span>
-              <button
-                onClick={() => setShowNewChatModal(false)}
-                className="font-bold text-stone-600 hover:underline"
-              >
-                Close
-              </button>
+                      {selectedFile ? (
+                        <div className="flex items-center gap-3 text-left w-full">
+                          <div className="h-10 w-10 rounded-lg bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0">
+                            <File className="w-5 h-5" />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="font-bold text-emerald-950 text-xs truncate">{selectedFile.name}</p>
+                            <p className="text-[11px] text-emerald-700">
+                              {(selectedFile.size / (1024 * 1024)).toFixed(2)} MB • Ready to upload (under 10 MB limit)
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              setSelectedFile(null);
+                              setFileBase64(null);
+                            }}
+                            className="p-1 rounded-lg hover:bg-emerald-200 text-emerald-800"
+                            title="Remove file"
+                          >
+                            <X className="w-4 h-4" />
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="space-y-1">
+                          <div className="h-9 w-9 rounded-full bg-blue-100 text-blue-700 flex items-center justify-center mx-auto mb-1">
+                            <Upload className="w-4 h-4" />
+                          </div>
+                          <p className="font-bold text-blue-950 text-xs">
+                            Select PDF from your device
+                          </p>
+                          <p className="text-[11px] text-slate-500">
+                            Direct upload without needing any URL • Max 10 MB file size
+                          </p>
+                        </div>
+                      )}
+                    </label>
+
+                    {fileError && (
+                      <div className="p-2.5 rounded-xl bg-red-50 border border-red-200 flex items-start gap-2 text-red-700 text-[11px]">
+                        <AlertCircle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
+                        <span>{fileError}</span>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div>
+                    <input
+                      type="text"
+                      value={newLink}
+                      onChange={(e) => setNewLink(e.target.value)}
+                      placeholder="https://..."
+                      className="w-full rounded-xl border border-slate-200 bg-slate-50 p-2.5 text-slate-800 font-mono text-xs focus:bg-white focus:outline-none"
+                    />
+                    <p className="text-[10px] text-slate-400 mt-1">
+                      Direct cloud document or website resource link
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  disabled={isUploading}
+                  onClick={() => {
+                    setShowUploadModal(false);
+                    setSelectedFile(null);
+                    setFileBase64(null);
+                    setFileError(null);
+                  }}
+                  className="px-4 py-2 rounded-xl text-slate-600 hover:bg-slate-100 text-xs font-semibold disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleUploadMaterial}
+                  disabled={isUploading || (!selectedFile && !newLink.trim())}
+                  className="inline-flex items-center gap-1.5 px-5 py-2.5 rounded-xl bg-blue-900 text-white font-bold text-xs hover:bg-blue-950 shadow-xs disabled:opacity-50 transition-colors"
+                >
+                  {isUploading ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin text-white" />
+                      <span>Uploading (Max 10MB)...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Check className="w-3.5 h-3.5 text-white" />
+                      <span>Publish Material</span>
+                    </>
+                  )}
+                </button>
+              </div>
             </div>
           </div>
         </div>
