@@ -41,19 +41,32 @@ import {
   ReferenceLine,
 } from 'recharts';
 import { collection, onSnapshot } from 'firebase/firestore';
-import { db } from '../../firebase';
+import { db, handleFirestoreError, OperationType } from '../../firebase';
 import {
   SchoolClass,
   Assignment,
   Submission,
-  Discussion,
   Quiz,
   AttendanceRecord,
+  AttendanceDayControl,
+  RosterStudent,
   UserProfile,
 } from '../../types';
 import { useAuth } from '../../context/AuthContext';
 import { useTheme } from '../../context/ThemeContext';
 import { sendAdminAttendanceAlert } from '../../services/notificationService';
+import {
+  LiveMorphIcon,
+  LivePaperScannerGraphic,
+  LiveOrbitalScienceGraphic,
+  HERO_SCIENCE_ICONS,
+  LAB_CYCLE_ICONS,
+} from '../common/LiveVisuals';
+import {
+  getMatchingStudentIds,
+  isAttendanceRecordActive,
+  resolveStudentStatusInRecord,
+} from '../../utils/attendanceUtils';
 
 interface TeacherDashboardProps {
   onNavigate: (page: string) => void;
@@ -71,6 +84,8 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
   const [submissions, setSubmissions] = useState<Submission[]>([]);
   const [quizzes, setQuizzes] = useState<Quiz[]>([]);
   const [attendanceRecords, setAttendanceRecords] = useState<AttendanceRecord[]>([]);
+  const [dayControlsMap, setDayControlsMap] = useState<Record<string, AttendanceDayControl>>({});
+  const [rosterStudents, setRosterStudents] = useState<RosterStudent[]>([]);
   const [students, setStudents] = useState<UserProfile[]>([]);
   const [selectedClassId, setSelectedClassId] = useState<string>('all');
   const [chartMode, setChartMode] = useState<'rate' | 'breakdown'>('rate');
@@ -104,8 +119,31 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
 
     const unsubAttendance = onSnapshot(collection(db, 'attendance'), (snap) => {
       const list: AttendanceRecord[] = [];
-      snap.forEach((d) => list.push(d.data() as AttendanceRecord));
+      snap.forEach((d) => {
+        const rec = d.data() as AttendanceRecord;
+        list.push({ ...rec, id: rec.id || d.id });
+      });
       setAttendanceRecords(list);
+    });
+
+    const unsubDaySettings = onSnapshot(
+      collection(db, 'attendanceDaySettings'),
+      (snap) => {
+        const map: Record<string, AttendanceDayControl> = {};
+        snap.forEach((d) => {
+          const data = d.data() as AttendanceDayControl;
+          const dateKey = data.date || d.id;
+          if (dateKey) map[dateKey] = { ...data, id: d.id, date: dateKey };
+        });
+        setDayControlsMap(map);
+      },
+      (error) => handleFirestoreError(error, OperationType.LIST, 'attendanceDaySettings')
+    );
+
+    const unsubRoster = onSnapshot(collection(db, 'attendanceRoster'), (snap) => {
+      const list: RosterStudent[] = [];
+      snap.forEach((d) => list.push({ ...(d.data() as RosterStudent), id: d.id }));
+      setRosterStudents(list);
     });
 
     const unsubStudents = onSnapshot(collection(db, 'userProfiles'), (snap) => {
@@ -124,6 +162,8 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
       unsubSubmissions();
       unsubQuizzes();
       unsubAttendance();
+      unsubDaySettings();
+      unsubRoster();
       unsubStudents();
     };
   }, []);
@@ -131,121 +171,89 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
   const pendingSubmissions = submissions.filter((s) => s.status === 'submitted' || s.status === 'under_review');
   const myClasses = classes;
 
-  // Calculate student attendance trends over the last 30 days
+  // Strictly active saved attendance records (only dates where Attendance Marking is ON)
+  const activeAttendanceRecords = useMemo(() => {
+    return attendanceRecords.filter((rec) => {
+      if (!isAttendanceRecordActive(rec, dayControlsMap)) return false;
+      if (selectedClassId !== 'all' && rec.classId && rec.classId !== selectedClassId) return false;
+      return true;
+    });
+  }, [attendanceRecords, dayControlsMap, selectedClassId]);
+
+  // Build trend points strictly from real saved registers (supports multiple classes per date)
   const attendanceTrendData = useMemo(() => {
-    const result = [];
-    const today = new Date();
-    const studentsCount = students.length > 0 ? students.length : 18;
-
-    // Index existing Firestore attendance records by date
-    const recordsByDate = new Map<
-      string,
-      { present: number; absent: number; late: number; excused: number; total: number; rate: number }
-    >();
-
-    attendanceRecords.forEach((rec) => {
-      if (selectedClassId !== 'all' && rec.classId && rec.classId !== selectedClassId) {
-        return;
-      }
-      const studentStatuses = Object.values(rec.records || {});
-      if (studentStatuses.length > 0) {
-        let present = 0;
-        let absent = 0;
-        let late = 0;
-        let excused = 0;
-        studentStatuses.forEach((status) => {
-          if (status === 'present') present++;
-          else if (status === 'absent') absent++;
-          else if (status === 'late') late++;
-          else if (status === 'excused') excused++;
-        });
-        const total = present + absent + late + excused;
-        const rate = total > 0 ? Math.round(((present + late * 0.5) / total) * 100) : 0;
-        recordsByDate.set(rec.date, { present, absent, late, excused, total, rate });
-      }
+    const sorted = [...activeAttendanceRecords].sort((a, b) => {
+      const dateCmp = (a.date || '').localeCompare(b.date || '');
+      if (dateCmp !== 0) return dateCmp;
+      return (a.createdAt || '').localeCompare(b.createdAt || '');
     });
 
-    // Generate 30 days backwards up to today
-    for (let i = 29; i >= 0; i--) {
-      const d = new Date(today);
-      d.setDate(today.getDate() - i);
-      const dateStr = d.toISOString().split('T')[0];
-      const isWeekend = d.getDay() === 0 || d.getDay() === 6; // Sunday (0) or Saturday (6)
+    const countByDate = new Map<string, number>();
+    sorted.forEach((rec) => countByDate.set(rec.date, (countByDate.get(rec.date) || 0) + 1));
 
-      const displayDate = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-      const fullDate = d.toLocaleDateString('en-US', {
-        weekday: 'short',
-        month: 'short',
-        day: 'numeric',
-        year: 'numeric',
+    return sorted.map((rec) => {
+      const studentStatuses = Object.values(rec.records || {});
+      let present = 0;
+      let absent = 0;
+      let late = 0;
+      let excused = 0;
+      studentStatuses.forEach((status) => {
+        if (status === 'present') present++;
+        else if (status === 'absent') absent++;
+        else if (status === 'late') late++;
+        else if (status === 'excused') excused++;
       });
 
-      if (recordsByDate.has(dateStr)) {
-        const rec = recordsByDate.get(dateStr)!;
-        result.push({
-          date: dateStr,
-          displayDate,
-          fullDate,
-          dayOfWeek: d.toLocaleDateString('en-US', { weekday: 'short' }),
-          isWeekend,
-          present: rec.present,
-          absent: rec.absent,
-          late: rec.late,
-          excused: rec.excused,
-          total: rec.total,
-          rate: rec.rate,
-          isRealRecord: true,
-        });
-      } else {
-        // Deterministic realistic baseline for academic days
-        if (isWeekend) {
-          result.push({
-            date: dateStr,
-            displayDate,
-            fullDate,
-            dayOfWeek: d.toLocaleDateString('en-US', { weekday: 'short' }),
-            isWeekend: true,
-            present: studentsCount,
-            absent: 0,
-            late: 0,
-            excused: 0,
-            total: studentsCount,
-            rate: 100,
-            isRealRecord: false,
-          });
-        } else {
-          // Weekdays: typical attendance 90% - 98% with occasional absences
-          const charSum = dateStr.split('').reduce((sum, ch) => sum + ch.charCodeAt(0), 0);
-          const absent = charSum % 3; // 0, 1, or 2 students absent
-          const late = (charSum + 1) % 2; // 0 or 1 student late
-          const present = Math.max(0, studentsCount - absent - late);
-          const rate = Math.round(((present + late * 0.5) / studentsCount) * 100);
+      const total = present + absent + late + excused;
+      const rate = total > 0 ? Math.round(((present + excused + late * 0.5) / total) * 100) : 0;
 
-          result.push({
-            date: dateStr,
-            displayDate,
-            fullDate,
-            dayOfWeek: d.toLocaleDateString('en-US', { weekday: 'short' }),
-            isWeekend: false,
-            present,
-            absent,
-            late,
-            excused: 0,
-            total: studentsCount,
-            rate,
-            isRealRecord: false,
-          });
-        }
-      }
-    }
+      const parsedDate = new Date(`${rec.date}T00:00:00`);
+      const validDate = !Number.isNaN(parsedDate.getTime());
+      const shortDate = validDate
+        ? parsedDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+        : rec.date;
+      const fullDate = validDate
+        ? parsedDate.toLocaleDateString('en-US', {
+            weekday: 'short',
+            month: 'short',
+            day: 'numeric',
+            year: 'numeric',
+          })
+        : rec.date;
 
-    return result;
-  }, [attendanceRecords, selectedClassId, students]);
+      const sessionLabel = rec.sessionSubject || 'Daily Roll-Call';
+      const hasMultipleToday = (countByDate.get(rec.date) || 0) > 1;
+      const shortSubject = sessionLabel.length > 10 ? `${sessionLabel.slice(0, 9)}…` : sessionLabel;
 
-  // Attendance KPIs for the last 30 days
+      return {
+        id: rec.id,
+        date: rec.date,
+        displayDate: hasMultipleToday ? `${shortDate} (${shortSubject})` : shortDate,
+        fullDate,
+        sessionLabel,
+        timeSlot: rec.timeSlot || '',
+        present,
+        absent,
+        late,
+        excused,
+        total,
+        rate,
+      };
+    });
+  }, [activeAttendanceRecords]);
+
+  // Real Attendance KPIs strictly from saved active sessions (zero fake fallback numbers)
   const kpis = useMemo(() => {
     if (attendanceTrendData.length === 0) {
-      return { avgRate: 0, peakRate: 0, totalAbsences: 0, totalLate: 0, onTimeRate: 100 };
+      return {
+        hasData: false,
+        avgRate: null as number | null,
+        peakRate: null as number | null,
+        totalAbsences: 0,
+        totalLate: 0,
+        onTimeRate: null as number | null,
+        totalSessions: 0,
+      };
     }
     const totalRate = attendanceTrendData.reduce((acc, curr) => acc + curr.rate, 0);
     const avgRate = Math.round(totalRate / attendanceTrendData.length);
@@ -254,55 +262,61 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
     const totalLate = attendanceTrendData.reduce((acc, curr) => acc + curr.late, 0);
     const totalPresent = attendanceTrendData.reduce((acc, curr) => acc + curr.present, 0);
     const onTimeRate =
-      totalPresent + totalLate > 0 ? Math.round((totalPresent / (totalPresent + totalLate)) * 100) : 100;
+      totalPresent + totalLate > 0 ? Math.round((totalPresent / (totalPresent + totalLate)) * 100) : null;
 
-    return { avgRate, peakRate, totalAbsences, totalLate, onTimeRate };
+    return {
+      hasData: true,
+      avgRate,
+      peakRate,
+      totalAbsences,
+      totalLate,
+      onTimeRate,
+      totalSessions: attendanceTrendData.length,
+    };
   }, [attendanceTrendData]);
 
-  // Individual student attendance rate calculation to enforce the <75% institutional alert threshold
+  // Individual student attendance rate calculation strictly from saved active records (<75% threshold)
   const studentAttendanceStats = useMemo(() => {
-    return students.map((st) => {
-      let sessions = 0;
-      let presentCount = 0;
-      let lateCount = 0;
-      let absentCount = 0;
+    return students
+      .map((st) => {
+        const candidateIds = getMatchingStudentIds(st, rosterStudents);
+        let sessions = 0;
+        let presentCount = 0;
+        let lateCount = 0;
+        let absentCount = 0;
 
-      attendanceRecords.forEach((rec) => {
-        if (selectedClassId !== 'all' && rec.classId && rec.classId !== selectedClassId) return;
-        const status = rec.records?.[st.userId];
-        if (status) {
-          sessions++;
-          if (status === 'present') presentCount++;
-          else if (status === 'late') lateCount++;
-          else if (status === 'absent') absentCount++;
-        }
-      });
+        activeAttendanceRecords.forEach((rec) => {
+          const status = resolveStudentStatusInRecord(rec, candidateIds);
+          if (status) {
+            sessions++;
+            if (status === 'present' || status === 'excused') presentCount++;
+            else if (status === 'late') lateCount++;
+            else if (status === 'absent') absentCount++;
+          }
+        });
 
-      let rate = 100;
-      if (sessions > 0) {
-        rate = Math.round(((presentCount + lateCount * 0.5) / sessions) * 100);
-      } else {
-        rate = 92;
-      }
+        if (sessions === 0) return null;
 
-      const indexNumber = st.bio?.includes('Index:')
-        ? st.bio.split('Index:')[1].split('•')[0].trim()
-        : undefined;
+        const rate = Math.round(((presentCount + lateCount * 0.5) / sessions) * 100);
+        const indexNumber =
+          st.indexNumber ||
+          (st.bio?.includes('Index:') ? st.bio.split('Index:')[1].split('•')[0].trim() : undefined);
 
-      return {
-        userId: st.userId,
-        fullName: st.fullName || 'Scholar',
-        email: st.email,
-        indexNumber,
-        sessions: sessions > 0 ? sessions : 1,
-        presentCount,
-        lateCount,
-        absentCount,
-        attendanceRate: rate,
-        isBelowThreshold: rate < 75,
-      };
-    });
-  }, [students, attendanceRecords, selectedClassId]);
+        return {
+          userId: st.userId,
+          fullName: st.fullName || 'Scholar',
+          email: st.email,
+          indexNumber,
+          sessions,
+          presentCount,
+          lateCount,
+          absentCount,
+          attendanceRate: rate,
+          isBelowThreshold: rate < 75,
+        };
+      })
+      .filter((item): item is NonNullable<typeof item> => item !== null);
+  }, [students, rosterStudents, activeAttendanceRecords]);
 
   const atRiskStudents = useMemo(() => {
     return studentAttendanceStats.filter((s) => s.isBelowThreshold);
@@ -404,16 +418,13 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
             </div>
           </div>
 
-          {data.isRealRecord ? (
-            <div className="mt-2 text-[10px] text-blue-700 dark:text-blue-300 font-semibold flex items-center justify-end gap-1">
+          <div className="mt-2 flex items-center justify-between gap-2 text-[10px] text-blue-700 dark:text-blue-300 font-semibold">
+            <span className="truncate">{data.sessionLabel}{data.timeSlot ? ` (${data.timeSlot})` : ''}</span>
+            <span className="flex items-center gap-1 shrink-0">
               <CheckCircle2 className="w-3 h-3 text-blue-600" />
-              <span>Verified Class Register Log</span>
-            </div>
-          ) : (
-            <div className="mt-2 text-[10px] text-slate-400 font-normal text-right">
-              Historical baseline estimate
-            </div>
-          )}
+              <span>Saved Log</span>
+            </span>
+          </div>
         </div>
       );
     }
@@ -423,11 +434,12 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
   return (
     <div className="space-y-8 animate-in fade-in duration-300">
       {/* Welcome Banner - Blue, White, Red Collegiate Theme */}
-      <div className="rounded-2xl border border-blue-900 bg-gradient-to-r from-blue-950 via-blue-900 to-indigo-950 p-6 md:p-8 text-white shadow-xl">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+      <div className="live-gradient-banner relative overflow-hidden rounded-2xl border border-blue-900 bg-gradient-to-r from-blue-950 via-blue-900 to-indigo-950 p-6 md:p-8 text-white shadow-xl">
+        <LiveOrbitalScienceGraphic className="w-24 h-24 opacity-20 pointer-events-none hidden xl:block absolute right-6 top-3" />
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 relative z-10">
           <div>
             <div className="inline-flex items-center gap-1.5 rounded-full bg-red-600 px-3 py-1 text-xs font-bold text-white shadow-sm">
-              <Sparkles className="w-3.5 h-3.5" />
+              <LiveMorphIcon icons={HERO_SCIENCE_ICONS} intervalMs={2200} className="w-3.5 h-3.5" />
               <span>Zahira College Mawanella • Faculty Workspace</span>
             </div>
             <h2 className="font-serif text-2xl md:text-3xl font-bold tracking-tight text-white mt-2 flex items-center flex-wrap gap-2">
@@ -448,7 +460,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
               onClick={() => onNavigate('labs')}
               className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 px-4 py-2.5 text-xs font-bold text-white transition-all shadow-md"
             >
-              <FlaskConical className="w-4 h-4 text-emerald-200" />
+              <LiveMorphIcon icons={LAB_CYCLE_ICONS} intervalMs={2100} className="w-4 h-4 text-emerald-200" />
               <span>Virtual Science Labs</span>
             </button>
             <button
@@ -482,7 +494,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
           <div className="flex items-center justify-between text-stone-500">
             <span className="text-xs font-semibold uppercase tracking-wider">Assigned Classes</span>
             <div className="p-2 rounded-xl bg-emerald-50 text-emerald-700">
-              <GraduationCap className="w-4 h-4" />
+              <LiveMorphIcon icons={[GraduationCap, Users, BookOpen]} intervalMs={2600} className="w-4 h-4" />
             </div>
           </div>
           <p className="font-serif text-3xl font-bold text-stone-900 mt-2">{myClasses.length}</p>
@@ -493,7 +505,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
           <div className="flex items-center justify-between text-stone-500">
             <span className="text-xs font-semibold uppercase tracking-wider">Pending Grading</span>
             <div className="p-2 rounded-xl bg-amber-50 text-amber-700">
-              <FileText className="w-4 h-4" />
+              <LiveMorphIcon icons={[FileText, Clock, CheckCircle2]} intervalMs={3000} className="w-4 h-4" />
             </div>
           </div>
           <p className="font-serif text-3xl font-bold text-stone-900 mt-2">{pendingSubmissions.length}</p>
@@ -507,7 +519,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
           <div className="flex items-center justify-between text-stone-500">
             <span className="text-xs font-semibold uppercase tracking-wider">Active Quizzes</span>
             <div className="p-2 rounded-xl bg-sky-50 text-sky-700">
-              <FileCheck2 className="w-4 h-4" />
+              <LiveMorphIcon icons={[FileCheck2, Sparkles, BrainCircuit]} intervalMs={3400} className="w-4 h-4" />
             </div>
           </div>
           <p className="font-serif text-3xl font-bold text-stone-900 mt-2">{quizzes.length}</p>
@@ -519,14 +531,18 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
           className="rounded-2xl border border-stone-200 bg-white p-5 shadow-xs hover:shadow-md transition-all cursor-pointer hover:border-blue-400 group"
         >
           <div className="flex items-center justify-between text-stone-500">
-            <span className="text-xs font-semibold uppercase tracking-wider">Attendance (30d)</span>
+            <span className="text-xs font-semibold uppercase tracking-wider">Saved Attendance</span>
             <div className="p-2 rounded-xl bg-purple-50 text-purple-700 group-hover:bg-purple-100 transition-colors">
-              <CalendarCheck2 className="w-4 h-4" />
+              <LiveMorphIcon icons={[CalendarCheck2, TrendingUp, Activity]} intervalMs={2800} className="w-4 h-4" />
             </div>
           </div>
-          <p className="font-serif text-3xl font-bold text-stone-900 mt-2">{kpis.avgRate}%</p>
+          <p className="font-serif text-3xl font-bold text-stone-900 mt-2">
+            {kpis.hasData && kpis.avgRate !== null ? `${kpis.avgRate}%` : '—'}
+          </p>
           <div className="flex items-center justify-between mt-2 text-[11px]">
-            <span className="text-emerald-700 font-medium">{kpis.totalAbsences} absences logged</span>
+            <span className="text-emerald-700 font-medium">
+              {kpis.hasData ? `${kpis.totalSessions} saved session(s)` : 'No saved active logs'}
+            </span>
             <span className="text-blue-600 font-bold group-hover:underline flex items-center gap-0.5">
               <span>Inspect</span>
               <ChevronRight className="w-3 h-3" />
@@ -535,23 +551,23 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
         </div>
       </div>
 
-      {/* 30-Day Student Attendance Trends Visualizer (Recharts) */}
+      {/* Saved Student Attendance Trends Visualizer (Recharts - Zero Fake Data) */}
       <div className="rounded-2xl border border-blue-100 bg-white p-6 shadow-xs space-y-6">
         {/* Chart Header */}
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-blue-50">
           <div>
             <div className="inline-flex items-center gap-1.5 rounded-full bg-blue-50 px-2.5 py-0.5 text-[11px] font-bold text-blue-900 border border-blue-200 mb-1">
               <TrendingUp className="w-3.5 h-3.5 text-blue-700" />
-              <span>Zahira College 2k28 Science EM • Analytics</span>
+              <span>Zahira College 2k28 Science EM • Saved Attendance Only</span>
             </div>
             <h3 className="font-serif text-xl font-bold text-blue-950 flex items-center gap-2">
-              <span>Student Attendance Trends (Last 30 Days)</span>
+              <span>Saved Student Attendance Trends</span>
               <span className="text-xs font-sans font-semibold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200">
-                {kpis.avgRate}% Avg Rate
+                {kpis.hasData && kpis.avgRate !== null ? `${kpis.avgRate}% Avg Rate` : 'Awaiting Saved Logs'}
               </span>
             </h3>
             <p className="text-xs text-slate-500 mt-0.5">
-              Daily roll-call participation, punctuality tracking, and institutional target monitoring for faculty leads.
+              Plotted strictly from saved class attendance registers on days where Attendance Marking is turned ON.
             </p>
           </div>
 
@@ -610,33 +626,43 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
           </div>
         </div>
 
-        {/* 30-Day KPI Summary Ribbon */}
+        {/* Saved Attendance KPI Summary Ribbon */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           <div className="p-3.5 rounded-xl bg-blue-50/60 border border-blue-100">
             <span className="text-[11px] font-semibold text-blue-900 uppercase tracking-wider block">
-              30-Day Average
+              Saved Average
             </span>
             <div className="flex items-baseline gap-2 mt-1">
-              <span className="font-serif text-2xl font-bold text-blue-950">{kpis.avgRate}%</span>
-              <span
-                className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
-                  kpis.avgRate >= 90
-                    ? 'bg-emerald-100 text-emerald-800'
-                    : 'bg-amber-100 text-amber-800'
-                }`}
-              >
-                {kpis.avgRate >= 90 ? 'Target Met (≥90%)' : 'Needs Focus (<90%)'}
+              <span className="font-serif text-2xl font-bold text-blue-950">
+                {kpis.hasData && kpis.avgRate !== null ? `${kpis.avgRate}%` : '—'}
               </span>
+              {kpis.hasData && kpis.avgRate !== null ? (
+                <span
+                  className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                    kpis.avgRate >= 90
+                      ? 'bg-emerald-100 text-emerald-800'
+                      : 'bg-amber-100 text-amber-800'
+                  }`}
+                >
+                  {kpis.avgRate >= 90 ? 'Target Met (≥90%)' : 'Needs Focus (<90%)'}
+                </span>
+              ) : (
+                <span className="text-[11px] text-slate-400">No logs yet</span>
+              )}
             </div>
           </div>
 
           <div className="p-3.5 rounded-xl bg-emerald-50/60 border border-emerald-100">
             <span className="text-[11px] font-semibold text-emerald-900 uppercase tracking-wider block">
-              Peak Attendance Day
+              Peak Session Rate
             </span>
             <div className="flex items-baseline gap-2 mt-1">
-              <span className="font-serif text-2xl font-bold text-emerald-950">{kpis.peakRate}%</span>
-              <span className="text-[11px] text-emerald-700 font-medium">Full Cohort Turnout</span>
+              <span className="font-serif text-2xl font-bold text-emerald-950">
+                {kpis.hasData && kpis.peakRate !== null ? `${kpis.peakRate}%` : '—'}
+              </span>
+              <span className="text-[11px] text-emerald-700 font-medium">
+                {kpis.hasData ? `${kpis.totalSessions} saved class(es)` : 'Mark attendance'}
+              </span>
             </div>
           </div>
 
@@ -645,25 +671,44 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
               Punctuality Rate
             </span>
             <div className="flex items-baseline gap-2 mt-1">
-              <span className="font-serif text-2xl font-bold text-sky-950">{kpis.onTimeRate}%</span>
+              <span className="font-serif text-2xl font-bold text-sky-950">
+                {kpis.hasData && kpis.onTimeRate !== null ? `${kpis.onTimeRate}%` : '—'}
+              </span>
               <span className="text-[11px] text-sky-700 font-medium">{kpis.totalLate} late total</span>
             </div>
           </div>
 
           <div className="p-3.5 rounded-xl bg-rose-50/60 border border-rose-100">
             <span className="text-[11px] font-semibold text-rose-900 uppercase tracking-wider block">
-              Total Absences (30d)
+              Total Absences
             </span>
             <div className="flex items-baseline gap-2 mt-1">
               <span className="font-serif text-2xl font-bold text-rose-950">{kpis.totalAbsences}</span>
-              <span className="text-[11px] text-rose-700 font-medium">Student-day logs</span>
+              <span className="text-[11px] text-rose-700 font-medium">Saved student logs</span>
             </div>
           </div>
         </div>
 
-        {/* Recharts Chart Canvas */}
+        {/* Recharts Chart Canvas or Clean Empty State */}
         <div className="w-full h-80 pt-2">
-          {chartMode === 'rate' ? (
+          {attendanceTrendData.length === 0 ? (
+            <div className="h-full w-full rounded-2xl border border-dashed border-blue-200 bg-slate-50/60 flex flex-col items-center justify-center text-center p-6">
+              <LivePaperScannerGraphic accent="blue" className="w-20 h-20 mb-2" />
+              <h4 className="font-serif text-base font-bold text-slate-800">
+                No Saved Active Attendance Records Yet
+              </h4>
+              <p className="text-xs text-slate-500 mt-1 max-w-md">
+                Only attendance saved on days with <strong>Attendance: ON</strong> appears here. Dates turned OFF or unmarked days never show synthetic estimates.
+              </p>
+              <button
+                onClick={() => onNavigate('attendance')}
+                className="mt-4 inline-flex items-center gap-1.5 rounded-xl bg-blue-900 hover:bg-blue-800 text-white px-4 py-2 text-xs font-bold shadow-xs transition-colors"
+              >
+                <CalendarCheck2 className="w-3.5 h-3.5" />
+                <span>Open Attendance Register</span>
+              </button>
+            </div>
+          ) : chartMode === 'rate' ? (
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart data={attendanceTrendData} margin={{ top: 10, right: 15, left: -20, bottom: 0 }}>
                 <defs>
@@ -678,10 +723,9 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                   tick={{ fill: isDark ? '#94a3b8' : '#64748b', fontSize: 11 }}
                   tickLine={false}
                   axisLine={{ stroke: isDark ? '#334155' : '#cbd5e1' }}
-                  interval={3}
                 />
                 <YAxis
-                  domain={[60, 100]}
+                  domain={[0, 100]}
                   tick={{ fill: isDark ? '#94a3b8' : '#64748b', fontSize: 11 }}
                   tickLine={false}
                   axisLine={false}
@@ -708,8 +752,8 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                   strokeWidth={2.5}
                   fillOpacity={1}
                   fill="url(#teacherAttendanceGradient)"
-                  dot={{ r: 2.5, fill: '#1e3a8a', strokeWidth: 1 }}
-                  activeDot={{ r: 5, fill: '#dc2626', stroke: '#ffffff', strokeWidth: 2 }}
+                  dot={{ r: 3.5, fill: '#1e3a8a', strokeWidth: 1 }}
+                  activeDot={{ r: 5.5, fill: '#dc2626', stroke: '#ffffff', strokeWidth: 2 }}
                 />
               </AreaChart>
             </ResponsiveContainer>
@@ -722,9 +766,9 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                   tick={{ fill: isDark ? '#94a3b8' : '#64748b', fontSize: 11 }}
                   tickLine={false}
                   axisLine={{ stroke: isDark ? '#334155' : '#cbd5e1' }}
-                  interval={3}
                 />
                 <YAxis
+                  allowDecimals={false}
                   tick={{ fill: isDark ? '#94a3b8' : '#64748b', fontSize: 11 }}
                   tickLine={false}
                   axisLine={false}
