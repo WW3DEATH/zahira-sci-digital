@@ -24,6 +24,11 @@ import { TutorChatMessage, TutorSession } from '../types';
 import { AIMarkdownMath } from '../components/common/AIMarkdownMath';
 import { getApiUrl } from '../services/apiConfig';
 import { generateClientTutorFallback } from '../services/localTutorFallback';
+import {
+  LiveMorphIcon,
+  LiveOrbitalScienceGraphic,
+  HERO_SCIENCE_ICONS,
+} from '../components/common/LiveVisuals';
 
 interface TutorPageProps {
   initialTopic?: string;
@@ -244,10 +249,11 @@ Type any question below and I will break it down step-by-step for you!`,
   return (
     <div className="space-y-6 animate-in fade-in duration-300">
       {/* Header */}
-      <div className="rounded-2xl border border-amber-200/80 bg-gradient-to-r from-stone-900 via-stone-800 to-stone-900 p-6 text-white shadow-xl flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div>
+      <div className="live-gradient-banner relative overflow-hidden rounded-2xl border border-amber-200/80 bg-gradient-to-r from-stone-900 via-stone-800 to-stone-900 p-6 text-white shadow-xl flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <LiveOrbitalScienceGraphic className="w-24 h-24 opacity-20 pointer-events-none hidden lg:block absolute right-6 top-3" />
+        <div className="relative z-10">
           <div className="inline-flex items-center gap-1.5 rounded-full bg-amber-400/20 px-3 py-1 text-xs font-semibold text-amber-300 border border-amber-400/30">
-            <Sparkles className="w-3.5 h-3.5" />
+            <LiveMorphIcon icons={HERO_SCIENCE_ICONS} intervalMs={2100} className="w-3.5 h-3.5" />
             <span>Google Gemini AI Academic Tutor</span>
           </div>
           <h2 className="font-serif text-2xl font-bold tracking-tight text-white mt-2">
@@ -258,7 +264,7 @@ Type any question below and I will break it down step-by-step for you!`,
           </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2 shrink-0">
+        <div className="flex flex-wrap items-center gap-2 shrink-0 relative z-10">
           <button
             onClick={() => setShowApiKeyPanel(!showApiKeyPanel)}
             className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-xs font-bold transition-all shadow-md border ${
