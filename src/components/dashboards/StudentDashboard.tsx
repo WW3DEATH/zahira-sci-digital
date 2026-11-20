@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   BookOpen,
   FileText,
@@ -32,6 +32,15 @@ import {
   Target,
   FlaskConical,
   X,
+  Calendar,
+  MapPin,
+  GraduationCap,
+  Users,
+  UserPlus,
+  Hash,
+  Send,
+  Hourglass,
+  Trash2,
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -52,8 +61,8 @@ import {
   Cell,
   ReferenceLine,
 } from 'recharts';
-import { collection, onSnapshot } from 'firebase/firestore';
-import { db, handleFirestoreError, OperationType } from '../../firebase';
+import { collection, deleteDoc, doc, onSnapshot, setDoc } from 'firebase/firestore';
+import { db, handleFirestoreError, OperationType, sanitizeFirestoreDoc } from '../../firebase';
 import {
   Assignment,
   Quiz,
@@ -65,8 +74,12 @@ import {
   QuizAttempt,
   Discussion,
   DiscussionReply,
+  SchoolEvent,
+  StudyGroupJoinRequest,
+  STUDY_GROUP_ROOMS,
 } from '../../types';
 import { useAuth } from '../../context/AuthContext';
+import { isInBatch, resolveItemBatchId, useBatch } from '../../context/BatchContext';
 import { useTheme } from '../../context/ThemeContext';
 import {
   LiveMorphIcon,
@@ -79,7 +92,6 @@ import {
   SEED_ASSIGNMENTS,
   SEED_SUBMISSIONS,
   SEED_TESTS,
-  SEED_ATTENDANCE,
   SEED_DISCUSSIONS,
   SEED_DISCUSSION_REPLIES,
   isFakeSeedRosterStudent,
@@ -106,17 +118,26 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
   onLaunchTutorTopic,
 }) => {
   const { userProfile } = useAuth();
+  const { activeBatchId, activeBatch, getBatchName } = useBatch();
+  const activeBatchName = activeBatch?.name || getBatchName(activeBatchId);
   const { isDark } = useTheme();
-  const [assignments, setAssignments] = useState<Assignment[]>(SEED_ASSIGNMENTS);
-  const [submissions, setSubmissions] = useState<Submission[]>(SEED_SUBMISSIONS);
-  const [quizzes, setQuizzes] = useState<Quiz[]>([]);
-  const [marks, setMarks] = useState<TestMark[]>([]);
-  const [attendance, setAttendance] = useState<AttendanceRecord[]>(SEED_ATTENDANCE);
+  const [allAssignments, setAllAssignments] = useState<Assignment[]>(SEED_ASSIGNMENTS);
+  const [allSubmissions, setAllSubmissions] = useState<Submission[]>(SEED_SUBMISSIONS);
+  const [allQuizzes, setAllQuizzes] = useState<Quiz[]>([]);
+  const [allMarks, setAllMarks] = useState<TestMark[]>([]);
+  const [allAttendance, setAllAttendance] = useState<AttendanceRecord[]>([]);
   const [dayControlsMap, setDayControlsMap] = useState<Record<string, AttendanceDayControl>>({});
-  const [rosterStudents, setRosterStudents] = useState<RosterStudent[]>([]);
-  const [quizAttempts, setQuizAttempts] = useState<QuizAttempt[]>([]);
-  const [discussions, setDiscussions] = useState<Discussion[]>(SEED_DISCUSSIONS);
-  const [discussionReplies, setDiscussionReplies] = useState<DiscussionReply[]>(SEED_DISCUSSION_REPLIES);
+  const [allRosterStudents, setAllRosterStudents] = useState<RosterStudent[]>([]);
+  const [allQuizAttempts, setAllQuizAttempts] = useState<QuizAttempt[]>([]);
+  const [allDiscussions, setAllDiscussions] = useState<Discussion[]>(SEED_DISCUSSIONS);
+  const [allDiscussionReplies, setAllDiscussionReplies] = useState<DiscussionReply[]>(SEED_DISCUSSION_REPLIES);
+  const [allSchoolEvents, setAllSchoolEvents] = useState<SchoolEvent[]>([]);
+  const [allStudyGroupRequests, setAllStudyGroupRequests] = useState<StudyGroupJoinRequest[]>([]);
+  const [selectedRoomByEventId, setSelectedRoomByEventId] = useState<Record<string, string>>({});
+  const [studyNoteByEventId, setStudyNoteByEventId] = useState<Record<string, string>>({});
+  const [submittingStudyReqKey, setSubmittingStudyReqKey] = useState<string | null>(null);
+  const [studyReqNotice, setStudyReqNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const [loading, setLoading] = useState(true);
   const [selectedTerm, setSelectedTerm] = useState<'term1' | 'term2' | 'all'>('term1');
   const [browserPermission, setBrowserPermission] = useState<NotificationPermission>(
@@ -126,6 +147,15 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
   const [showStudyPlanner, setShowStudyPlanner] = useState(false);
   const [showStudentIDModal, setShowStudentIDModal] = useState(false);
   const [completionCadence, setCompletionCadence] = useState<'daily' | 'weekly'>('daily');
+  const [attChartMode, setAttChartMode] = useState<'rate' | 'counts'>('rate');
+
+  // 1-second live tick for Upcoming Exams countdown timer
+  useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      setNowMs(Date.now());
+    }, 1000);
+    return () => window.clearInterval(intervalId);
+  }, []);
 
   // Ensure current student profile has their allocated 7-digit student index number
   useEffect(() => {
@@ -147,19 +177,19 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
     const unsubAssignments = onSnapshot(collection(db, 'assignments'), (snap) => {
       const list: Assignment[] = [];
       snap.forEach((d) => list.push(d.data() as Assignment));
-      setAssignments(list);
+      setAllAssignments(list);
     });
 
     const unsubSubmissions = onSnapshot(collection(db, 'submissions'), (snap) => {
       const list: Submission[] = [];
       snap.forEach((d) => list.push(d.data() as Submission));
-      setSubmissions(list);
+      setAllSubmissions(list);
     });
 
     const unsubQuizzes = onSnapshot(collection(db, 'quizzes'), (snap) => {
       const list: Quiz[] = [];
       snap.forEach((d) => list.push(d.data() as Quiz));
-      setQuizzes(list);
+      setAllQuizzes(list);
     });
 
     const unsubAttendance = onSnapshot(collection(db, 'attendance'), (snap) => {
@@ -168,7 +198,7 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
         const rec = d.data() as AttendanceRecord;
         list.push({ ...rec, id: rec.id || d.id });
       });
-      setAttendance(list);
+      setAllAttendance(list);
     });
 
     const unsubDaySettings = onSnapshot(
@@ -178,7 +208,7 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
         snap.forEach((d) => {
           const data = d.data() as AttendanceDayControl;
           const dateKey = data.date || d.id;
-          if (dateKey) map[dateKey] = { ...data, id: d.id, date: dateKey };
+          map[d.id] = { ...data, id: d.id, date: dateKey };
         });
         setDayControlsMap(map);
       },
@@ -192,25 +222,25 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
         if (isFakeSeedRosterStudent(d.id, data?.fullName)) return;
         list.push({ ...data, id: d.id });
       });
-      setRosterStudents(list);
+      setAllRosterStudents(list);
     });
 
     const unsubAttempts = onSnapshot(collection(db, 'quizAttempts'), (snap) => {
       const list: QuizAttempt[] = [];
       snap.forEach((d) => list.push(d.data() as QuizAttempt));
-      setQuizAttempts(list);
+      setAllQuizAttempts(list);
     });
 
     const unsubDiscussions = onSnapshot(collection(db, 'discussions'), (snap) => {
       const list: Discussion[] = [];
       snap.forEach((d) => list.push(d.data() as Discussion));
-      setDiscussions(list);
+      setAllDiscussions(list);
     });
 
     const unsubReplies = onSnapshot(collection(db, 'discussionReplies'), (snap) => {
       const list: DiscussionReply[] = [];
       snap.forEach((d) => list.push(d.data() as DiscussionReply));
-      setDiscussionReplies(list);
+      setAllDiscussionReplies(list);
     });
 
     const unsubMarks = onSnapshot(collection(db, 'testMarks'), (snap) => {
@@ -222,9 +252,32 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
           (userProfile?.indexNumber && m.studentIndex && m.studentIndex.trim() === userProfile.indexNumber.trim()) ||
           (userProfile?.fullName && m.studentName && m.studentName.trim().toLowerCase() === userProfile.fullName.trim().toLowerCase())
       );
-      setMarks(userMarks);
+      setAllMarks(userMarks);
       setLoading(false);
     });
+
+    const unsubSchoolEvents = onSnapshot(collection(db, 'schoolEvents'), (snap) => {
+      const list: SchoolEvent[] = [];
+      snap.forEach((d) => {
+        const data = d.data() as SchoolEvent;
+        list.push({ ...data, id: data.id || d.id });
+      });
+      setAllSchoolEvents(list);
+    });
+
+    const unsubStudyRequests = onSnapshot(
+      collection(db, 'studyGroupRequests'),
+      (snap) => {
+        const list: StudyGroupJoinRequest[] = [];
+        snap.forEach((d) => {
+          const data = d.data() as StudyGroupJoinRequest;
+          list.push({ ...data, id: data.id || d.id });
+        });
+        list.sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime());
+        setAllStudyGroupRequests(list);
+      },
+      (error) => handleFirestoreError(error, OperationType.LIST, 'studyGroupRequests')
+    );
 
     return () => {
       unsubAssignments();
@@ -237,8 +290,273 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
       unsubDiscussions();
       unsubReplies();
       unsubMarks();
+      unsubSchoolEvents();
+      unsubStudyRequests();
     };
   }, [userProfile?.userId, userProfile?.fullName, userProfile?.indexNumber]);
+
+  // Batch-isolated academic collections
+  const assignments = useMemo(
+    () => allAssignments.filter((a) => isInBatch(a.batchId, activeBatchId)),
+    [allAssignments, activeBatchId]
+  );
+  const submissions = useMemo(
+    () => allSubmissions.filter((s) => isInBatch(s.batchId, activeBatchId)),
+    [allSubmissions, activeBatchId]
+  );
+  const quizzes = useMemo(
+    () => allQuizzes.filter((q) => isInBatch(q.batchId, activeBatchId)),
+    [allQuizzes, activeBatchId]
+  );
+  const marks = useMemo(
+    () => allMarks.filter((m) => isInBatch(m.batchId, activeBatchId)),
+    [allMarks, activeBatchId]
+  );
+  const attendance = useMemo(
+    () => allAttendance.filter((rec) => isInBatch(rec.batchId, activeBatchId)),
+    [allAttendance, activeBatchId]
+  );
+  const rosterStudents = useMemo(
+    () => allRosterStudents.filter((r) => isInBatch(r.batchId, activeBatchId)),
+    [allRosterStudents, activeBatchId]
+  );
+  const quizAttempts = useMemo(
+    () => allQuizAttempts.filter((a) => isInBatch(a.batchId, activeBatchId)),
+    [allQuizAttempts, activeBatchId]
+  );
+  const discussions = useMemo(
+    () => allDiscussions.filter((d) => isInBatch(d.batchId, activeBatchId)),
+    [allDiscussions, activeBatchId]
+  );
+  const discussionReplies = useMemo(
+    () => allDiscussionReplies.filter((r) => isInBatch(r.batchId, activeBatchId)),
+    [allDiscussionReplies, activeBatchId]
+  );
+
+  // Scheduled upcoming exams sourced strictly from Firestore Calendar (schoolEvents where type === 'exam')
+  const upcomingExams = useMemo(() => {
+    const parseExamStartMs = (startDate: string, timeStr?: string): number | null => {
+      if (!startDate || !/^\d{4}-\d{2}-\d{2}/.test(startDate)) return null;
+      const datePart = startDate.slice(0, 10);
+      let hours = 8;
+      let minutes = 30;
+      if (timeStr) {
+        const cleaned = timeStr.trim();
+        const match = cleaned.match(/(\d{1,2})[:.](\d{2})\s*(am|pm)?/i);
+        if (match) {
+          let h = parseInt(match[1], 10);
+          const m = parseInt(match[2], 10);
+          const meridiem = match[3]?.toLowerCase();
+          if (meridiem === 'pm' && h < 12) h += 12;
+          if (meridiem === 'am' && h === 12) h = 0;
+          if (h >= 0 && h <= 23 && m >= 0 && m <= 59) {
+            hours = h;
+            minutes = m;
+          }
+        }
+      }
+      const hh = String(hours).padStart(2, '0');
+      const mm = String(minutes).padStart(2, '0');
+      const dt = new Date(`${datePart}T${hh}:${mm}:00`);
+      return Number.isNaN(dt.getTime()) ? null : dt.getTime();
+    };
+
+    const parseExamEndMs = (endDate: string, fallbackStartMs: number): number => {
+      if (endDate && /^\d{4}-\d{2}-\d{2}/.test(endDate)) {
+        const dt = new Date(`${endDate.slice(0, 10)}T23:59:59`);
+        if (!Number.isNaN(dt.getTime())) return dt.getTime();
+      }
+      const d = new Date(fallbackStartMs);
+      d.setHours(23, 59, 59, 999);
+      return d.getTime();
+    };
+
+    return allSchoolEvents
+      .filter((ev) => ev.type === 'exam' && isInBatch(ev.batchId, activeBatchId))
+      .map((ev) => {
+        const startMs = parseExamStartMs(ev.startDate, ev.time);
+        if (startMs === null) return null;
+        const endMs = parseExamEndMs(ev.endDate || ev.startDate, startMs);
+        return { event: ev, startMs, endMs };
+      })
+      .filter((item): item is { event: SchoolEvent; startMs: number; endMs: number } => {
+        if (!item) return false;
+        return item.endMs >= nowMs;
+      })
+      .sort((a, b) => a.startMs - b.startMs);
+  }, [allSchoolEvents, activeBatchId, nowMs]);
+
+  const nextExamEntry = upcomingExams.find((item) => item.startMs > nowMs) || upcomingExams[0] || null;
+  const activeTodayExamEntry = upcomingExams.find((item) => item.startMs <= nowMs && item.endMs >= nowMs) || null;
+  const remainingExamQueue = useMemo(() => {
+    if (!nextExamEntry) return [];
+    return upcomingExams.filter((item) => item.event.id !== nextExamEntry.event.id).slice(0, 3);
+  }, [upcomingExams, nextExamEntry]);
+
+  const examCountdown = useMemo(() => {
+    if (!nextExamEntry) {
+      return { days: 0, hours: 0, minutes: 0, seconds: 0, totalMs: 0, isInProgress: false };
+    }
+    const diffMs = Math.max(0, nextExamEntry.startMs - nowMs);
+    const totalSeconds = Math.floor(diffMs / 1000);
+    const days = Math.floor(totalSeconds / 86400);
+    const hours = Math.floor((totalSeconds % 86400) / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    return {
+      days,
+      hours,
+      minutes,
+      seconds,
+      totalMs: diffMs,
+      isInProgress: diffMs === 0 && nextExamEntry.endMs >= nowMs,
+    };
+  }, [nextExamEntry, nowMs]);
+
+  const inferStudyRoomId = (ev: SchoolEvent): string => {
+    if (ev.studyRoomId && STUDY_GROUP_ROOMS.some((r) => r.id === ev.studyRoomId)) {
+      return ev.studyRoomId;
+    }
+    const text = `${ev.title} ${ev.description || ''} ${ev.location || ''}`.toLowerCase();
+    if (text.includes('math') || text.includes('calculus') || text.includes('mechanics')) return 'cmath';
+    if (text.includes('bio') || text.includes('genetics') || text.includes('cell')) return 'bio';
+    if (text.includes('phys') || text.includes('optic') || text.includes('wave')) return 'physics';
+    if (text.includes('chem') || text.includes('organic') || text.includes('titration')) return 'chemistry';
+    if (text.includes('ict') || text.includes('code') || text.includes('program') || text.includes('database')) return 'ict';
+    return 'general';
+  };
+
+  // Upcoming Peer Study Group sessions fetched dynamically from Firestore Calendar events
+  const upcomingStudySessions = useMemo(() => {
+    const parseSessionStartMs = (startDate: string, timeStr?: string): number | null => {
+      if (!startDate || !/^\d{4}-\d{2}-\d{2}/.test(startDate)) return null;
+      const datePart = startDate.slice(0, 10);
+      let hours = 14;
+      let minutes = 0;
+      if (timeStr) {
+        const match = timeStr.trim().match(/(\d{1,2})[:.](\d{2})\s*(am|pm)?/i);
+        if (match) {
+          let h = parseInt(match[1], 10);
+          const m = parseInt(match[2], 10);
+          const meridiem = match[3]?.toLowerCase();
+          if (meridiem === 'pm' && h < 12) h += 12;
+          if (meridiem === 'am' && h === 12) h = 0;
+          if (h >= 0 && h <= 23 && m >= 0 && m <= 59) {
+            hours = h;
+            minutes = m;
+          }
+        }
+      }
+      const dt = new Date(`${datePart}T${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:00`);
+      return Number.isNaN(dt.getTime()) ? null : dt.getTime();
+    };
+
+    const studyKeywordRegex = /\b(study\s*group|peer\s*study|study\s*room|group\s*study|study\s*session)\b/i;
+
+    return allSchoolEvents
+      .filter((ev) => {
+        if (!isInBatch(ev.batchId, activeBatchId)) return false;
+        const isStudySession =
+          ev.type === 'study_group' ||
+          Boolean(ev.studyRoomId) ||
+          studyKeywordRegex.test(`${ev.title || ''} ${ev.description || ''}`);
+        return isStudySession;
+      })
+      .map((ev) => {
+        const startMs = parseSessionStartMs(ev.startDate, ev.time);
+        if (startMs === null) return null;
+        const endDateStr = ev.endDate && /^\d{4}-\d{2}-\d{2}/.test(ev.endDate) ? ev.endDate.slice(0, 10) : ev.startDate.slice(0, 10);
+        const endDt = new Date(`${endDateStr}T23:59:59`);
+        const endMs = Number.isNaN(endDt.getTime()) ? startMs + 6 * 3600 * 1000 : endDt.getTime();
+        return {
+          event: ev,
+          startMs,
+          endMs,
+          defaultRoomId: inferStudyRoomId(ev),
+        };
+      })
+      .filter((item): item is { event: SchoolEvent; startMs: number; endMs: number; defaultRoomId: string } => {
+        if (!item) return false;
+        return item.endMs >= nowMs;
+      })
+      .sort((a, b) => a.startMs - b.startMs);
+  }, [allSchoolEvents, activeBatchId, nowMs]);
+
+  const batchStudyRequests = useMemo(
+    () => allStudyGroupRequests.filter((r) => isInBatch(r.batchId, activeBatchId)),
+    [allStudyGroupRequests, activeBatchId]
+  );
+
+  const myStudyRequests = useMemo(() => {
+    if (!userProfile?.userId) return [];
+    return batchStudyRequests.filter((r) => r.studentId === userProfile.userId);
+  }, [batchStudyRequests, userProfile?.userId]);
+
+  const handleRequestJoinStudyRoom = async (ev: SchoolEvent, targetRoomId: string) => {
+    if (!userProfile?.userId) {
+      setStudyReqNotice({ type: 'error', message: 'Please sign in as a student to request joining a study room.' });
+      return;
+    }
+    const roomObj = STUDY_GROUP_ROOMS.find((r) => r.id === targetRoomId) || STUDY_GROUP_ROOMS[0];
+    const roomName = ev.studyRoomId === targetRoomId && ev.studyRoomName ? ev.studyRoomName : roomObj.name;
+    const reqKey = `${ev.id}__${targetRoomId}`;
+    const docId = `${ev.id}__${targetRoomId}__${userProfile.userId}`;
+    const targetBatchId = resolveItemBatchId(ev.batchId || userProfile.batchId || activeBatchId);
+    const targetBatchName = getBatchName(targetBatchId);
+    const trimmedNote = (studyNoteByEventId[ev.id] || '').trim().slice(0, 240);
+
+    setSubmittingStudyReqKey(reqKey);
+    setStudyReqNotice(null);
+    try {
+      const nowIso = new Date().toISOString();
+      const payload: StudyGroupJoinRequest = {
+        id: docId,
+        eventId: ev.id,
+        eventTitle: ev.title,
+        eventDate: ev.startDate,
+        eventTime: ev.time || '14:00',
+        eventLocation: ev.location || 'Study Hall / Online Room',
+        roomId: targetRoomId,
+        roomName,
+        studentId: userProfile.userId,
+        studentName: userProfile.fullName || userProfile.username || 'Student Scholar',
+        studentEmail: userProfile.email,
+        studentIndex: studentIndexNumber,
+        batchId: targetBatchId,
+        batchName: targetBatchName,
+        note: trimmedNote || undefined,
+        status: 'pending',
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      };
+      await setDoc(doc(db, 'studyGroupRequests', docId), sanitizeFirestoreDoc(payload), { merge: true });
+      setStudyNoteByEventId((prev) => ({ ...prev, [ev.id]: '' }));
+      setStudyReqNotice({
+        type: 'success',
+        message: `Join request sent for "${roomName}" study room (${ev.title}).`,
+      });
+      window.setTimeout(() => setStudyReqNotice(null), 4500);
+    } catch (err) {
+      setStudyReqNotice({ type: 'error', message: 'Could not submit study room join request. Please try again.' });
+      handleFirestoreError(err, OperationType.WRITE, `studyGroupRequests/${docId}`);
+    } finally {
+      setSubmittingStudyReqKey(null);
+    }
+  };
+
+  const handleWithdrawStudyRequest = async (requestId: string) => {
+    setSubmittingStudyReqKey(requestId);
+    try {
+      await deleteDoc(doc(db, 'studyGroupRequests', requestId));
+      setStudyReqNotice({ type: 'success', message: 'Study room join request withdrawn.' });
+      window.setTimeout(() => setStudyReqNotice(null), 3500);
+    } catch (err) {
+      setStudyReqNotice({ type: 'error', message: 'Failed to withdraw request.' });
+      handleFirestoreError(err, OperationType.DELETE, `studyGroupRequests/${requestId}`);
+    } finally {
+      setSubmittingStudyReqKey(null);
+    }
+  };
 
   // Check for upcoming deadlines (<24h) and trigger desktop notification
   useEffect(() => {
@@ -259,102 +577,169 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
   );
 
   const activeAttendanceRecords = React.useMemo(
-    () => attendance.filter((rec) => isAttendanceRecordActive(rec, dayControlsMap)),
-    [attendance, dayControlsMap]
+    () => attendance.filter((rec) => isAttendanceRecordActive(rec, dayControlsMap, undefined, activeBatchId)),
+    [attendance, dayControlsMap, activeBatchId]
   );
 
-  const studentAttendanceTrendData = React.useMemo(() => {
-    const sorted = [...activeAttendanceRecords].sort((a, b) => {
-      const dateCmp = (a.date || '').localeCompare(b.date || '');
-      if (dateCmp !== 0) return dateCmp;
-      return (a.createdAt || '').localeCompare(b.createdAt || '');
-    });
+  const last30DaysAttendance = React.useMemo(() => {
+    const toLocalIsoDate = (dt: Date): string => {
+      const y = dt.getFullYear();
+      const m = String(dt.getMonth() + 1).padStart(2, '0');
+      const d = String(dt.getDate()).padStart(2, '0');
+      return `${y}-${m}-${d}`;
+    };
 
-    // Include sessions where the student has an explicit entry
-    const matched = sorted
-      .map((rec) => {
-        const status = resolveStudentStatusInRecord(rec, candidateStudentIds);
-        if (!status) return null;
-        return { rec, status };
-      })
-      .filter((x): x is NonNullable<typeof x> => x !== null);
+    const nowDate = new Date();
+    const localTodayStr = toLocalIsoDate(nowDate);
+    const utcTodayStr = nowDate.toISOString().split('T')[0];
+    const anchorStr = utcTodayStr > localTodayStr ? utcTodayStr : localTodayStr;
+    const anchorDate = new Date(`${anchorStr}T00:00:00`);
 
-    const countByDate = new Map<string, number>();
-    matched.forEach((m) => countByDate.set(m.rec.date, (countByDate.get(m.rec.date) || 0) + 1));
+    // Group student's real saved attendance entries by YYYY-MM-DD date
+    const byDate = new Map<
+      string,
+      Array<{ status: 'present' | 'late' | 'excused' | 'absent'; subject: string; timeSlot: string }>
+    >();
 
-    let presentOrExcusedCount = 0;
-    let lateCount = 0;
-
-    return matched.map(({ rec, status }, idx) => {
-      if (status === 'present' || status === 'excused') presentOrExcusedCount++;
-      else if (status === 'late') lateCount++;
-
-      const sessionScore =
-        status === 'present' || status === 'excused' ? 100 : status === 'late' ? 50 : 0;
-      const cumulativeRate = Math.round(
-        ((presentOrExcusedCount + lateCount * 0.5) / (idx + 1)) * 100
-      );
-
-      const parsedDate = new Date(`${rec.date}T00:00:00`);
-      const validDate = !Number.isNaN(parsedDate.getTime());
-      const shortDate = validDate
-        ? parsedDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
-        : rec.date;
-      const fullDate = validDate
-        ? parsedDate.toLocaleDateString('en-US', {
-            weekday: 'short',
-            month: 'short',
-            day: 'numeric',
-            year: 'numeric',
-          })
-        : rec.date;
-      const sessionLabel = rec.sessionSubject || 'Daily Roll-Call';
-      const hasMultipleToday = (countByDate.get(rec.date) || 0) > 1;
-      const shortSubject = sessionLabel.length > 9 ? `${sessionLabel.slice(0, 8)}…` : sessionLabel;
-
-      return {
-        id: rec.id,
-        date: rec.date,
-        displayDate: hasMultipleToday ? `${shortDate} (${shortSubject})` : shortDate,
-        fullDate,
-        sessionLabel,
-        timeSlot: rec.timeSlot || '',
+    activeAttendanceRecords.forEach((rec) => {
+      const status = resolveStudentStatusInRecord(rec, candidateStudentIds);
+      if (!status || !rec.date) return;
+      const list = byDate.get(rec.date) || [];
+      list.push({
         status,
-        sessionScore,
-        cumulativeRate,
-      };
+        subject: rec.sessionSubject || 'Daily Roll-Call',
+        timeSlot: rec.timeSlot || '',
+      });
+      byDate.set(rec.date, list);
     });
+
+    const days: Array<{
+      date: string;
+      shortDate: string;
+      axisLabel: string;
+      fullDate: string;
+      hasRecord: boolean;
+      present: number;
+      late: number;
+      excused: number;
+      absent: number;
+      totalSessions: number;
+      realRate: number | null;
+      chartRate: number | null;
+      barColor: string;
+      sessions: Array<{ status: 'present' | 'late' | 'excused' | 'absent'; subject: string; timeSlot: string }>;
+    }> = [];
+
+    for (let offset = 29; offset >= 0; offset--) {
+      const d = new Date(anchorDate);
+      d.setDate(anchorDate.getDate() - offset);
+      const dateStr = toLocalIsoDate(d);
+      const entries = byDate.get(dateStr) || [];
+
+      let present = 0;
+      let late = 0;
+      let excused = 0;
+      let absent = 0;
+
+      entries.forEach((entry) => {
+        if (entry.status === 'present') present++;
+        else if (entry.status === 'late') late++;
+        else if (entry.status === 'excused') excused++;
+        else if (entry.status === 'absent') absent++;
+      });
+
+      const totalSessions = entries.length;
+      const hasRecord = totalSessions > 0;
+      const realRate = hasRecord
+        ? Math.round(((present + excused + late * 0.5) / totalSessions) * 100)
+        : null;
+
+      // Ensure an explicitly marked 0% (Absent) day still draws a slim red indicator bar,
+      // while days with no marked attendance remain empty (null).
+      const chartRate = hasRecord ? Math.max(realRate ?? 0, 7) : null;
+      const barColor = !hasRecord
+        ? 'transparent'
+        : (realRate ?? 0) >= 85
+        ? '#10b981'
+        : (realRate ?? 0) > 0
+        ? '#f59e0b'
+        : '#ef4444';
+
+      const shortDate = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      const axisLabel = `${d.getDate()}/${d.getMonth() + 1}`;
+      const fullDate = d.toLocaleDateString('en-US', {
+        weekday: 'short',
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+      });
+
+      days.push({
+        date: dateStr,
+        shortDate,
+        axisLabel,
+        fullDate,
+        hasRecord,
+        present,
+        late,
+        excused,
+        absent,
+        totalSessions,
+        realRate,
+        chartRate,
+        barColor,
+        sessions: entries,
+      });
+    }
+
+    const markedDays = days.filter((d) => d.hasRecord);
+    const totalSessions = markedDays.reduce((s, d) => s + d.totalSessions, 0);
+    const presentSessions = markedDays.reduce((s, d) => s + d.present + d.excused, 0);
+    const lateSessions = markedDays.reduce((s, d) => s + d.late, 0);
+    const absentSessions = markedDays.reduce((s, d) => s + d.absent, 0);
+    const avgRate =
+      totalSessions > 0
+        ? Math.round(((presentSessions + lateSessions * 0.5) / totalSessions) * 100)
+        : null;
+    const punctualityRate =
+      presentSessions + lateSessions > 0
+        ? Math.round((presentSessions / (presentSessions + lateSessions)) * 100)
+        : null;
+
+    return {
+      days,
+      markedDaysCount: markedDays.length,
+      totalSessions,
+      presentSessions,
+      lateSessions,
+      absentSessions,
+      avgRate,
+      punctualityRate,
+      startDateLabel: days[0]?.shortDate || '',
+      endDateLabel: days[days.length - 1]?.shortDate || '',
+    };
   }, [activeAttendanceRecords, candidateStudentIds]);
 
-  const studentAttTotal = studentAttendanceTrendData.length;
-  const studentAttPresent = studentAttendanceTrendData.filter(
-    (d) => d.status === 'present' || d.status === 'late' || d.status === 'excused'
+  const studentAttTotal = activeAttendanceRecords.filter(
+    (rec) => resolveStudentStatusInRecord(rec, candidateStudentIds) !== undefined
   ).length;
-  const studentAttExactPresent = studentAttendanceTrendData.filter(
-    (d) => d.status === 'present' || d.status === 'excused'
-  ).length;
-  const studentAttLateCount = studentAttendanceTrendData.filter((d) => d.status === 'late').length;
-  const studentAttAbsences = studentAttendanceTrendData.filter((d) => d.status === 'absent').length;
-  const studentAttAvgNum =
+  const studentAttPresent = activeAttendanceRecords.filter((rec) => {
+    const st = resolveStudentStatusInRecord(rec, candidateStudentIds);
+    return st === 'present' || st === 'late' || st === 'excused';
+  }).length;
+  const studentAttAvgNum = last30DaysAttendance.avgRate;
+  const studentAttRate =
     studentAttTotal > 0
-      ? Math.round(
-          (studentAttendanceTrendData.reduce(
-            (sum, d) => sum + (d.status === 'present' || d.status === 'excused' ? 1 : d.status === 'late' ? 0.5 : 0),
-            0
-          ) /
+      ? `${Math.round(
+          (activeAttendanceRecords.reduce((sum, rec) => {
+            const st = resolveStudentStatusInRecord(rec, candidateStudentIds);
+            if (!st) return sum;
+            return sum + (st === 'present' || st === 'excused' ? 1 : st === 'late' ? 0.5 : 0);
+          }, 0) /
             studentAttTotal) *
             100
-        )
-      : null;
-  const studentAttRate = studentAttAvgNum !== null ? `${studentAttAvgNum}%` : '—';
-  const studentAttPeakRate =
-    studentAttTotal > 0
-      ? Math.max(...studentAttendanceTrendData.map((d) => d.sessionScore))
-      : null;
-  const studentAttPunctualityRate =
-    studentAttExactPresent + studentAttLateCount > 0
-      ? Math.round((studentAttExactPresent / (studentAttExactPresent + studentAttLateCount)) * 100)
-      : null;
+        )}%`
+      : '—';
 
   const badgeSummary = calculateStudentBadges({
     studentId: userProfile?.userId || 'student_scholar',
@@ -518,7 +903,7 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
           <div>
             <div className="inline-flex items-center gap-1.5 rounded-full bg-red-600 px-3 py-1 text-xs font-bold text-white shadow-sm">
               <LiveMorphIcon icons={HERO_SCIENCE_ICONS} intervalMs={2200} className="w-3.5 h-3.5" />
-              <span>Zahira College Mawanella • 2k28 Science EM Scholar Portal</span>
+              <span>Zahira College Mawanella • {activeBatchName} Scholar Portal</span>
             </div>
             <h2 className="font-serif text-2xl md:text-3xl font-bold tracking-tight text-white mt-2 flex items-center flex-wrap gap-2">
               <span>Assalamu Alaikum, {userProfile?.fullName || 'Scholar'}!</span>
@@ -568,6 +953,14 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
             >
               <FlaskConical className="w-4 h-4 text-emerald-200" />
               <span>Virtual Science Labs</span>
+            </button>
+            <button
+              onClick={() => onNavigate('timetable')}
+              className="inline-flex items-center gap-2 rounded-xl bg-white/10 hover:bg-white/20 border border-white/20 px-3.5 py-3 text-xs font-semibold text-white transition-colors"
+              title="View your weekly class timetable"
+            >
+              <Clock className="w-4 h-4 text-amber-300" />
+              <span>Class Timetable</span>
             </button>
             <button
               onClick={() => onNavigate('assignments')}
@@ -780,6 +1173,552 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
         </div>
       </div>
 
+      {/* UPCOMING EXAMS & LIVE COUNTDOWN WIDGET */}
+      <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 md:p-7 shadow-sm transition-colors">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-5 border-b border-slate-100 dark:border-slate-800">
+          <div className="flex items-center gap-2.5 flex-wrap">
+            <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-rose-50 dark:bg-rose-950/50 text-rose-600 dark:text-rose-400 border border-rose-200/80 dark:border-rose-800/60">
+              <Timer className="w-4 h-4" />
+            </span>
+            <div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <h3 className="font-serif text-xl font-bold text-slate-900 dark:text-slate-100">
+                  Upcoming Exams &amp; Countdown
+                </h3>
+                <span className="rounded-full bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 text-[10px] font-bold px-2.5 py-0.5 border border-slate-200 dark:border-slate-700">
+                  {activeBatchName}
+                </span>
+                {upcomingExams.length > 0 && (
+                  <span className="rounded-full bg-rose-50 dark:bg-rose-950/60 text-rose-700 dark:text-rose-300 text-[10px] font-bold px-2.5 py-0.5 border border-rose-200 dark:border-rose-800">
+                    {upcomingExams.length} Scheduled
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                Live countdown calculated from official Academic Calendar examination dates.
+              </p>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => onNavigate('calendar')}
+            className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 px-3.5 py-2 text-xs font-bold text-slate-700 dark:text-slate-200 transition-colors shrink-0 self-start sm:self-auto"
+          >
+            <Calendar className="w-3.5 h-3.5 text-rose-600 dark:text-rose-400" />
+            <span>Open Exam Calendar</span>
+            <ChevronRight className="w-3.5 h-3.5" />
+          </button>
+        </div>
+
+        {nextExamEntry ? (
+          <div className="mt-5 grid grid-cols-1 lg:grid-cols-12 gap-5 items-stretch">
+            {/* Primary Next Exam Spotlight + Live Ticking Countdown */}
+            <div className="lg:col-span-7 rounded-2xl border border-rose-200/80 dark:border-rose-900/60 bg-gradient-to-br from-rose-50/80 via-white to-amber-50/40 dark:from-rose-950/30 dark:via-slate-900 dark:to-slate-900 p-5 flex flex-col justify-between gap-5">
+              <div className="space-y-2.5">
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <span
+                    className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider ${
+                      examCountdown.isInProgress
+                        ? 'bg-emerald-600 text-white'
+                        : examCountdown.days === 0 && examCountdown.totalMs > 0
+                        ? 'bg-rose-600 text-white animate-pulse'
+                        : 'bg-rose-100 dark:bg-rose-950 text-rose-800 dark:text-rose-300 border border-rose-200 dark:border-rose-800'
+                    }`}
+                  >
+                    <GraduationCap className="w-3 h-3" />
+                    <span>
+                      {examCountdown.isInProgress
+                        ? 'Exam Scheduled Today'
+                        : examCountdown.days === 0
+                        ? 'Starting Within 24 Hours'
+                        : 'Next Scheduled Exam'}
+                    </span>
+                  </span>
+
+                  <span className="text-[11px] font-semibold text-slate-600 dark:text-slate-300">
+                    {new Date(`${nextExamEntry.event.startDate.slice(0, 10)}T00:00:00`).toLocaleDateString('en-US', {
+                      weekday: 'short',
+                      month: 'short',
+                      day: 'numeric',
+                      year: 'numeric',
+                    })}
+                  </span>
+                </div>
+
+                <h4 className="font-serif text-lg md:text-xl font-bold text-slate-900 dark:text-slate-100 leading-snug">
+                  {nextExamEntry.event.title}
+                </h4>
+
+                {nextExamEntry.event.description && (
+                  <p className="text-xs text-slate-600 dark:text-slate-300 line-clamp-2">
+                    {nextExamEntry.event.description}
+                  </p>
+                )}
+
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-slate-600 dark:text-slate-300 pt-1">
+                  <span className="inline-flex items-center gap-1.5 font-medium">
+                    <Clock className="w-3.5 h-3.5 text-rose-600 dark:text-rose-400" />
+                    <span>{nextExamEntry.event.time || '08:30 AM'}</span>
+                  </span>
+                  <span className="inline-flex items-center gap-1.5 font-medium">
+                    <MapPin className="w-3.5 h-3.5 text-rose-600 dark:text-rose-400" />
+                    <span>{nextExamEntry.event.location || 'Zahira College Mawanella'}</span>
+                  </span>
+                  {nextExamEntry.event.batchId && (
+                    <span className="inline-flex items-center gap-1.5 font-medium">
+                      <Layers className="w-3.5 h-3.5 text-rose-600 dark:text-rose-400" />
+                      <span>{getBatchName(nextExamEntry.event.batchId)}</span>
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {/* 4-Tile Live Countdown Display */}
+              {examCountdown.isInProgress ? (
+                <div className="rounded-xl bg-emerald-600/10 dark:bg-emerald-950/50 border border-emerald-300 dark:border-emerald-800 px-4 py-3 flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2 text-emerald-800 dark:text-emerald-300">
+                    <CheckCircle2 className="w-5 h-5 shrink-0" />
+                    <div>
+                      <p className="text-xs font-bold">Examination Window Active Today</p>
+                      <p className="text-[11px] opacity-85">Best wishes for your examination paper.</p>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="grid grid-cols-4 gap-2 sm:gap-3" aria-label="Time remaining until next exam">
+                  {[
+                    { label: 'Days', value: examCountdown.days },
+                    { label: 'Hours', value: examCountdown.hours },
+                    { label: 'Mins', value: examCountdown.minutes },
+                    { label: 'Secs', value: examCountdown.seconds },
+                  ].map((unit) => (
+                    <div
+                      key={unit.label}
+                      className="rounded-xl border border-rose-200/80 dark:border-rose-900/50 bg-white/90 dark:bg-slate-950/70 px-2 py-2.5 text-center shadow-2xs"
+                    >
+                      <p className="font-mono text-2xl sm:text-3xl font-extrabold text-rose-700 dark:text-rose-400 tabular-nums leading-none">
+                        {String(unit.value).padStart(2, '0')}
+                      </p>
+                      <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mt-1.5">
+                        {unit.label}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Upcoming Exam Schedule Queue */}
+            <div className="lg:col-span-5 rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/40 p-4 flex flex-col justify-between gap-3">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold uppercase tracking-wider text-slate-600 dark:text-slate-300">
+                  Subsequent Exam Schedule
+                </span>
+                {activeTodayExamEntry && activeTodayExamEntry.event.id !== nextExamEntry.event.id && (
+                  <span className="rounded-full bg-emerald-100 dark:bg-emerald-950/70 text-emerald-700 dark:text-emerald-300 px-2 py-0.5 text-[10px] font-bold">
+                    1 Exam Active Today
+                  </span>
+                )}
+              </div>
+
+              {remainingExamQueue.length > 0 ? (
+                <div className="space-y-2.5 flex-1">
+                  {remainingExamQueue.map((item) => {
+                    const daysUntil = Math.max(0, Math.ceil((item.startMs - nowMs) / (1000 * 60 * 60 * 24)));
+                    return (
+                      <div
+                        key={item.event.id}
+                        onClick={() => onNavigate('calendar')}
+                        className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-3 hover:border-rose-300 dark:hover:border-rose-700 transition-colors cursor-pointer flex items-center justify-between gap-3"
+                      >
+                        <div className="min-w-0">
+                          <p className="text-xs font-bold text-slate-900 dark:text-slate-100 truncate">
+                            {item.event.title}
+                          </p>
+                          <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 truncate">
+                            {new Date(`${item.event.startDate.slice(0, 10)}T00:00:00`).toLocaleDateString('en-US', {
+                              month: 'short',
+                              day: 'numeric',
+                              year: 'numeric',
+                            })}{' '}
+                            • {item.event.time || '08:30'} • {item.event.location || 'Exam Hall'}
+                          </p>
+                        </div>
+                        <span className="rounded-lg bg-rose-50 dark:bg-rose-950/50 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-800 px-2 py-1 text-[10px] font-bold whitespace-nowrap shrink-0">
+                          {daysUntil === 0 ? 'Today' : `${daysUntil}d left`}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="flex-1 flex flex-col items-center justify-center text-center py-6 px-3 rounded-xl border border-dashed border-slate-200 dark:border-slate-800 bg-white/60 dark:bg-slate-900/40">
+                  <Calendar className="w-6 h-6 text-slate-400 mb-2" />
+                  <p className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                    Only 1 upcoming exam on calendar
+                  </p>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                    Additional exam dates published in the Academic Calendar will appear here automatically.
+                  </p>
+                </div>
+              )}
+
+              <button
+                type="button"
+                onClick={() => onNavigate('assessments')}
+                className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-800 px-3 py-2 text-xs font-bold text-slate-700 dark:text-slate-200 transition-colors flex items-center justify-center gap-1.5"
+              >
+                <Award className="w-3.5 h-3.5 text-amber-600" />
+                <span>Review Past Marks &amp; Papers</span>
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="mt-5 rounded-2xl border border-dashed border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-950/40 p-8 text-center">
+            <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-2xl bg-rose-50 dark:bg-rose-950/50 text-rose-600 dark:text-rose-400 border border-rose-200 dark:border-rose-800 mb-3">
+              <Calendar className="w-5 h-5" />
+            </div>
+            <h4 className="font-serif text-base font-bold text-slate-900 dark:text-slate-100">
+              No Upcoming Exams Scheduled
+            </h4>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 max-w-md mx-auto">
+              There are currently no future exam dates marked on the Academic Calendar for {activeBatchName}. Once faculty publish an exam event, the live countdown timer will start automatically.
+            </p>
+            <button
+              type="button"
+              onClick={() => onNavigate('calendar')}
+              className="mt-4 inline-flex items-center gap-1.5 rounded-xl bg-slate-900 dark:bg-blue-600 hover:bg-slate-800 dark:hover:bg-blue-700 px-4 py-2 text-xs font-bold text-white transition-colors"
+            >
+              <Calendar className="w-3.5 h-3.5" />
+              <span>Check Academic Calendar</span>
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* PEER STUDY GROUP WIDGET (CALENDAR SESSIONS + ROOM JOIN REQUESTS) */}
+      <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 md:p-7 shadow-sm transition-colors">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-5 border-b border-slate-100 dark:border-slate-800">
+          <div className="flex items-center gap-2.5 flex-wrap">
+            <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-violet-50 dark:bg-violet-950/50 text-violet-600 dark:text-violet-400 border border-violet-200/80 dark:border-violet-800/60">
+              <Users className="w-4 h-4" />
+            </span>
+            <div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <h3 className="font-serif text-xl font-bold text-slate-900 dark:text-slate-100">
+                  Peer Study Group
+                </h3>
+                <span className="rounded-full bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 text-[10px] font-bold px-2.5 py-0.5 border border-slate-200 dark:border-slate-700">
+                  {activeBatchName}
+                </span>
+                {upcomingStudySessions.length > 0 && (
+                  <span className="rounded-full bg-violet-50 dark:bg-violet-950/60 text-violet-700 dark:text-violet-300 text-[10px] font-bold px-2.5 py-0.5 border border-violet-200 dark:border-violet-800">
+                    {upcomingStudySessions.length} Upcoming Session{upcomingStudySessions.length > 1 ? 's' : ''}
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                Upcoming group study sessions from the Academic Calendar — select a study room and request to join peers.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto shrink-0">
+            <button
+              type="button"
+              onClick={() => onNavigate('discussions')}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-violet-200 dark:border-violet-800 bg-violet-50 dark:bg-violet-950/40 hover:bg-violet-100 dark:hover:bg-violet-900/50 px-3.5 py-2 text-xs font-bold text-violet-800 dark:text-violet-300 transition-colors"
+            >
+              <Hash className="w-3.5 h-3.5" />
+              <span>Discussion Rooms</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => onNavigate('calendar')}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 px-3.5 py-2 text-xs font-bold text-slate-700 dark:text-slate-200 transition-colors"
+            >
+              <Calendar className="w-3.5 h-3.5 text-violet-600 dark:text-violet-400" />
+              <span>Study Calendar</span>
+              <ChevronRight className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+
+        {studyReqNotice && (
+          <div
+            className={`mt-4 rounded-xl border px-4 py-2.5 text-xs font-semibold flex items-center justify-between gap-2 ${
+              studyReqNotice.type === 'success'
+                ? 'border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-200'
+                : 'border-rose-200 dark:border-rose-800 bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-200'
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              {studyReqNotice.type === 'success' ? (
+                <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+              ) : (
+                <AlertCircle className="w-4 h-4 shrink-0 text-rose-600 dark:text-rose-400" />
+              )}
+              <span>{studyReqNotice.message}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setStudyReqNotice(null)}
+              className="opacity-70 hover:opacity-100 p-0.5"
+              aria-label="Dismiss study request notice"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
+
+        {upcomingStudySessions.length > 0 ? (
+          <div className="mt-5 grid grid-cols-1 lg:grid-cols-2 gap-4">
+            {upcomingStudySessions.slice(0, 4).map((session) => {
+              const ev = session.event;
+              const chosenRoomId = selectedRoomByEventId[ev.id] || session.defaultRoomId;
+              const chosenRoom = STUDY_GROUP_ROOMS.find((r) => r.id === chosenRoomId) || STUDY_GROUP_ROOMS[0];
+              const existingReq = myStudyRequests.find(
+                (r) => r.eventId === ev.id && r.roomId === chosenRoomId
+              );
+              const sessionRequestsCount = batchStudyRequests.filter((r) => r.eventId === ev.id).length;
+              const reqKey = `${ev.id}__${chosenRoomId}`;
+              const isSubmitting = submittingStudyReqKey === reqKey || (existingReq ? submittingStudyReqKey === existingReq.id : false);
+
+              return (
+                <div
+                  key={ev.id}
+                  className="rounded-2xl border border-violet-200/80 dark:border-violet-900/50 bg-gradient-to-br from-violet-50/60 via-white to-indigo-50/30 dark:from-violet-950/25 dark:via-slate-900 dark:to-slate-900 p-5 flex flex-col justify-between gap-4"
+                >
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="inline-flex items-center gap-1 rounded-full bg-violet-100 dark:bg-violet-950/80 text-violet-800 dark:text-violet-300 border border-violet-200 dark:border-violet-800 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider">
+                          <Users className="w-3 h-3" />
+                          <span>Study Session</span>
+                        </span>
+                        {ev.studyRoomName && (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 px-2 py-0.5 text-[10px] font-bold">
+                            <Hash className="w-2.5 h-2.5 text-violet-600 dark:text-violet-400" />
+                            <span>{ev.studyRoomName}</span>
+                          </span>
+                        )}
+                      </div>
+                      <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">
+                        {sessionRequestsCount} peer{sessionRequestsCount === 1 ? '' : 's'} joined/requested
+                      </span>
+                    </div>
+
+                    <h4 className="font-serif text-base md:text-lg font-bold text-slate-900 dark:text-slate-100 leading-snug">
+                      {ev.title}
+                    </h4>
+
+                    {ev.description && (
+                      <p className="text-xs text-slate-600 dark:text-slate-300 line-clamp-2">
+                        {ev.description}
+                      </p>
+                    )}
+
+                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-600 dark:text-slate-300 pt-0.5">
+                      <span className="inline-flex items-center gap-1.5 font-medium">
+                        <Calendar className="w-3.5 h-3.5 text-violet-600 dark:text-violet-400" />
+                        <span>
+                          {new Date(`${ev.startDate.slice(0, 10)}T00:00:00`).toLocaleDateString('en-US', {
+                            weekday: 'short',
+                            month: 'short',
+                            day: 'numeric',
+                          })}
+                        </span>
+                      </span>
+                      <span className="inline-flex items-center gap-1.5 font-medium">
+                        <Clock className="w-3.5 h-3.5 text-violet-600 dark:text-violet-400" />
+                        <span>{ev.time || '14:00'}</span>
+                      </span>
+                      <span className="inline-flex items-center gap-1.5 font-medium">
+                        <MapPin className="w-3.5 h-3.5 text-violet-600 dark:text-violet-400" />
+                        <span>{ev.location || 'Science Complex Study Hall'}</span>
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Specific Study Room Selector & Join Request Action */}
+                  <div className="space-y-2.5 pt-3 border-t border-violet-200/60 dark:border-violet-900/40">
+                    <div>
+                      <label
+                        htmlFor={`study-room-select-${ev.id}`}
+                        className="block text-[10px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 mb-1"
+                      >
+                        Select Study Room
+                      </label>
+                      <select
+                        id={`study-room-select-${ev.id}`}
+                        value={chosenRoomId}
+                        onChange={(e) =>
+                          setSelectedRoomByEventId((prev) => ({
+                            ...prev,
+                            [ev.id]: e.target.value,
+                          }))
+                        }
+                        className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-xs font-bold text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-violet-500/30"
+                      >
+                        {STUDY_GROUP_ROOMS.map((room) => (
+                          <option key={room.id} value={room.id}>
+                            #{room.name} — {room.description}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {existingReq ? (
+                      <div className="rounded-xl border border-violet-200 dark:border-violet-800 bg-white/90 dark:bg-slate-950/60 p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                        <div className="flex items-center gap-2 min-w-0">
+                          {existingReq.status === 'approved' ? (
+                            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                          ) : existingReq.status === 'declined' ? (
+                            <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+                          ) : (
+                            <Hourglass className="w-4 h-4 text-amber-600 shrink-0" />
+                          )}
+                          <div className="min-w-0">
+                            <p className="text-xs font-bold text-slate-900 dark:text-slate-100 truncate">
+                              {existingReq.status === 'approved'
+                                ? `Approved for #${existingReq.roomName}`
+                                : existingReq.status === 'declined'
+                                ? `Declined for #${existingReq.roomName}`
+                                : `Request Pending (#${existingReq.roomName})`}
+                            </p>
+                            {existingReq.note && (
+                              <p className="text-[10px] text-slate-500 dark:text-slate-400 truncate">
+                                Topic: {existingReq.note}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2 shrink-0">
+                          {existingReq.status === 'approved' ? (
+                            <button
+                              type="button"
+                              onClick={() => onNavigate('discussions')}
+                              className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 text-[11px] font-bold text-white transition-colors"
+                            >
+                              <ArrowRight className="w-3.5 h-3.5" />
+                              <span>Enter Room</span>
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              disabled={isSubmitting}
+                              onClick={() => handleWithdrawStudyRequest(existingReq.id)}
+                              className="inline-flex items-center gap-1 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-rose-50 dark:hover:bg-rose-950/40 hover:text-rose-700 dark:hover:text-rose-300 px-2.5 py-1.5 text-[11px] font-bold text-slate-600 dark:text-slate-300 transition-colors disabled:opacity-50"
+                            >
+                              <Trash2 className="w-3 h-3" />
+                              <span>Withdraw</span>
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                        <input
+                          type="text"
+                          value={studyNoteByEventId[ev.id] || ''}
+                          onChange={(e) =>
+                            setStudyNoteByEventId((prev) => ({
+                              ...prev,
+                              [ev.id]: e.target.value,
+                            }))
+                          }
+                          placeholder={`Optional focus topic for #${chosenRoom.name}...`}
+                          maxLength={140}
+                          className="flex-1 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-3 py-2 text-xs text-slate-800 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/30"
+                        />
+                        <button
+                          type="button"
+                          disabled={isSubmitting}
+                          onClick={() => handleRequestJoinStudyRoom(ev, chosenRoomId)}
+                          className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-violet-700 hover:bg-violet-800 disabled:opacity-50 px-4 py-2 text-xs font-bold text-white transition-colors shadow-xs shrink-0"
+                        >
+                          <UserPlus className="w-3.5 h-3.5" />
+                          <span>{isSubmitting ? 'Sending...' : 'Request to Join'}</span>
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="mt-5 rounded-2xl border border-dashed border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-950/40 p-8 text-center">
+            <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-2xl bg-violet-50 dark:bg-violet-950/50 text-violet-600 dark:text-violet-400 border border-violet-200 dark:border-violet-800 mb-3">
+              <Users className="w-5 h-5" />
+            </div>
+            <h4 className="font-serif text-base font-bold text-slate-900 dark:text-slate-100">
+              No Upcoming Study Group Sessions
+            </h4>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 max-w-md mx-auto">
+              No upcoming group study sessions are currently published on the Academic Calendar for {activeBatchName}. Schedule a study group session on the Calendar to invite peers and request a study room.
+            </p>
+            <div className="mt-4 flex flex-wrap items-center justify-center gap-2.5">
+              <button
+                type="button"
+                onClick={() => onNavigate('calendar')}
+                className="inline-flex items-center gap-1.5 rounded-xl bg-violet-700 hover:bg-violet-800 px-4 py-2 text-xs font-bold text-white transition-colors"
+              >
+                <Calendar className="w-3.5 h-3.5" />
+                <span>Schedule on Calendar</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => onNavigate('discussions')}
+                className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 hover:bg-slate-100 dark:hover:bg-slate-800 px-4 py-2 text-xs font-bold text-slate-700 dark:text-slate-200 transition-colors"
+              >
+                <Send className="w-3.5 h-3.5 text-violet-600 dark:text-violet-400" />
+                <span>Open Study Rooms</span>
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Active Requests Summary Bar (visible whenever the student has submitted room requests) */}
+        {myStudyRequests.length > 0 && (
+          <div className="mt-5 pt-4 border-t border-slate-100 dark:border-slate-800">
+            <div className="flex items-center justify-between gap-2 mb-2.5">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                My Study Room Join Requests ({myStudyRequests.length})
+              </span>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {myStudyRequests.slice(0, 6).map((req) => (
+                <div
+                  key={req.id}
+                  className="inline-flex items-center gap-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/70 px-3 py-1.5 text-xs"
+                >
+                  <Hash className="w-3.5 h-3.5 text-violet-600 dark:text-violet-400 shrink-0" />
+                  <span className="font-bold text-slate-800 dark:text-slate-200">{req.roomName}</span>
+                  <span className="text-slate-400">•</span>
+                  <span className="text-[11px] text-slate-600 dark:text-slate-300 truncate max-w-[160px]">
+                    {req.eventTitle}
+                  </span>
+                  <span
+                    className={`rounded-md px-1.5 py-0.5 text-[10px] font-bold uppercase ${
+                      req.status === 'approved'
+                        ? 'bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300'
+                        : req.status === 'declined'
+                        ? 'bg-rose-100 dark:bg-rose-950/60 text-rose-800 dark:text-rose-300'
+                        : 'bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300'
+                    }`}
+                  >
+                    {req.status}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
       {/* MOTIVATIONAL ASSIGNMENT PROGRESS TRACKER (RECHARTS) */}
       <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 md:p-8 shadow-sm transition-colors">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-6 border-b border-slate-100 dark:border-slate-800">
@@ -797,7 +1736,7 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
               </span>
             </div>
             <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 max-w-2xl">
-              Live assignment submission and coursework milestones synced directly from Firestore for Zahira College 2k28 Science EM scholars.
+              Live assignment submission and coursework milestones synced directly from Firestore for Zahira College {activeBatchName} scholars.
             </p>
           </div>
 
@@ -1271,36 +2210,69 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
         </div>
       </div>
 
-      {/* SAVED ATTENDANCE GRAPH (Synced ONLY with Saved Registers on Active/ON Days) */}
+      {/* LAST 30 DAYS ATTENDANCE TREND BAR CHART (Synced Strictly With Attendance Marking Page) */}
       <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 shadow-xs transition-colors space-y-5">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-100 dark:border-slate-800">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 pb-4 border-b border-slate-100 dark:border-slate-800">
           <div>
             <div className="flex items-center gap-2 flex-wrap">
               <h3 className="font-serif text-lg font-bold text-slate-900 dark:text-slate-100">
-                My Attendance Record Over Time
+                Attendance Trend • Last 30 Days
               </h3>
               <span className="rounded-full bg-purple-100 dark:bg-purple-950 text-purple-700 dark:text-purple-300 text-[10px] font-bold px-2.5 py-0.5">
-                {studentAttTotal > 0 ? `${studentAttRate} • ${studentAttTotal} Saved Log(s)` : 'Synced Live'}
+                {last30DaysAttendance.totalSessions > 0
+                  ? `${last30DaysAttendance.avgRate}% • ${last30DaysAttendance.markedDaysCount} Active Day(s)`
+                  : 'Real-Time Sync Active'}
+              </span>
+              <span className="text-[11px] font-semibold text-slate-400">
+                {last30DaysAttendance.startDateLabel} – {last30DaysAttendance.endDateLabel}
               </span>
             </div>
             <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-              Synced strictly with teacher-saved registers on active attendance days (days turned OFF are automatically excluded)
+              Live 30-day attendance bar chart built strictly from real registers saved in the Attendance Marking page (OFF days excluded)
             </p>
           </div>
-          <button
-            onClick={() => onNavigate('attendance')}
-            className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 dark:border-slate-700 px-3 py-1.5 text-xs font-bold text-blue-600 dark:text-blue-400 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors shrink-0 self-start sm:self-auto"
-          >
-            <span>Open Attendance Register</span>
-            <ArrowRight className="w-3.5 h-3.5" />
-          </button>
+
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <div className="inline-flex rounded-xl border border-slate-200 dark:border-slate-700 p-1 bg-slate-50 dark:bg-slate-800 text-xs">
+              <button
+                type="button"
+                onClick={() => setAttChartMode('rate')}
+                className={`rounded-lg px-2.5 py-1 text-[11px] font-bold transition-all ${
+                  attChartMode === 'rate'
+                    ? 'bg-blue-600 text-white shadow-2xs'
+                    : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
+                }`}
+              >
+                Daily Rate (%)
+              </button>
+              <button
+                type="button"
+                onClick={() => setAttChartMode('counts')}
+                className={`rounded-lg px-2.5 py-1 text-[11px] font-bold transition-all ${
+                  attChartMode === 'counts'
+                    ? 'bg-blue-600 text-white shadow-2xs'
+                    : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
+                }`}
+              >
+                Session Breakdown
+              </button>
+            </div>
+
+            <button
+              onClick={() => onNavigate('attendance')}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 dark:border-slate-700 px-3 py-1.5 text-xs font-bold text-blue-600 dark:text-blue-400 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
+            >
+              <span>Open Attendance Register</span>
+              <ArrowRight className="w-3.5 h-3.5" />
+            </button>
+          </div>
         </div>
 
-        {/* 4 Live Attendance Summary Cards (Strictly Real Saved Data) */}
+        {/* 4 Live 30-Day Attendance Summary Cards (Strictly Real Saved Data) */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           <div className="p-3.5 rounded-xl bg-blue-50/60 dark:bg-blue-950/20 border border-blue-100 dark:border-blue-900/40">
             <span className="text-[11px] font-semibold text-blue-900 dark:text-blue-300 uppercase tracking-wider block">
-              Saved Average
+              30-Day Rate
             </span>
             <div className="flex items-baseline gap-2 mt-1 flex-wrap">
               <span className="font-serif text-2xl font-bold text-blue-950 dark:text-blue-100">
@@ -1311,154 +2283,251 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
                   className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
                     studentAttAvgNum >= 90
                       ? 'bg-emerald-100 text-emerald-800'
+                      : studentAttAvgNum >= 75
+                      ? 'bg-blue-100 text-blue-800'
                       : 'bg-amber-100 text-amber-800'
                   }`}
                 >
-                  {studentAttAvgNum >= 90 ? 'Target Met (≥90%)' : 'Needs Focus (<90%)'}
+                  {studentAttAvgNum >= 90
+                    ? 'Target Met (≥90%)'
+                    : studentAttAvgNum >= 75
+                    ? 'On Track (≥75%)'
+                    : 'Needs Focus (<75%)'}
                 </span>
               ) : (
-                <span className="text-[11px] text-slate-400">No logs yet</span>
+                <span className="text-[11px] text-slate-400">No logs in 30d</span>
               )}
             </div>
           </div>
 
           <div className="p-3.5 rounded-xl bg-emerald-50/60 dark:bg-emerald-950/20 border border-emerald-100 dark:border-emerald-900/40">
             <span className="text-[11px] font-semibold text-emerald-900 dark:text-emerald-300 uppercase tracking-wider block">
-              Peak Session Rate
+              Present Sessions (30d)
             </span>
             <div className="flex items-baseline gap-2 mt-1 flex-wrap">
               <span className="font-serif text-2xl font-bold text-emerald-950 dark:text-emerald-100">
-                {studentAttPeakRate !== null ? `${studentAttPeakRate}%` : '—'}
+                {last30DaysAttendance.presentSessions}
               </span>
               <span className="text-[11px] text-emerald-700 dark:text-emerald-400 font-medium">
-                {studentAttTotal > 0 ? `${studentAttTotal} saved class(es)` : 'Awaiting roll-call'}
+                {last30DaysAttendance.totalSessions > 0
+                  ? `of ${last30DaysAttendance.totalSessions} marked`
+                  : 'Awaiting roll-call'}
               </span>
             </div>
           </div>
 
-          <div className="p-3.5 rounded-xl bg-sky-50/60 dark:bg-sky-950/20 border border-sky-100 dark:border-sky-900/40">
-            <span className="text-[11px] font-semibold text-sky-900 dark:text-sky-300 uppercase tracking-wider block">
-              Punctuality Rate
+          <div className="p-3.5 rounded-xl bg-amber-50/60 dark:bg-amber-950/20 border border-amber-100 dark:border-amber-900/40">
+            <span className="text-[11px] font-semibold text-amber-900 dark:text-amber-300 uppercase tracking-wider block">
+              Punctuality &amp; Late (30d)
             </span>
             <div className="flex items-baseline gap-2 mt-1 flex-wrap">
-              <span className="font-serif text-2xl font-bold text-sky-950 dark:text-sky-100">
-                {studentAttPunctualityRate !== null ? `${studentAttPunctualityRate}%` : '—'}
+              <span className="font-serif text-2xl font-bold text-amber-950 dark:text-amber-100">
+                {last30DaysAttendance.punctualityRate !== null
+                  ? `${last30DaysAttendance.punctualityRate}%`
+                  : '—'}
               </span>
-              <span className="text-[11px] text-sky-700 dark:text-sky-400 font-medium">
-                {studentAttLateCount} late total
+              <span className="text-[11px] text-amber-700 dark:text-amber-400 font-medium">
+                {last30DaysAttendance.lateSessions} late arrival(s)
               </span>
             </div>
           </div>
 
           <div className="p-3.5 rounded-xl bg-rose-50/60 dark:bg-rose-950/20 border border-rose-100 dark:border-rose-900/40">
             <span className="text-[11px] font-semibold text-rose-900 dark:text-rose-300 uppercase tracking-wider block">
-              Total Absences
+              Absences (30d)
             </span>
             <div className="flex items-baseline gap-2 mt-1 flex-wrap">
               <span className="font-serif text-2xl font-bold text-rose-950 dark:text-rose-100">
-                {studentAttAbsences}
+                {last30DaysAttendance.absentSessions}
               </span>
               <span className="text-[11px] text-rose-700 dark:text-rose-400 font-medium">
-                Saved student logs
+                Saved teacher logs
               </span>
             </div>
           </div>
         </div>
 
-        {studentAttendanceTrendData.length === 0 ? (
-          <div className="h-60 w-full flex flex-col items-center justify-center text-center p-6 border border-dashed border-slate-200 dark:border-slate-800 rounded-2xl bg-slate-50/50 dark:bg-slate-800/30">
+        {last30DaysAttendance.totalSessions === 0 ? (
+          <div className="h-64 w-full flex flex-col items-center justify-center text-center p-6 border border-dashed border-slate-200 dark:border-slate-800 rounded-2xl bg-slate-50/50 dark:bg-slate-800/30">
             <LivePaperScannerGraphic accent="emerald" className="w-20 h-20 mb-2" />
             <h4 className="font-bold text-slate-700 dark:text-slate-200 text-sm">
-              No Saved Active Attendance Logs Yet
+              No Saved Attendance Marked in the Last 30 Days
             </h4>
             <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 max-w-md">
-              When your teacher turns Attendance Marking ON and saves your roll-call register in the Attendance page, your real attendance trend graph will sync here automatically.
+              Once your teacher marks and saves attendance on the Attendance page (with day marking ON), your real 30-day attendance bars will update here automatically in real time.
             </p>
           </div>
         ) : (
-          <div className="h-64 w-full">
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={studentAttendanceTrendData} margin={{ top: 10, right: 15, left: -20, bottom: 0 }}>
-                <defs>
-                  <linearGradient id="studentAttendanceCumGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#7c3aed" stopOpacity={0.35} />
-                    <stop offset="95%" stopColor="#7c3aed" stopOpacity={0.0} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} vertical={false} />
-                <XAxis
-                  dataKey="displayDate"
-                  tick={{ fill: textFill, fontSize: 11 }}
-                  axisLine={{ stroke: gridStroke }}
-                  tickLine={false}
-                />
-                <YAxis
-                  domain={[0, 100]}
-                  tick={{ fill: textFill, fontSize: 11 }}
-                  axisLine={{ stroke: gridStroke }}
-                  tickLine={false}
-                  tickFormatter={(v) => `${v}%`}
-                />
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: tooltipBg,
-                    borderColor: tooltipBorder,
-                    borderRadius: '12px',
-                    fontSize: '12px',
-                    color: isDark ? '#f8fafc' : '#0f172a',
-                    boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.1)',
-                  }}
-                  formatter={(val: any, name?: any) => [
-                    `${val}%`,
-                    name === 'cumulativeRate' ? 'Cumulative Attendance Rate' : 'Session Score',
-                  ]}
-                  labelFormatter={(_label, payload) => {
-                    const p = payload?.[0]?.payload;
-                    if (!p) return '';
-                    return `${p.fullDate} • ${p.sessionLabel}${p.timeSlot ? ` (${p.timeSlot})` : ''} • Status: ${String(p.status).toUpperCase()}`;
-                  }}
-                />
-                <ReferenceLine
-                  y={90}
-                  stroke="#dc2626"
-                  strokeDasharray="4 4"
-                  label={{
-                    value: 'Target: 90%',
-                    fill: '#dc2626',
-                    fontSize: 10,
-                    position: 'insideTopRight',
-                    fontWeight: 'bold',
-                  }}
-                />
-                <Legend
-                  verticalAlign="top"
-                  align="right"
-                  height={30}
-                  formatter={(val) => (
-                    <span className="text-[11px] font-semibold text-slate-700 dark:text-slate-300">
-                      {val === 'cumulativeRate' ? 'Running Attendance Rate (%)' : 'Session Attendance (%)'}
-                    </span>
+          <div className="space-y-3">
+            <div className="w-full overflow-x-auto pb-1">
+              <div className="h-72 min-w-[640px] w-full">
+                <ResponsiveContainer width="100%" height="100%">
+                  {attChartMode === 'rate' ? (
+                    <BarChart
+                      data={last30DaysAttendance.days}
+                      margin={{ top: 14, right: 16, left: -16, bottom: 4 }}
+                      barCategoryGap="22%"
+                    >
+                      <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} vertical={false} />
+                      <XAxis
+                        dataKey="axisLabel"
+                        tick={{ fill: textFill, fontSize: 10 }}
+                        axisLine={{ stroke: gridStroke }}
+                        tickLine={false}
+                        interval={1}
+                      />
+                      <YAxis
+                        domain={[0, 100]}
+                        tick={{ fill: textFill, fontSize: 11 }}
+                        axisLine={{ stroke: gridStroke }}
+                        tickLine={false}
+                        tickFormatter={(v) => `${v}%`}
+                      />
+                      <Tooltip
+                        cursor={{ fill: isDark ? 'rgba(148, 163, 184, 0.08)' : 'rgba(59, 130, 246, 0.06)' }}
+                        content={({ active, payload }) => {
+                          if (!active || !payload || !payload.length) return null;
+                          const day = payload[0]?.payload as (typeof last30DaysAttendance.days)[number] | undefined;
+                          if (!day) return null;
+                          return (
+                            <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-3 shadow-lg text-xs max-w-xs">
+                              <p className="font-bold text-slate-900 dark:text-slate-100">{day.fullDate}</p>
+                              {!day.hasRecord ? (
+                                <p className="text-slate-400 mt-1">No attendance marked on this date</p>
+                              ) : (
+                                <div className="mt-1.5 space-y-1">
+                                  <div className="flex items-center justify-between gap-4">
+                                    <span className="text-slate-500 dark:text-slate-400">Daily Rate:</span>
+                                    <span
+                                      className={`font-bold ${
+                                        (day.realRate ?? 0) >= 85
+                                          ? 'text-emerald-600 dark:text-emerald-400'
+                                          : (day.realRate ?? 0) > 0
+                                          ? 'text-amber-600 dark:text-amber-400'
+                                          : 'text-rose-600 dark:text-rose-400'
+                                      }`}
+                                    >
+                                      {day.realRate}%
+                                    </span>
+                                  </div>
+                                  <div className="flex flex-wrap gap-2 text-[11px] pt-0.5">
+                                    {day.present > 0 && <span className="text-emerald-600 font-semibold">Present: {day.present}</span>}
+                                    {day.late > 0 && <span className="text-amber-600 font-semibold">Late: {day.late}</span>}
+                                    {day.excused > 0 && <span className="text-blue-600 font-semibold">Excused: {day.excused}</span>}
+                                    {day.absent > 0 && <span className="text-rose-600 font-semibold">Absent: {day.absent}</span>}
+                                  </div>
+                                  <div className="border-t border-slate-100 dark:border-slate-800 pt-1.5 mt-1 space-y-0.5">
+                                    {day.sessions.map((s, i) => (
+                                      <div key={i} className="flex items-center justify-between gap-3 text-[10px]">
+                                        <span className="text-slate-600 dark:text-slate-300 truncate">
+                                          {s.subject}
+                                          {s.timeSlot ? ` (${s.timeSlot})` : ''}
+                                        </span>
+                                        <span className="font-bold uppercase text-slate-800 dark:text-slate-200 shrink-0">
+                                          {s.status}
+                                        </span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        }}
+                      />
+                      <ReferenceLine
+                        y={75}
+                        stroke="#2563eb"
+                        strokeDasharray="4 4"
+                        label={{
+                          value: '75% Min',
+                          fill: '#2563eb',
+                          fontSize: 10,
+                          position: 'insideTopRight',
+                          fontWeight: 'bold',
+                        }}
+                      />
+                      <Bar dataKey="chartRate" radius={[5, 5, 0, 0]} maxBarSize={18}>
+                        {last30DaysAttendance.days.map((entry) => (
+                          <Cell key={entry.date} fill={entry.barColor} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  ) : (
+                    <BarChart
+                      data={last30DaysAttendance.days}
+                      margin={{ top: 14, right: 16, left: -16, bottom: 4 }}
+                      barCategoryGap="22%"
+                    >
+                      <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} vertical={false} />
+                      <XAxis
+                        dataKey="axisLabel"
+                        tick={{ fill: textFill, fontSize: 10 }}
+                        axisLine={{ stroke: gridStroke }}
+                        tickLine={false}
+                        interval={1}
+                      />
+                      <YAxis
+                        allowDecimals={false}
+                        tick={{ fill: textFill, fontSize: 11 }}
+                        axisLine={{ stroke: gridStroke }}
+                        tickLine={false}
+                      />
+                      <Tooltip
+                        cursor={{ fill: isDark ? 'rgba(148, 163, 184, 0.08)' : 'rgba(59, 130, 246, 0.06)' }}
+                        contentStyle={{
+                          backgroundColor: tooltipBg,
+                          borderColor: tooltipBorder,
+                          borderRadius: '12px',
+                          fontSize: '12px',
+                          color: isDark ? '#f8fafc' : '#0f172a',
+                          boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.1)',
+                        }}
+                        labelFormatter={(_label, payload) => payload?.[0]?.payload?.fullDate || ''}
+                      />
+                      <Legend
+                        verticalAlign="top"
+                        align="right"
+                        height={28}
+                        formatter={(val) => (
+                          <span className="text-[11px] font-semibold text-slate-700 dark:text-slate-300 capitalize">
+                            {val}
+                          </span>
+                        )}
+                      />
+                      <Bar dataKey="present" stackId="att" fill="#10b981" radius={[0, 0, 0, 0]} maxBarSize={18} />
+                      <Bar dataKey="excused" stackId="att" fill="#3b82f6" radius={[0, 0, 0, 0]} maxBarSize={18} />
+                      <Bar dataKey="late" stackId="att" fill="#f59e0b" radius={[0, 0, 0, 0]} maxBarSize={18} />
+                      <Bar dataKey="absent" stackId="att" fill="#ef4444" radius={[4, 4, 0, 0]} maxBarSize={18} />
+                    </BarChart>
                   )}
-                />
-                <Area
-                  type="monotone"
-                  dataKey="cumulativeRate"
-                  stroke="#7c3aed"
-                  strokeWidth={2.5}
-                  fillOpacity={1}
-                  fill="url(#studentAttendanceCumGrad)"
-                  dot={{ r: 3.5, fill: '#7c3aed' }}
-                />
-                <Line
-                  type="monotone"
-                  dataKey="sessionScore"
-                  stroke="#10b981"
-                  strokeWidth={2}
-                  strokeDasharray="4 4"
-                  dot={{ r: 3, fill: '#10b981' }}
-                />
-              </AreaChart>
-            </ResponsiveContainer>
+                </ResponsiveContainer>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500 dark:text-slate-400 pt-1">
+              <div className="flex flex-wrap items-center gap-3">
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="w-2.5 h-2.5 rounded-xs bg-emerald-500 inline-block" />
+                  <span>Present (≥85%)</span>
+                </span>
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="w-2.5 h-2.5 rounded-xs bg-amber-500 inline-block" />
+                  <span>Late / Partial (1–84%)</span>
+                </span>
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="w-2.5 h-2.5 rounded-xs bg-rose-500 inline-block" />
+                  <span>Absent (0%)</span>
+                </span>
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="w-2.5 h-2.5 rounded-xs bg-slate-200 dark:bg-slate-700 inline-block" />
+                  <span>Blank = No Session Marked</span>
+                </span>
+              </div>
+              <span className="font-semibold text-slate-600 dark:text-slate-300">
+                30-Day Window: {last30DaysAttendance.totalSessions} verified session(s)
+              </span>
+            </div>
           </div>
         )}
       </div>
@@ -1541,7 +2610,7 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
                   Subject-Wise Academic Mastery
                 </h3>
                 <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                  2k28 Science EM subject breakdown & assessment standing
+                  {activeBatchName} subject breakdown &amp; assessment standing
                 </p>
               </div>
               <Activity className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
@@ -1762,6 +2831,8 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
         isOpen={showQRScanModal}
         onClose={() => setShowQRScanModal(false)}
         mode="scan"
+        batchId={activeBatchId}
+        batchName={activeBatchName}
       />
 
       {/* AI Science Study Planner Modal */}
@@ -1792,7 +2863,7 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
                 {userProfile?.fullName || 'Scholar'}
               </h3>
               <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                Zahira College Mawanella • 2k28 Science EM Scholar
+                Zahira College Mawanella • {activeBatchName} Scholar
               </p>
 
               {/* QR Code Graphic */}
@@ -1812,7 +2883,7 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
                 </div>
                 <div className="flex justify-between">
                   <span className="text-slate-400">Batch Cohort:</span>
-                  <span className="font-semibold text-slate-800 dark:text-slate-200">2k28 Science EM</span>
+                  <span className="font-semibold text-slate-800 dark:text-slate-200">{activeBatchName}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-slate-400">Stream:</span>
