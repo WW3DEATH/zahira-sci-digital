@@ -1,5 +1,22 @@
 {
   "entities": {
+    "batch": {
+      "title": "Academic Batch",
+      "description": "Student cohort batch (e.g. 2k28 Science EM, 2k29 Science EM) managed by Admin",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "academicYear": { "type": "string" },
+        "description": { "type": "string" },
+        "isDefault": { "type": "boolean" },
+        "isActive": { "type": "boolean" },
+        "createdBy": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "name", "createdAt"]
+    },
     "userProfile": {
       "title": "User Profile",
       "description": "Stores user personal, academic, and role metadata",
@@ -8,7 +25,12 @@
         "userId": { "type": "string" },
         "email": { "type": "string" },
         "fullName": { "type": "string" },
+        "username": { "type": "string" },
+        "usernameLower": { "type": "string" },
+        "authMethod": { "type": "string" },
         "role": { "type": "string", "enum": ["admin", "teacher", "student", "parent"] },
+        "batchId": { "type": "string" },
+        "batchName": { "type": "string" },
         "avatarUrl": { "type": "string" },
         "bio": { "type": "string" },
         "phone": { "type": "string" },
@@ -20,6 +42,22 @@
         "updatedAt": { "type": "string" }
       },
       "required": ["userId", "email", "fullName", "role"]
+    },
+    "userCredential": {
+      "title": "User Credential",
+      "description": "Stores salted SHA-256 credential hashes and username lookup metadata in Firestore",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "email": { "type": "string" },
+        "username": { "type": "string" },
+        "usernameLower": { "type": "string" },
+        "passwordHash": { "type": "string" },
+        "authMethod": { "type": "string" },
+        "role": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["userId", "email", "passwordHash"]
     },
     "schoolClass": {
       "title": "School Class",
@@ -152,13 +190,15 @@
     },
     "attendanceRosterStudent": {
       "title": "Attendance Roster Student",
-      "description": "Roll-call student entry with index number and assigned academic stream (bio or physical)",
+      "description": "Roll-call student entry with batch, index number, and assigned academic stream (bio or physical)",
       "type": "object",
       "properties": {
         "id": { "type": "string" },
         "fullName": { "type": "string" },
         "indexNumber": { "type": "string" },
         "stream": { "type": "string", "enum": ["bio", "physical"] },
+        "batchId": { "type": "string" },
+        "batchName": { "type": "string" },
         "classId": { "type": "string" },
         "createdAt": { "type": "string" }
       },
@@ -166,11 +206,13 @@
     },
     "termExamReport": {
       "title": "Term Exam Report Sheet",
-      "description": "Per-student, per-term exam mark sheet containing subjects, marks, total, average, and stream position for official report cards",
+      "description": "Per-student, per-term exam mark sheet containing batch, subjects, marks, total, average, and stream position for official report cards",
       "type": "object",
       "properties": {
         "id": { "type": "string" },
         "term": { "type": "string" },
+        "batchId": { "type": "string" },
+        "batchName": { "type": "string" },
         "studentId": { "type": "string" },
         "studentName": { "type": "string" },
         "studentIndex": { "type": "string" },
@@ -471,12 +513,96 @@
         "updatedAt": { "type": "string" }
       },
       "required": ["date", "dismissedDefaultIds"]
+    },
+    "schoolEvent": {
+      "title": "School Calendar Event",
+      "description": "Academic calendar event including holidays, exam dates, academic labs, and peer study group sessions",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "startDate": { "type": "string" },
+        "endDate": { "type": "string" },
+        "time": { "type": "string" },
+        "type": { "type": "string", "enum": ["holiday", "exam", "academic", "study_group", "meeting", "sports", "general"] },
+        "batchId": { "type": "string" },
+        "batchName": { "type": "string" },
+        "classId": { "type": "string" },
+        "studyRoomId": { "type": "string" },
+        "studyRoomName": { "type": "string" },
+        "location": { "type": "string" },
+        "createdBy": { "type": "string" },
+        "createdByName": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "title", "startDate", "type", "createdBy"]
+    },
+    "studyGroupRequest": {
+      "title": "Peer Study Group Join Request",
+      "description": "Student request to join a specific study room for a calendar-scheduled peer study group session",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "eventId": { "type": "string" },
+        "eventTitle": { "type": "string" },
+        "eventDate": { "type": "string" },
+        "eventTime": { "type": "string" },
+        "eventLocation": { "type": "string" },
+        "roomId": { "type": "string" },
+        "roomName": { "type": "string" },
+        "studentId": { "type": "string" },
+        "studentName": { "type": "string" },
+        "studentEmail": { "type": "string" },
+        "studentIndex": { "type": "string" },
+        "batchId": { "type": "string" },
+        "batchName": { "type": "string" },
+        "note": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "approved", "declined"] },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "eventId", "eventTitle", "eventDate", "roomId", "roomName", "studentId", "studentName", "batchId", "status"]
+    },
+    "timetableEntry": {
+      "title": "Weekly Class Timetable Entry",
+      "description": "Batch-specific weekly class timetable slot managed by Teachers and Admins",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "batchId": { "type": "string" },
+        "batchName": { "type": "string" },
+        "dayOfWeek": { "type": "string", "enum": ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"] },
+        "periodLabel": { "type": "string" },
+        "startTime": { "type": "string" },
+        "endTime": { "type": "string" },
+        "subject": { "type": "string" },
+        "stream": { "type": "string", "enum": ["all", "bio", "physical"] },
+        "teacherName": { "type": "string" },
+        "teacherId": { "type": "string" },
+        "room": { "type": "string" },
+        "notes": { "type": "string" },
+        "color": { "type": "string", "enum": ["blue", "emerald", "amber", "rose", "violet", "cyan"] },
+        "createdBy": { "type": "string" },
+        "createdByName": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "batchId", "dayOfWeek", "periodLabel", "startTime", "endTime", "subject", "stream", "teacherName", "room", "createdBy"]
     }
   },
   "firestore": {
+    "/batches/{batchId}": {
+      "schema": { "$ref": "batch" },
+      "description": "Academic student batches managed by administrators"
+    },
     "/userProfiles/{userId}": {
       "schema": { "$ref": "userProfile" },
       "description": "User profile information"
+    },
+    "/userCredentials/{credentialId}": {
+      "schema": { "$ref": "userCredential" },
+      "description": "Salted password hash and username lookup records for email/password authentication"
     },
     "/classes/{classId}": {
       "schema": { "$ref": "schoolClass" },
@@ -577,6 +703,18 @@
     "/scheduledClassOverrides/{date}": {
       "schema": { "$ref": "scheduledClassOverride" },
       "description": "Per-date overrides for deleted default academic sessions"
+    },
+    "/schoolEvents/{eventId}": {
+      "schema": { "$ref": "schoolEvent" },
+      "description": "Academic calendar events including exams, holidays, labs, and peer study group sessions"
+    },
+    "/studyGroupRequests/{requestId}": {
+      "schema": { "$ref": "studyGroupRequest" },
+      "description": "Student requests to join specific study rooms for scheduled peer study sessions"
+    },
+    "/timetableEntries/{entryId}": {
+      "schema": { "$ref": "timetableEntry" },
+      "description": "Batch-isolated weekly class timetable slots managed by Teachers and Admins"
     }
   }
 }
