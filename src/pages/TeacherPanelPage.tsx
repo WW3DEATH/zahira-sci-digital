@@ -20,12 +20,15 @@ import {
   Mail,
   Phone,
   Tag,
+  Clock,
 } from 'lucide-react';
 import { collection, doc, onSnapshot, setDoc, deleteDoc } from 'firebase/firestore';
-import { db } from '../firebase';
+import { db, sanitizeFirestoreDoc } from '../firebase';
 import { useAuth } from '../context/AuthContext';
+import { ALL_BATCHES_ID, useBatch, isInBatch } from '../context/BatchContext';
 import { SchoolClass, UserProfile, Announcement, UserRole } from '../types';
 import { SEED_CLASSES } from '../services/dataService';
+import { broadcastSystemNotification } from '../services/notificationService';
 
 interface TeacherPanelPageProps {
   onNavigate?: (page: string) => void;
@@ -33,6 +36,7 @@ interface TeacherPanelPageProps {
 
 export const TeacherPanelPage: React.FC<TeacherPanelPageProps> = ({ onNavigate }) => {
   const { userProfile, activeRole } = useAuth();
+  const { batches, activeBatchId, activeBatch, resolveWriteBatchId, setActiveBatchId, getBatchName } = useBatch();
   const [activeTab, setActiveTab] = useState<'classes' | 'users' | 'notices'>('classes');
 
   // 1. Classes State
@@ -70,13 +74,6 @@ export const TeacherPanelPage: React.FC<TeacherPanelPageProps> = ({ onNavigate }
         const list: SchoolClass[] = [];
         snap.forEach((d) => list.push(d.data() as SchoolClass));
         setClasses(list);
-        if (list.length > 0) {
-          if (!selectedClass || !list.some((c) => c.id === selectedClass.id)) {
-            setSelectedClass(list[0]);
-          }
-        } else {
-          setSelectedClass(null);
-        }
       },
       (err) => {
         console.warn('Classes listener warning:', err);
@@ -85,7 +82,19 @@ export const TeacherPanelPage: React.FC<TeacherPanelPageProps> = ({ onNavigate }
       }
     );
     return () => unsub();
-  }, [selectedClass]);
+  }, []);
+
+  const batchClasses = classes.filter((c) => isInBatch(c.batchId, activeBatchId));
+
+  useEffect(() => {
+    if (batchClasses.length > 0) {
+      if (!selectedClass || !batchClasses.some((c) => c.id === selectedClass.id)) {
+        setSelectedClass(batchClasses[0]);
+      }
+    } else if (selectedClass) {
+      setSelectedClass(null);
+    }
+  }, [activeBatchId, classes]);
 
   // Real-time listener for users directory
   useEffect(() => {
@@ -134,12 +143,16 @@ export const TeacherPanelPage: React.FC<TeacherPanelPageProps> = ({ onNavigate }
     setSavingClass(true);
     try {
       const classId = `class-${Date.now()}`;
+      const writeBatchId = resolveWriteBatchId(activeBatchId);
+      const targetBatchName = getBatchName(writeBatchId);
       const newClass: SchoolClass = {
         id: classId,
         name: classNameInput.trim(),
         grade: classGradeInput.trim(),
         academicYear: classYearInput.trim(),
-        description: classDescInput.trim() || 'Zahira College Science Cohort',
+        batchId: writeBatchId,
+        batchName: targetBatchName,
+        description: classDescInput.trim() || `Zahira College ${targetBatchName} Science Cohort`,
         room: classRoomInput.trim() || 'Science Complex - Hall 28',
         teacherIds: [userProfile?.userId || 'teacher_kareem'],
         studentIds: [],
@@ -147,12 +160,12 @@ export const TeacherPanelPage: React.FC<TeacherPanelPageProps> = ({ onNavigate }
         createdAt: new Date().toISOString(),
       };
 
-      await setDoc(doc(db, 'classes', classId), newClass);
+      await setDoc(doc(db, 'classes', classId), sanitizeFirestoreDoc(newClass));
       setIsAddClassModalOpen(false);
       setClassNameInput('');
       setClassDescInput('');
       setSelectedClass(newClass);
-      setNoticeSuccessMessage(`Created class cohort "${newClass.name}".`);
+      setNoticeSuccessMessage(`Created class cohort "${newClass.name}" in ${targetBatchName}.`);
       setTimeout(() => setNoticeSuccessMessage(null), 4000);
     } catch (err: any) {
       console.error('Error creating class:', err);
@@ -198,10 +211,14 @@ export const TeacherPanelPage: React.FC<TeacherPanelPageProps> = ({ onNavigate }
     setPostingNotice(true);
     try {
       const noticeId = `ann-${Date.now()}`;
+      const writeBatchId = resolveWriteBatchId(activeBatchId);
+      const targetBatchName = getBatchName(writeBatchId);
       const newNotice: Announcement = {
         id: noticeId,
         title: noticeTitle.trim(),
         content: noticeContent.trim(),
+        batchId: writeBatchId,
+        batchName: targetBatchName,
         authorId: userProfile?.userId || 'teacher_faculty',
         authorName: userProfile?.fullName || 'Academic Faculty Lead',
         authorRole: 'teacher',
@@ -210,11 +227,19 @@ export const TeacherPanelPage: React.FC<TeacherPanelPageProps> = ({ onNavigate }
         createdAt: new Date().toISOString(),
       };
 
-      await setDoc(doc(db, 'announcements', noticeId), newNotice);
+      await setDoc(doc(db, 'announcements', noticeId), sanitizeFirestoreDoc(newNotice));
+      await broadcastSystemNotification({
+        title: `New Notice (${targetBatchName})`,
+        message: `${newNotice.title}: ${newNotice.content.slice(0, 90)}`,
+        type: 'announcement',
+        link: 'announcements',
+        batchId: writeBatchId,
+        batchName: targetBatchName,
+      });
       setNoticeTitle('');
       setNoticeContent('');
       setNoticePinned(false);
-      setNoticeSuccessMessage(`Published notice: "${newNotice.title}"`);
+      setNoticeSuccessMessage(`Published notice for ${targetBatchName}: "${newNotice.title}"`);
       setTimeout(() => setNoticeSuccessMessage(null), 4000);
     } catch (err: any) {
       console.error('Error posting notice:', err);
@@ -241,8 +266,12 @@ export const TeacherPanelPage: React.FC<TeacherPanelPageProps> = ({ onNavigate }
     }
   };
 
+  const batchUsers = users.filter((u) => u.role === 'teacher' || isInBatch(u.batchId, activeBatchId));
+  const batchNotices = notices.filter((n) => isInBatch(n.batchId, activeBatchId));
+  const activeBatchName = activeBatch?.name || '2k28 Science EM';
+
   // Filter Users
-  const filteredUsers = users.filter((u) => {
+  const filteredUsers = batchUsers.filter((u) => {
     const matchesRole = selectedRoleFilter === 'all' || u.role === selectedRoleFilter;
     const q = userSearchQuery.toLowerCase().trim();
     const matchesSearch =
@@ -255,9 +284,9 @@ export const TeacherPanelPage: React.FC<TeacherPanelPageProps> = ({ onNavigate }
     return matchesRole && matchesSearch;
   });
 
-  const studentsCount = users.filter((u) => u.role === 'student').length;
-  const teachersCount = users.filter((u) => u.role === 'teacher').length;
-  const parentsCount = users.filter((u) => u.role === 'parent').length;
+  const studentsCount = batchUsers.filter((u) => u.role === 'student').length;
+  const teachersCount = batchUsers.filter((u) => u.role === 'teacher').length;
+  const parentsCount = batchUsers.filter((u) => u.role === 'parent').length;
 
   return (
     <div className="space-y-6 animate-in fade-in duration-300">
@@ -268,18 +297,42 @@ export const TeacherPanelPage: React.FC<TeacherPanelPageProps> = ({ onNavigate }
           <div>
             <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-500/20 border border-blue-400/30 text-blue-200 text-xs font-semibold mb-3">
               <School className="w-3.5 h-3.5 text-blue-400" />
-              <span>Zahira College Mawanella • Teacher Faculty Portal</span>
+              <span>Zahira College Mawanella • Teacher Faculty Portal • {activeBatchName}</span>
             </div>
             <h1 className="font-serif text-3xl md:text-4xl font-bold tracking-tight text-white">
               Teacher Faculty Management Panel
             </h1>
             <p className="text-xs md:text-sm text-blue-200/90 mt-2 max-w-2xl leading-relaxed">
-              Dedicated teacher workstation: add and remove class cohorts, view the complete school user directory, and publish official academic notices for scholars and parents.
+              Managing cohorts, scholars, and notices for <strong className="text-white">{activeBatchName}</strong>. Switch batches anytime on the right.
             </p>
           </div>
 
-          {/* Quick Action Button */}
-          <div className="flex items-center gap-3">
+          {/* Quick Action Button + Batch Switcher */}
+          <div className="flex flex-wrap items-center gap-3">
+            <select
+              value={activeBatchId}
+              onChange={(e) => setActiveBatchId(e.target.value)}
+              className="rounded-xl bg-white/15 border border-white/25 px-3 py-2.5 text-xs font-bold text-white focus:outline-none"
+              aria-label="Select teacher panel batch"
+            >
+              <option value={ALL_BATCHES_ID} className="text-slate-900">
+                All Batches ({batches.length})
+              </option>
+              {batches.map((b) => (
+                <option key={b.id} value={b.id} className="text-slate-900">
+                  Batch: {b.name}
+                </option>
+              ))}
+            </select>
+
+            <button
+              onClick={() => onNavigate?.('timetable')}
+              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold text-xs shadow-lg transition-all"
+            >
+              <Clock className="w-4 h-4" />
+              <span>Set Timetable</span>
+            </button>
+
             <button
               onClick={() => {
                 setActiveTab('classes');
@@ -312,7 +365,7 @@ export const TeacherPanelPage: React.FC<TeacherPanelPageProps> = ({ onNavigate }
             }`}
           >
             <GraduationCap className="w-4 h-4" />
-            <span>Class Cohorts ({classes.length})</span>
+            <span>Class Cohorts ({batchClasses.length})</span>
           </button>
 
           <button
@@ -324,7 +377,7 @@ export const TeacherPanelPage: React.FC<TeacherPanelPageProps> = ({ onNavigate }
             }`}
           >
             <Users className="w-4 h-4" />
-            <span>View Users ({users.length})</span>
+            <span>View Users ({batchUsers.length})</span>
           </button>
 
           <button
@@ -336,7 +389,7 @@ export const TeacherPanelPage: React.FC<TeacherPanelPageProps> = ({ onNavigate }
             }`}
           >
             <Bell className="w-4 h-4" />
-            <span>Publish Notices ({notices.length})</span>
+            <span>Publish Notices ({batchNotices.length})</span>
           </button>
         </div>
       </div>
@@ -353,10 +406,10 @@ export const TeacherPanelPage: React.FC<TeacherPanelPageProps> = ({ onNavigate }
                 <div>
                   <h3 className="font-serif text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
                     <GraduationCap className="w-4 h-4 text-blue-600 dark:text-blue-400" />
-                    <span>Academic Cohorts ({classes.length})</span>
+                    <span>Academic Cohorts ({batchClasses.length})</span>
                   </h3>
                   <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                    Select a class to review details or remove cohort
+                    Select a class in {activeBatchName} to review or remove
                   </p>
                 </div>
 
@@ -370,7 +423,7 @@ export const TeacherPanelPage: React.FC<TeacherPanelPageProps> = ({ onNavigate }
               </div>
 
               <div className="space-y-2.5 max-h-[580px] overflow-y-auto pr-1 sidebar-menu-scroll">
-                {classes.map((cls) => {
+                {batchClasses.map((cls) => {
                   const isSelected = selectedClass?.id === cls.id;
                   return (
                     <div
@@ -414,10 +467,10 @@ export const TeacherPanelPage: React.FC<TeacherPanelPageProps> = ({ onNavigate }
                   );
                 })}
 
-                {classes.length === 0 && (
+                {batchClasses.length === 0 && (
                   <div className="p-8 rounded-2xl border border-dashed border-slate-200 dark:border-slate-800 text-center text-xs text-slate-500 space-y-2">
                     <GraduationCap className="w-8 h-8 text-slate-300 mx-auto" />
-                    <p className="font-semibold text-slate-700 dark:text-slate-300">No active class cohorts found.</p>
+                    <p className="font-semibold text-slate-700 dark:text-slate-300">No active class cohorts in {activeBatchName}.</p>
                     <p className="text-[11px] text-slate-400">
                       Use the "Add Class Cohort" button to register a cohort.
                     </p>
@@ -553,7 +606,7 @@ export const TeacherPanelPage: React.FC<TeacherPanelPageProps> = ({ onNavigate }
                     : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200'
                 }`}
               >
-                All Users ({users.length})
+                All Users ({batchUsers.length})
               </button>
               <button
                 onClick={() => setSelectedRoleFilter('student')}
@@ -742,15 +795,15 @@ export const TeacherPanelPage: React.FC<TeacherPanelPageProps> = ({ onNavigate }
           <div className="lg:col-span-7 space-y-3">
             <h3 className="font-serif text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
               <Bell className="w-4 h-4 text-blue-600" />
-              <span>Published School Circulars ({notices.length})</span>
+              <span>Published School Circulars ({batchNotices.length})</span>
             </h3>
 
-            {notices.length === 0 ? (
+            {batchNotices.length === 0 ? (
               <div className="p-8 rounded-2xl border border-dashed border-slate-300 dark:border-slate-700 text-center text-slate-500 text-xs">
-                No academic notices have been published yet.
+                No academic notices published for {activeBatchName} yet.
               </div>
             ) : (
-              notices.map((nt) => (
+              batchNotices.map((nt) => (
                 <div
                   key={nt.id}
                   className="p-5 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm space-y-2 relative"
