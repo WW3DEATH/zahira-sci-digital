@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Users,
   GraduationCap,
@@ -23,28 +23,33 @@ import {
   Layers,
   Shield,
   FlaskConical,
+  Clock,
 } from 'lucide-react';
 import { collection, onSnapshot, doc, setDoc } from 'firebase/firestore';
 import { db } from '../../firebase';
 import { SchoolClass, Subject, UserProfile, Announcement, UserRole, AttendanceRecord, AttendanceDayControl } from '../../types';
-import { SEED_CLASSES, SEED_SUBJECTS, REAL_ADMIN_PROFILE, SEED_ANNOUNCEMENTS, SEED_INITIAL_USERS } from '../../services/dataService';
+import { SEED_SUBJECTS, REAL_ADMIN_PROFILE, SEED_ANNOUNCEMENTS } from '../../services/dataService';
 import {
   LiveMorphIcon,
   LiveOrbitalScienceGraphic,
   LAB_CYCLE_ICONS,
 } from '../common/LiveVisuals';
 import { isAttendanceRecordActive } from '../../utils/attendanceUtils';
+import { ALL_BATCHES_ID, isInBatch, resolveItemBatchId, useBatch } from '../../context/BatchContext';
 
 interface AdminDashboardProps {
   onNavigate: (page: string) => void;
 }
 
 export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) => {
-  const [classes, setClasses] = useState<SchoolClass[]>([]);
-  const [subjects, setSubjects] = useState<Subject[]>([]);
-  const [profiles, setProfiles] = useState<UserProfile[]>([]);
-  const [announcements, setAnnouncements] = useState<Announcement[]>([]);
-  const [attendanceRecords, setAttendanceRecords] = useState<AttendanceRecord[]>([]);
+  const { batches, activeBatchId, activeBatch, resolveWriteBatchId, setActiveBatchId, getBatchName } = useBatch();
+  const activeBatchName = activeBatch?.name || getBatchName(activeBatchId);
+
+  const [allClasses, setAllClasses] = useState<SchoolClass[]>([]);
+  const [allSubjects, setAllSubjects] = useState<Subject[]>([]);
+  const [allProfiles, setAllProfiles] = useState<UserProfile[]>([]);
+  const [allAnnouncements, setAllAnnouncements] = useState<Announcement[]>([]);
+  const [allAttendanceRecords, setAllAttendanceRecords] = useState<AttendanceRecord[]>([]);
   const [dayControlsMap, setDayControlsMap] = useState<Record<string, AttendanceDayControl>>({});
   const [loading, setLoading] = useState(true);
 
@@ -66,7 +71,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
         onSnapshot(collection(db, 'classes'), (snap) => {
           const list: SchoolClass[] = [];
           snap.forEach((d) => list.push(d.data() as SchoolClass));
-          setClasses(list);
+          setAllClasses(list);
         })
       );
 
@@ -74,7 +79,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
         onSnapshot(collection(db, 'subjects'), (snap) => {
           const list: Subject[] = [];
           snap.forEach((d) => list.push(d.data() as Subject));
-          setSubjects(list.length > 0 ? list : SEED_SUBJECTS);
+          setAllSubjects(list.length > 0 ? list : SEED_SUBJECTS);
         })
       );
 
@@ -89,9 +94,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
             if (!list.some((u) => u.email?.toLowerCase() === REAL_ADMIN_PROFILE.email.toLowerCase())) {
               list.unshift(REAL_ADMIN_PROFILE);
             }
-            setProfiles(list);
+            setAllProfiles(list);
           } else {
-            setProfiles([REAL_ADMIN_PROFILE]);
+            setAllProfiles([REAL_ADMIN_PROFILE]);
           }
         })
       );
@@ -100,7 +105,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
         onSnapshot(collection(db, 'announcements'), (snap) => {
           const list: Announcement[] = [];
           snap.forEach((d) => list.push(d.data() as Announcement));
-          setAnnouncements(
+          setAllAnnouncements(
             (list.length > 0 ? list : SEED_ANNOUNCEMENTS).sort(
               (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
             )
@@ -112,7 +117,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
         onSnapshot(collection(db, 'attendance'), (snap) => {
           const list: AttendanceRecord[] = [];
           snap.forEach((d) => list.push({ ...(d.data() as AttendanceRecord), id: d.id }));
-          setAttendanceRecords(list);
+          setAllAttendanceRecords(list);
         })
       );
 
@@ -122,17 +127,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
           snap.forEach((d) => {
             const data = d.data() as AttendanceDayControl;
             const dateKey = data.date || d.id;
-            if (dateKey) map[dateKey] = { ...data, id: d.id, date: dateKey };
+            map[d.id] = { ...data, id: d.id, date: dateKey };
           });
           setDayControlsMap(map);
         })
       );
     } catch (e) {
       console.warn('Real-time sync fallback:', e);
-      setClasses([]);
-      setSubjects(SEED_SUBJECTS);
-      setProfiles([REAL_ADMIN_PROFILE]);
-      setAnnouncements(SEED_ANNOUNCEMENTS);
+      setAllClasses([]);
+      setAllSubjects(SEED_SUBJECTS);
+      setAllProfiles([REAL_ADMIN_PROFILE]);
+      setAllAnnouncements(SEED_ANNOUNCEMENTS);
     } finally {
       setLoading(false);
     }
@@ -142,16 +147,46 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
     };
   }, []);
 
+  // Batch-divided collections
+  const classes = useMemo(
+    () => allClasses.filter((c) => isInBatch(c.batchId, activeBatchId)),
+    [allClasses, activeBatchId]
+  );
+  const subjects = useMemo(
+    () => allSubjects.filter((s) => isInBatch(s.batchId, activeBatchId)),
+    [allSubjects, activeBatchId]
+  );
+  const announcements = useMemo(
+    () => allAnnouncements.filter((a) => isInBatch(a.batchId, activeBatchId)),
+    [allAnnouncements, activeBatchId]
+  );
+  const attendanceRecords = useMemo(
+    () => allAttendanceRecords.filter((rec) => isInBatch(rec.batchId, activeBatchId)),
+    [allAttendanceRecords, activeBatchId]
+  );
+  const profiles = useMemo(
+    () => allProfiles.filter((p) => isInBatch(p.batchId, activeBatchId)),
+    [allProfiles, activeBatchId]
+  );
+
   // Bulk Action Module State
   const [selectedUserIds, setSelectedUserIds] = useState<string[]>([]);
   const [bulkRole, setBulkRole] = useState<UserRole>('student');
   const [bulkClassId, setBulkClassId] = useState<string>('');
+  const [bulkBatchId, setBulkBatchId] = useState<string>(() => resolveWriteBatchId(activeBatchId));
+  const [userBatchScope, setUserBatchScope] = useState<'active' | 'all'>('active');
   const [userRoleFilter, setUserRoleFilter] = useState<string>('all');
   const [userSearchQuery, setUserSearchQuery] = useState<string>('');
   const [bulkUpdating, setBulkUpdating] = useState<boolean>(false);
   const [bulkFeedback, setBulkFeedback] = useState<string | null>(null);
 
-  const filteredUsers = profiles.filter((u) => {
+  useEffect(() => {
+    setBulkBatchId(resolveWriteBatchId(activeBatchId));
+    setSelectedUserIds([]);
+  }, [activeBatchId, batches]);
+
+  const userSourceList = userBatchScope === 'all' ? allProfiles : profiles;
+  const filteredUsers = userSourceList.filter((u) => {
     const matchesRole = userRoleFilter === 'all' || u.role === userRoleFilter;
     const matchesSearch =
       (u.fullName || '').toLowerCase().includes(userSearchQuery.toLowerCase()) ||
@@ -203,7 +238,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
       const selectedClassName = classes.find((c) => c.id === bulkClassId)?.name || bulkClassId;
       await Promise.all(
         selectedUserIds.map((uid) => {
-          const user = profiles.find((p) => p.userId === uid);
+          const user = allProfiles.find((p) => p.userId === uid);
           const currentAssigned = user?.assignedClassIds || [];
           const currentEnrolled = user?.enrolledClassIds || [];
           const updatedAssigned = Array.from(new Set([...currentAssigned, bulkClassId]));
@@ -226,6 +261,32 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
     }
   };
 
+  const handleBulkUpdateBatch = async () => {
+    if (selectedUserIds.length === 0 || !bulkBatchId) return;
+    setBulkUpdating(true);
+    setBulkFeedback(null);
+    try {
+      const targetBatchName = getBatchName(bulkBatchId);
+      await Promise.all(
+        selectedUserIds.map((uid) =>
+          setDoc(
+            doc(db, 'userProfiles', uid),
+            { batchId: bulkBatchId, batchName: targetBatchName, updatedAt: new Date().toISOString() },
+            { merge: true }
+          )
+        )
+      );
+      setBulkFeedback(`Moved ${selectedUserIds.length} account(s) to batch "${targetBatchName}".`);
+      setSelectedUserIds([]);
+    } catch (err) {
+      console.error('Bulk batch update error:', err);
+      setBulkFeedback('Failed to move selected accounts to batch.');
+    } finally {
+      setBulkUpdating(false);
+      setTimeout(() => setBulkFeedback(null), 5000);
+    }
+  };
+
   const handleSingleRoleUpdate = async (userId: string, newRole: UserRole) => {
     try {
       await setDoc(doc(db, 'userProfiles', userId), { role: newRole }, { merge: true });
@@ -236,8 +297,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
 
   const totalStudents = profiles.filter((p) => p.role === 'student').length;
   const totalFaculty = profiles.filter((p) => p.role === 'teacher').length;
-  const totalClasses = classes.length || 1;
-  const activeAttendance = attendanceRecords.filter((rec) => isAttendanceRecordActive(rec, dayControlsMap));
+  const totalClasses = classes.length || 0;
+  const activeAttendance = attendanceRecords.filter((rec) =>
+    isAttendanceRecordActive(rec, dayControlsMap, undefined, activeBatchId)
+  );
   let totalAttEntries = 0;
   let presentWeighted = 0;
   activeAttendance.forEach((rec) => {
@@ -258,7 +321,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
         body: JSON.stringify({
           role: 'admin',
           academicData: {
-            schoolName: 'Zahira College 2k28 Science EM',
+            schoolName: `Zahira College ${activeBatchName}`,
             totalStudents,
             totalFaculty,
             activeClasses: totalClasses,
@@ -296,17 +359,32 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
               Academic & Cohort Leadership Overview
             </h2>
             <p className="text-blue-100 text-sm mt-1 max-w-xl">
-              Real-time monitoring of Zahira College 2k28 Science EM batch cohorts, syllabus progress, student attendance, and Gemini Flash analytics.
+              Real-time monitoring of Zahira College <strong className="text-amber-300">{activeBatchName}</strong> batch cohorts, syllabus progress, student attendance, and Gemini Flash analytics.
             </p>
           </div>
 
           <div className="flex flex-wrap items-center gap-2.5">
+            <select
+              value={activeBatchId}
+              onChange={(e) => setActiveBatchId(e.target.value)}
+              className="rounded-xl bg-white/15 border border-white/25 px-3 py-2.5 text-xs font-bold text-white focus:outline-none [&>option]:text-slate-900"
+              aria-label="Switch active academic batch"
+            >
+              <option value={ALL_BATCHES_ID}>
+                All Batches ({batches.length})
+              </option>
+              {batches.map((b) => (
+                <option key={b.id} value={b.id}>
+                  Batch: {b.name}
+                </option>
+              ))}
+            </select>
             <button
               onClick={() => onNavigate('admin_panel')}
               className="inline-flex items-center gap-2 rounded-xl bg-red-600 hover:bg-red-700 px-4 py-2.5 text-xs font-bold text-white transition-all shadow-md hover:shadow-lg"
             >
               <ShieldCheck className="w-4 h-4" />
-              <span>Faculty Management Console (Edit Website)</span>
+              <span>Faculty Management Console (Manage Batches)</span>
             </button>
             <button
               onClick={() => onNavigate('labs')}
@@ -337,6 +415,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
             >
               <CalendarCheck2 className="w-4 h-4" />
               <span>Calendar</span>
+            </button>
+            <button
+              onClick={() => onNavigate('timetable')}
+              className="inline-flex items-center gap-2 rounded-xl bg-amber-400 hover:bg-amber-300 px-4 py-2.5 text-xs font-bold text-slate-950 transition-colors shadow-sm"
+            >
+              <Clock className="w-4 h-4" />
+              <span>Set Timetable</span>
             </button>
             <button
               onClick={() => onNavigate('announcements')}
@@ -602,7 +687,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
               </div>
 
               {/* Action 2: Bulk Class Cohort Assignment */}
-              <div className="flex items-center gap-2 bg-white p-2 rounded-lg border border-amber-200 shadow-2xs sm:col-span-1 lg:col-span-2">
+              <div className="flex items-center gap-2 bg-white p-2 rounded-lg border border-amber-200 shadow-2xs">
                 <span className="text-[11px] font-bold text-stone-700 shrink-0 uppercase tracking-wider">Assign Cohort:</span>
                 <select
                   value={bulkClassId}
@@ -627,6 +712,29 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
                   {bulkUpdating ? 'Assigning...' : 'Assign Cohort'}
                 </button>
               </div>
+
+              {/* Action 3: Bulk Batch Assignment */}
+              <div className="flex items-center gap-2 bg-white p-2 rounded-lg border border-amber-200 shadow-2xs">
+                <span className="text-[11px] font-bold text-stone-700 shrink-0 uppercase tracking-wider">Move Batch:</span>
+                <select
+                  value={bulkBatchId}
+                  onChange={(e) => setBulkBatchId(e.target.value)}
+                  className="w-full rounded-md border border-stone-200 bg-stone-50 px-2 py-1 text-xs font-medium text-stone-800 focus:outline-none"
+                >
+                  {batches.map((b) => (
+                    <option key={b.id} value={b.id}>
+                      {b.name}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  onClick={handleBulkUpdateBatch}
+                  disabled={bulkUpdating || !bulkBatchId}
+                  className="rounded-md bg-blue-900 hover:bg-blue-950 disabled:opacity-50 px-3 py-1 text-xs font-bold text-white transition-colors shrink-0"
+                >
+                  {bulkUpdating ? 'Moving...' : 'Set Batch'}
+                </button>
+              </div>
             </div>
           </div>
         )}
@@ -634,6 +742,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
         {/* Filter & Search Bar */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
           <div className="flex items-center gap-1.5 overflow-x-auto pb-1 sm:pb-0">
+            <button
+              onClick={() => setUserBatchScope((s) => (s === 'active' ? 'all' : 'active'))}
+              className={`rounded-lg px-2.5 py-1.5 font-bold shrink-0 border transition-all ${
+                userBatchScope === 'active'
+                  ? 'bg-blue-900 text-amber-300 border-blue-900'
+                  : 'bg-white text-stone-700 border-stone-200 hover:bg-stone-100'
+              }`}
+            >
+              {userBatchScope === 'active' ? `Batch: ${activeBatchName}` : 'All Batches'}
+            </button>
             {['all', 'student', 'teacher', 'parent', 'admin'].map((role) => (
               <button
                 key={role}
@@ -681,6 +799,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
                     </button>
                   </th>
                   <th className="py-3 px-4">User Scholar / Faculty</th>
+                  <th className="py-3 px-4">Batch</th>
                   <th className="py-3 px-4">Email</th>
                   <th className="py-3 px-4">Current Role</th>
                   <th className="py-3 px-4">Cohort Assignments</th>
@@ -690,13 +809,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
               <tbody className="divide-y divide-stone-100 text-stone-800">
                 {filteredUsers.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="py-8 text-center text-stone-400 text-xs">
+                    <td colSpan={7} className="py-8 text-center text-stone-400 text-xs">
                       No matching user accounts found for &quot;{userSearchQuery}&quot;
                     </td>
                   </tr>
                 ) : (
                   filteredUsers.map((user) => {
                     const isSelected = selectedUserIds.includes(user.userId);
+                    const resolvedUserBatch = user.batchName || getBatchName(resolveItemBatchId(user.batchId));
                     return (
                       <tr
                         key={user.userId}
@@ -724,10 +844,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
                             <div>
                               <p className="font-bold text-stone-900 leading-tight">{user.fullName || 'Zahira Member'}</p>
                               <p className="text-[10px] text-stone-500 truncate max-w-xs">
-                                {user.bio || 'Zahira College 2k28 Science EM Member'}
+                                {user.bio || `Zahira College ${resolvedUserBatch} Member`}
                               </p>
                             </div>
                           </div>
+                        </td>
+                        <td className="py-3 px-4">
+                          <span className="rounded bg-blue-50 text-blue-900 border border-blue-200 px-2 py-0.5 text-[10px] font-bold whitespace-nowrap">
+                            {resolvedUserBatch}
+                          </span>
                         </td>
                         <td className="py-3 px-4 font-mono text-stone-600 text-[11px]">
                           {user.email || '—'}
