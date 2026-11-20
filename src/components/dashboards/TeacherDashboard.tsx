@@ -53,6 +53,7 @@ import {
   UserProfile,
 } from '../../types';
 import { useAuth } from '../../context/AuthContext';
+import { ALL_BATCHES_ID, isInBatch, useBatch } from '../../context/BatchContext';
 import { useTheme } from '../../context/ThemeContext';
 import { sendAdminAttendanceAlert } from '../../services/notificationService';
 import {
@@ -80,15 +81,17 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
   onGradeSubmission,
 }) => {
   const { userProfile } = useAuth();
+  const { batches, activeBatchId, activeBatch, resolveWriteBatchId, setActiveBatchId, isBatchLocked, getBatchName } = useBatch();
+  const activeBatchName = activeBatch?.name || getBatchName(activeBatchId);
   const { isDark } = useTheme();
-  const [classes, setClasses] = useState<SchoolClass[]>([]);
-  const [assignments, setAssignments] = useState<Assignment[]>([]);
-  const [submissions, setSubmissions] = useState<Submission[]>([]);
-  const [quizzes, setQuizzes] = useState<Quiz[]>([]);
-  const [attendanceRecords, setAttendanceRecords] = useState<AttendanceRecord[]>([]);
+  const [allClasses, setAllClasses] = useState<SchoolClass[]>([]);
+  const [allAssignments, setAllAssignments] = useState<Assignment[]>([]);
+  const [allSubmissions, setAllSubmissions] = useState<Submission[]>([]);
+  const [allQuizzes, setAllQuizzes] = useState<Quiz[]>([]);
+  const [allAttendanceRecords, setAllAttendanceRecords] = useState<AttendanceRecord[]>([]);
   const [dayControlsMap, setDayControlsMap] = useState<Record<string, AttendanceDayControl>>({});
-  const [rosterStudents, setRosterStudents] = useState<RosterStudent[]>([]);
-  const [students, setStudents] = useState<UserProfile[]>([]);
+  const [allRosterStudents, setAllRosterStudents] = useState<RosterStudent[]>([]);
+  const [allStudents, setAllStudents] = useState<UserProfile[]>([]);
   const [selectedClassId, setSelectedClassId] = useState<string>('all');
   const [chartMode, setChartMode] = useState<'rate' | 'breakdown'>('rate');
   const [loading, setLoading] = useState(true);
@@ -98,25 +101,25 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
     const unsubClasses = onSnapshot(collection(db, 'classes'), (snap) => {
       const list: SchoolClass[] = [];
       snap.forEach((d) => list.push(d.data() as SchoolClass));
-      setClasses(list);
+      setAllClasses(list);
     });
 
     const unsubAssignments = onSnapshot(collection(db, 'assignments'), (snap) => {
       const list: Assignment[] = [];
       snap.forEach((d) => list.push(d.data() as Assignment));
-      setAssignments(list);
+      setAllAssignments(list);
     });
 
     const unsubSubmissions = onSnapshot(collection(db, 'submissions'), (snap) => {
       const list: Submission[] = [];
       snap.forEach((d) => list.push(d.data() as Submission));
-      setSubmissions(list);
+      setAllSubmissions(list);
     });
 
     const unsubQuizzes = onSnapshot(collection(db, 'quizzes'), (snap) => {
       const list: Quiz[] = [];
       snap.forEach((d) => list.push(d.data() as Quiz));
-      setQuizzes(list);
+      setAllQuizzes(list);
     });
 
     const unsubAttendance = onSnapshot(collection(db, 'attendance'), (snap) => {
@@ -125,7 +128,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
         const rec = d.data() as AttendanceRecord;
         list.push({ ...rec, id: rec.id || d.id });
       });
-      setAttendanceRecords(list);
+      setAllAttendanceRecords(list);
     });
 
     const unsubDaySettings = onSnapshot(
@@ -135,7 +138,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
         snap.forEach((d) => {
           const data = d.data() as AttendanceDayControl;
           const dateKey = data.date || d.id;
-          if (dateKey) map[dateKey] = { ...data, id: d.id, date: dateKey };
+          map[d.id] = { ...data, id: d.id, date: dateKey };
         });
         setDayControlsMap(map);
       },
@@ -149,7 +152,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
         if (isFakeSeedRosterStudent(d.id, data?.fullName)) return;
         list.push({ ...data, id: d.id });
       });
-      setRosterStudents(list);
+      setAllRosterStudents(list);
     });
 
     const unsubStudents = onSnapshot(collection(db, 'userProfiles'), (snap) => {
@@ -158,7 +161,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
         const u = d.data() as UserProfile;
         if (u.role === 'student') list.push(u);
       });
-      setStudents(list);
+      setAllStudents(list);
       setLoading(false);
     });
 
@@ -174,6 +177,43 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
     };
   }, []);
 
+  // Batch-filtered slices
+  const classes = useMemo(
+    () => allClasses.filter((c) => isInBatch(c.batchId, activeBatchId)),
+    [allClasses, activeBatchId]
+  );
+  const assignments = useMemo(
+    () => allAssignments.filter((a) => isInBatch(a.batchId, activeBatchId)),
+    [allAssignments, activeBatchId]
+  );
+  const submissions = useMemo(
+    () => allSubmissions.filter((s) => isInBatch(s.batchId, activeBatchId)),
+    [allSubmissions, activeBatchId]
+  );
+  const quizzes = useMemo(
+    () => allQuizzes.filter((q) => isInBatch(q.batchId, activeBatchId)),
+    [allQuizzes, activeBatchId]
+  );
+  const attendanceRecords = useMemo(
+    () => allAttendanceRecords.filter((rec) => isInBatch(rec.batchId, activeBatchId)),
+    [allAttendanceRecords, activeBatchId]
+  );
+  const rosterStudents = useMemo(
+    () => allRosterStudents.filter((r) => isInBatch(r.batchId, activeBatchId)),
+    [allRosterStudents, activeBatchId]
+  );
+  const students = useMemo(
+    () => allStudents.filter((s) => isInBatch(s.batchId, activeBatchId)),
+    [allStudents, activeBatchId]
+  );
+
+  // Reset selectedClassId if not in filtered classes for active batch
+  useEffect(() => {
+    if (selectedClassId !== 'all' && !classes.some((c) => c.id === selectedClassId)) {
+      setSelectedClassId('all');
+    }
+  }, [classes, selectedClassId]);
+
   const pendingSubmissions = submissions.filter((s) => s.status === 'submitted' || s.status === 'under_review');
   const myClasses = classes;
 
@@ -187,11 +227,11 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
   // Strictly active saved attendance records (only dates where Attendance Marking is ON and real student logs exist)
   const activeAttendanceRecords = useMemo(() => {
     return attendanceRecords.filter((rec) => {
-      if (!isAttendanceRecordActive(rec, dayControlsMap, validStudentIds)) return false;
+      if (!isAttendanceRecordActive(rec, dayControlsMap, validStudentIds, activeBatchId)) return false;
       if (selectedClassId !== 'all' && rec.classId && rec.classId !== selectedClassId) return false;
       return true;
     });
-  }, [attendanceRecords, dayControlsMap, selectedClassId, validStudentIds]);
+  }, [attendanceRecords, dayControlsMap, selectedClassId, validStudentIds, activeBatchId]);
 
   // Build trend points strictly from real saved registers (supports multiple classes per date)
   const attendanceTrendData = useMemo(() => {
@@ -321,6 +361,8 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
           fullName: st.fullName || 'Scholar',
           email: st.email,
           indexNumber,
+          batchId: st.batchId || resolveWriteBatchId(activeBatchId),
+          batchName: st.batchName || getBatchName(st.batchId || resolveWriteBatchId(activeBatchId)),
           sessions,
           presentCount,
           lateCount,
@@ -330,7 +372,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
         };
       })
       .filter((item): item is NonNullable<typeof item> => item !== null);
-  }, [students, rosterStudents, activeAttendanceRecords]);
+  }, [students, rosterStudents, activeAttendanceRecords, activeBatchId]);
 
   const atRiskStudents = useMemo(() => {
     return studentAttendanceStats.filter((s) => s.isBelowThreshold);
@@ -344,7 +386,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
     const today = new Date().toISOString().split('T')[0];
 
     atRiskStudents.forEach((st) => {
-      const storageKey = `zahira_low_att_admin_alert_${st.userId}_${today}`;
+      const storageKey = `zahira_low_att_admin_alert_${st.userId}_${st.batchId}_${today}`;
       const alreadySent = localStorage.getItem(storageKey);
 
       if (!alreadySent) {
@@ -355,6 +397,8 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
           attendanceRate: st.attendanceRate,
           totalSessions: st.sessions,
           classId: selectedClassId !== 'all' ? selectedClassId : 'general',
+          batchId: st.batchId,
+          batchName: st.batchName,
         });
         localStorage.setItem(storageKey, 'true');
         setAlertDispatchedMap((prev) => ({ ...prev, [st.userId]: true }));
@@ -372,9 +416,11 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
       attendanceRate: student.attendanceRate,
       totalSessions: student.sessions,
       classId: selectedClassId !== 'all' ? selectedClassId : 'general',
+      batchId: student.batchId,
+      batchName: student.batchName,
     });
     const today = new Date().toISOString().split('T')[0];
-    localStorage.setItem(`zahira_low_att_admin_alert_${student.userId}_${today}`, 'true');
+    localStorage.setItem(`zahira_low_att_admin_alert_${student.userId}_${student.batchId}_${today}`, 'true');
     setAlertDispatchedMap((prev) => ({ ...prev, [student.userId]: true }));
   };
 
@@ -465,11 +511,28 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
               )}
             </h2>
             <p className="text-blue-100 text-sm mt-1 max-w-xl">
-              You are managing the Zahira College 2k28 Science EM cohort. You have {pendingSubmissions.length} coursework submission(s) awaiting grading review. Gemini Flash AI is active.
+              You are managing the Zahira College <strong className="text-amber-300">{activeBatchName}</strong> cohort. You have {pendingSubmissions.length} coursework submission(s) awaiting grading review. Gemini Flash AI is active.
             </p>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
+            {!isBatchLocked && (
+              <select
+                value={activeBatchId}
+                onChange={(e) => setActiveBatchId(e.target.value)}
+                className="rounded-xl bg-white/15 border border-white/25 px-3 py-2.5 text-xs font-bold text-white focus:outline-none [&>option]:text-slate-900"
+                aria-label="Select active batch"
+              >
+                <option value={ALL_BATCHES_ID}>
+                  All Batches ({batches.length})
+                </option>
+                {batches.map((b) => (
+                  <option key={b.id} value={b.id}>
+                    Batch: {b.name}
+                  </option>
+                ))}
+              </select>
+            )}
             <button
               onClick={() => onNavigate('labs')}
               className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 px-4 py-2.5 text-xs font-bold text-white transition-all shadow-md"
@@ -483,6 +546,13 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
             >
               <Sparkles className="w-4 h-4" />
               <span>Gemini Flash Quiz Generator</span>
+            </button>
+            <button
+              onClick={() => onNavigate('timetable')}
+              className="inline-flex items-center gap-2 rounded-xl bg-amber-400 hover:bg-amber-300 px-4 py-2.5 text-xs font-bold text-slate-950 transition-all shadow-md"
+            >
+              <Clock className="w-4 h-4" />
+              <span>Set Timetable</span>
             </button>
             <button
               onClick={() => onNavigate('calendar')}
@@ -512,7 +582,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
             </div>
           </div>
           <p className="font-serif text-3xl font-bold text-stone-900 mt-2">{myClasses.length}</p>
-          <p className="text-[11px] text-stone-500 mt-2">2k28 Science EM (A/L Batch 2028)</p>
+          <p className="text-[11px] text-stone-500 mt-2">{activeBatchName}</p>
         </div>
 
         <div className="rounded-2xl border border-stone-200 bg-white p-5 shadow-xs hover:shadow-md transition-shadow">
@@ -572,7 +642,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
           <div>
             <div className="inline-flex items-center gap-1.5 rounded-full bg-blue-50 px-2.5 py-0.5 text-[11px] font-bold text-blue-900 border border-blue-200 mb-1">
               <TrendingUp className="w-3.5 h-3.5 text-blue-700" />
-              <span>Zahira College 2k28 Science EM • Saved Attendance Only</span>
+              <span>Zahira College {activeBatchName} • Saved Attendance Only</span>
             </div>
             <h3 className="font-serif text-xl font-bold text-blue-950 flex items-center gap-2">
               <span>Saved Student Attendance Trends</span>
@@ -804,7 +874,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-3 border-t border-slate-100 text-xs text-slate-500">
           <div className="flex items-center gap-2">
             <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 shrink-0" />
-            <span>Institutional 90% attendance policy applies to all 2k28 Science EM academic term evaluations.</span>
+            <span>Institutional 90% attendance policy applies to all {activeBatchName} academic term evaluations.</span>
           </div>
 
           <button
@@ -858,7 +928,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
             <div className="flex items-center gap-2.5">
               <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
               <p className="text-emerald-900 font-medium">
-                <strong>Cohort Attendance Optimal:</strong> All 2k28 Science EM students are currently maintaining attendance above the 75% institutional alert threshold.
+                <strong>Cohort Attendance Optimal:</strong> All {activeBatchName} students are currently maintaining attendance above the 75% institutional alert threshold.
               </p>
             </div>
             <span className="text-[11px] text-emerald-700 font-bold shrink-0">
