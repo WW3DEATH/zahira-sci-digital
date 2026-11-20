@@ -10,12 +10,29 @@ export const OFFICIAL_STUDENT_SUBJECTS = [
 
 export type OfficialStudentSubject = (typeof OFFICIAL_STUDENT_SUBJECTS)[number];
 
+export interface SchoolBatch {
+  id: string;
+  name: string;
+  academicYear?: string;
+  description?: string;
+  isDefault?: boolean;
+  isActive?: boolean;
+  createdBy?: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
 export interface UserProfile {
   userId: string;
   email: string;
   fullName: string;
+  username?: string;
+  usernameLower?: string;
+  authMethod?: 'firebase_auth' | 'firestore_email' | 'google';
   role: UserRole;
-  indexNumber?: string; // Official Zahira College 2k28 Science EM Student Index (e.g., '2860003', '2860004')
+  batchId?: string;
+  batchName?: string;
+  indexNumber?: string; // Official Zahira College Science EM Student Index (e.g., '2860003', '2860004')
   avatarUrl?: string;
   bio?: string;
   phone?: string;
@@ -36,6 +53,8 @@ export interface RosterStudent {
   fullName: string;
   indexNumber: string; // e.g. '2860001' or '2K28-SCI-001'
   stream?: StudentStream; // 'bio' (Biological Science) or 'physical' (Physical Science)
+  batchId?: string;
+  batchName?: string;
   classId?: string; // class cohort or 'general'
   createdAt: string;
 }
@@ -47,6 +66,8 @@ export interface SchoolClass {
   academicYear: string;
   description: string;
   room?: string;
+  batchId?: string;
+  batchName?: string;
   teacherIds: string[];
   studentIds: string[];
   subjectIds: string[];
@@ -59,6 +80,8 @@ export interface Subject {
   name: string;
   description: string;
   color: string;
+  batchId?: string;
+  batchName?: string;
   teacherIds: string[];
   classIds: string[];
   createdAt?: string;
@@ -68,6 +91,8 @@ export interface LearningMaterial {
   id: string;
   title: string;
   description: string;
+  batchId?: string;
+  batchName?: string;
   classId: string;
   subjectId: string;
   teacherId: string;
@@ -83,6 +108,8 @@ export interface Assignment {
   title: string;
   description: string;
   instructions: string;
+  batchId?: string;
+  batchName?: string;
   classId: string;
   subjectId: string;
   teacherId: string;
@@ -102,6 +129,8 @@ export interface Submission {
   assignmentId: string;
   studentId: string;
   studentName: string;
+  batchId?: string;
+  batchName?: string;
   classId: string;
   content: string;
   fileUrl?: string;
@@ -118,6 +147,8 @@ export interface Submission {
 export interface AcademicTest {
   id: string;
   title: string;
+  batchId?: string;
+  batchName?: string;
   classId: string;
   subjectId: string;
   teacherId: string;
@@ -133,6 +164,8 @@ export interface TestMark {
   studentId: string;
   studentName: string;
   studentIndex?: string;
+  batchId?: string;
+  batchName?: string;
   classId: string;
   subjectId: string;
   marksObtained: number;
@@ -151,6 +184,8 @@ export interface TermExamSubjectMark {
 export interface TermExamReport {
   id: string; // `${termSlug}__${studentId}`
   term: string;
+  batchId?: string;
+  batchName?: string;
   studentId: string;
   studentName: string;
   studentIndex: string;
@@ -169,6 +204,8 @@ export type AttendanceStatus = 'present' | 'absent' | 'late' | 'excused';
 
 export interface QRAttendanceSession {
   sessionId: string;
+  batchId?: string;
+  batchName?: string;
   classId: string;
   className: string;
   date: string;
@@ -187,6 +224,8 @@ export interface QRAttendanceSession {
 export interface AttendanceCheckInLog {
   id: string;
   recordId: string;
+  batchId?: string;
+  batchName?: string;
   classId: string;
   date: string;
   studentId: string;
@@ -200,6 +239,8 @@ export interface AttendanceCheckInLog {
 
 export interface AttendanceRecord {
   id: string;
+  batchId?: string;
+  batchName?: string;
   classId: string;
   date: string; // YYYY-MM-DD
   sessionId?: string;
@@ -213,7 +254,9 @@ export interface AttendanceRecord {
 }
 
 export interface AttendanceDayControl {
-  id: string; // YYYY-MM-DD
+  id: string; // `${batchId}__${date}` or legacy YYYY-MM-DD
+  batchId?: string;
+  batchName?: string;
   date: string; // YYYY-MM-DD
   enabled: boolean;
   updatedBy?: string;
@@ -265,7 +308,39 @@ export interface StudentStudyPlan {
   }[];
 }
 
-export type SchoolEventType = 'holiday' | 'exam' | 'academic' | 'meeting' | 'sports' | 'general';
+export type SchoolEventType = 'holiday' | 'exam' | 'academic' | 'study_group' | 'meeting' | 'sports' | 'general';
+
+export const STUDY_GROUP_ROOMS = [
+  { id: 'general', name: 'General Science EM', description: 'Cross-subject past-paper practice and group review' },
+  { id: 'cmath', name: 'Combined Mathematics', description: 'Calculus, vectors, mechanics & problem sets' },
+  { id: 'bio', name: 'Biology', description: 'Cellular physiology, genetics & essay prep' },
+  { id: 'physics', name: 'Physics', description: 'Mechanics, fields, waves, optics & derivations' },
+  { id: 'chemistry', name: 'Chemistry', description: 'Organic mechanisms, equilibrium & electrochemistry' },
+  { id: 'ict', name: 'ICT', description: 'Algorithms, databases, networking & web systems' },
+] as const;
+
+export type StudyGroupRequestStatus = 'pending' | 'approved' | 'declined';
+
+export interface StudyGroupJoinRequest {
+  id: string;
+  eventId: string;
+  eventTitle: string;
+  eventDate: string;
+  eventTime?: string;
+  eventLocation?: string;
+  roomId: string;
+  roomName: string;
+  studentId: string;
+  studentName: string;
+  studentEmail?: string;
+  studentIndex?: string;
+  batchId: string;
+  batchName: string;
+  note?: string;
+  status: StudyGroupRequestStatus;
+  createdAt: string;
+  updatedAt: string;
+}
 
 export interface SchoolEvent {
   id: string;
@@ -275,8 +350,12 @@ export interface SchoolEvent {
   endDate?: string;   // YYYY-MM-DD
   time?: string;      // e.g. "08:30"
   type: SchoolEventType;
+  batchId?: string;
+  batchName?: string;
   classId?: string;
   subjectId?: string;
+  studyRoomId?: string;
+  studyRoomName?: string;
   location?: string;
   createdBy: string;
   createdByName?: string;
@@ -295,6 +374,8 @@ export interface Announcement {
   authorName: string;
   authorRole: UserRole;
   audience: AnnouncementAudience;
+  batchId?: string;
+  batchName?: string;
   classId?: string;
   isPinned?: boolean;
   createdAt: string;
@@ -315,6 +396,8 @@ export interface Quiz {
   id: string;
   title: string;
   description: string;
+  batchId?: string;
+  batchName?: string;
   classId: string;
   subjectId: string;
   teacherId: string;
@@ -330,6 +413,8 @@ export interface QuizAttempt {
   quizId: string;
   studentId: string;
   studentName: string;
+  batchId?: string;
+  batchName?: string;
   classId: string;
   answers: Record<string, string>; // questionId -> selectedAnswer
   score: number;
@@ -342,6 +427,8 @@ export interface Conversation {
   id: string;
   participantIds: string[];
   participantNames: Record<string, string>;
+  batchId?: string;
+  batchName?: string;
   lastMessage?: string;
   lastMessageAt?: string;
   updatedAt: string;
@@ -355,6 +442,8 @@ export interface DirectMessage {
   conversationId: string;
   senderId: string;
   senderName: string;
+  batchId?: string;
+  batchName?: string;
   text: string;
   createdAt: string;
 }
@@ -369,6 +458,8 @@ export interface Discussion {
   authorName: string;
   authorRole: UserRole;
   category: DiscussionCategory;
+  batchId?: string;
+  batchName?: string;
   classId?: string;
   subjectId?: string;
   tags: string[];
@@ -388,6 +479,8 @@ export interface DiscussionReply {
   authorId: string;
   authorName: string;
   authorRole: UserRole;
+  batchId?: string;
+  batchName?: string;
   content: string;
   attachmentUrl?: string;
   attachmentName?: string;
@@ -400,6 +493,8 @@ export interface DiscussionRoomMessage {
   id: string;
   roomId: string;
   roomName?: string;
+  batchId?: string;
+  batchName?: string;
   authorId: string;
   authorName: string;
   authorRole: UserRole;
@@ -433,6 +528,8 @@ export interface AppNotification {
   id: string;
   userId?: string;
   audience?: 'all' | 'students' | 'teachers' | 'user' | 'admin';
+  batchId?: string;
+  batchName?: string;
   title: string;
   message: string;
   link?: string;
@@ -491,6 +588,8 @@ export interface StudentBadgeSummary {
 
 export interface ScheduledClass {
   id: string;
+  batchId?: string;
+  batchName?: string;
   classId: string;
   className: string;
   date: string; // YYYY-MM-DD
@@ -538,6 +637,8 @@ export interface PvPMatch {
   id: string;
   roomCode: string;
   mode: PvPMode;
+  batchId?: string;
+  batchName?: string;
   subject: string;
   subjects?: string[];
   topic: string;
@@ -570,6 +671,8 @@ export interface QuizScoreEvent {
   userName: string;
   userRole: UserRole;
   indexNumber?: string;
+  batchId?: string;
+  batchName?: string;
   mode: 'pvp' | 'solo_ranked' | 'standard_quiz';
   matchId?: string;
   subject: string;
@@ -579,3 +682,48 @@ export interface QuizScoreEvent {
   isWin: boolean;
   completedAt: string;
 }
+
+export type TimetableDay =
+  | 'Monday'
+  | 'Tuesday'
+  | 'Wednesday'
+  | 'Thursday'
+  | 'Friday'
+  | 'Saturday'
+  | 'Sunday';
+
+export const TIMETABLE_DAYS: readonly TimetableDay[] = [
+  'Monday',
+  'Tuesday',
+  'Wednesday',
+  'Thursday',
+  'Friday',
+  'Saturday',
+  'Sunday',
+] as const;
+
+export type TimetableStream = 'all' | 'bio' | 'physical';
+
+export type TimetableAccent = 'blue' | 'emerald' | 'amber' | 'rose' | 'violet' | 'cyan';
+
+export interface TimetableEntry {
+  id: string;
+  batchId: string;
+  batchName: string;
+  dayOfWeek: TimetableDay;
+  periodLabel: string;
+  startTime: string; // HH:mm
+  endTime: string;   // HH:mm
+  subject: string;
+  stream: TimetableStream;
+  teacherName: string;
+  teacherId?: string;
+  room: string;
+  notes?: string;
+  color?: TimetableAccent;
+  createdBy: string;
+  createdByName: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
