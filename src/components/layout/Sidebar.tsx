@@ -29,6 +29,7 @@ import {
   Swords,
   Trophy,
   Info,
+  Clock,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useSiteConfig } from '../../context/SiteConfigContext';
@@ -101,6 +102,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         { id: 'labs', label: 'Science Labs', hint: 'Interactive science simulations', icon: FlaskConical },
         { id: 'classes', label: 'Classes', hint: 'Batch groups & class sessions', icon: GraduationCap },
         { id: 'subjects', label: 'Subjects', hint: 'Physics, Chem, Maths & Bio units', icon: BookOpen },
+        { id: 'timetable', label: 'Timetable', hint: 'Weekly class schedule & room slots', icon: Clock },
         { id: 'calendar', label: 'Calendar', hint: 'Holidays, exams & class schedule', icon: Calendar },
       ],
     },
@@ -130,7 +132,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               { id: 'settings', label: 'Settings', hint: 'Portal configuration & preferences', icon: Settings },
             ]
           : []),
-        { id: 'about', label: 'About', hint: 'Zahira College 2k28 Science project', icon: Info },
+        { id: 'about', label: 'About', hint: 'Zahira College Mawanella Science Project EM', icon: Info },
       ],
     },
   ];
@@ -176,7 +178,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             <ZahiraLogo size="sm" />
             <div className="min-w-0">
               <p className="text-xs font-bold text-blue-950 dark:text-slate-100 truncate">
-                {siteConfig.schoolName || 'Zahira College'}
+                {siteConfig.schoolName || 'Zahira College Mawanella Science Project EM'}
               </p>
               <p className="text-[10px] font-semibold text-red-600 dark:text-red-400 uppercase tracking-wider truncate">
                 {activeRole === 'guest' ? 'Visitor' : `${activeRole} Portal`}
