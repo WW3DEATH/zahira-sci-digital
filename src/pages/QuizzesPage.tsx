@@ -18,6 +18,7 @@ import {
 import { collection, doc, onSnapshot, setDoc } from 'firebase/firestore';
 import { db, sanitizeFirestoreDoc } from '../firebase';
 import { useAuth } from '../context/AuthContext';
+import { ALL_BATCHES_ID, useBatch, isInBatch } from '../context/BatchContext';
 import { Quiz, QuizQuestion, QuizAttempt, QuizScoreEvent } from '../types';
 import { SEED_QUIZZES } from '../services/dataService';
 import { broadcastSystemNotification } from '../services/notificationService';
@@ -25,16 +26,22 @@ import { AIMarkdownMath } from '../components/common/AIMarkdownMath';
 
 export const QuizzesPage: React.FC = () => {
   const { activeRole, userProfile } = useAuth();
+  const { batches, activeBatchId, activeBatch, resolveWriteBatchId, setActiveBatchId, isBatchLocked, getBatchName } = useBatch();
   const [quizzes, setQuizzes] = useState<Quiz[]>([]);
   const [loading, setLoading] = useState(true);
 
   // AI Generator Modal state
   const [showGenerator, setShowGenerator] = useState(false);
+  const [genBatchId, setGenBatchId] = useState(() => resolveWriteBatchId(activeBatchId));
   const [genSubject, setGenSubject] = useState('Physics & Classical Mechanics');
   const [genTopic, setGenTopic] = useState('Rotational Dynamics & Angular Momentum');
   const [genDifficulty, setGenDifficulty] = useState<'easy' | 'medium' | 'hard'>('medium');
   const [genNumQuestions, setGenNumQuestions] = useState(5);
   const [generating, setGenerating] = useState(false);
+
+  useEffect(() => {
+    setGenBatchId(resolveWriteBatchId(activeBatchId));
+  }, [activeBatchId, batches]);
 
   // Active Quiz Taking State
   const [activeQuiz, setActiveQuiz] = useState<Quiz | null>(null);
@@ -131,19 +138,23 @@ export const QuizzesPage: React.FC = () => {
     try {
       const attemptId = `attempt-${Date.now()}`;
       const completedAt = new Date().toISOString();
+      const quizBatchId = activeQuiz.batchId || activeBatchId;
+      const quizBatchName = activeQuiz.batchName || getBatchName(quizBatchId);
       const attemptDoc: QuizAttempt = {
         id: attemptId,
         quizId: activeQuiz.id,
         studentId: userProfile?.userId || 'zahira_student',
         studentName: userProfile?.fullName || 'Zahira Student Scholar',
         classId: activeQuiz.classId,
+        batchId: quizBatchId,
+        batchName: quizBatchName,
         answers,
         score,
         maxScore,
         status: 'completed',
         completedAt,
       };
-      await setDoc(doc(db, 'quizAttempts', attemptId), attemptDoc);
+      await setDoc(doc(db, 'quizAttempts', attemptId), sanitizeFirestoreDoc(attemptDoc));
 
       const correctCount = details.filter((d) => d.isCorrect).length;
       const scoreEvent: QuizScoreEvent = {
@@ -152,6 +163,8 @@ export const QuizzesPage: React.FC = () => {
         userName: userProfile?.fullName || 'Zahira Student Scholar',
         userRole: activeRole,
         indexNumber: userProfile?.indexNumber,
+        batchId: quizBatchId,
+        batchName: quizBatchName,
         mode: 'standard_quiz',
         matchId: activeQuiz.id,
         subject: activeQuiz.title || 'Academic Quiz',
@@ -202,12 +215,15 @@ export const QuizzesPage: React.FC = () => {
 
       if (questions.length > 0) {
         const totalMarks = questions.reduce((sum, q) => sum + (q.marks || 5), 0);
+        const targetBatchName = getBatchName(genBatchId);
         const newQuiz: Quiz = {
           id: `quiz-${Date.now()}`,
           title: `${genSubject}: ${genTopic} Master Assessment`,
-          description: `Zahira College 2k28 Science EM assessment for ${genTopic}. Difficulty: ${genDifficulty.toUpperCase()}.`,
+          description: `Zahira College ${targetBatchName} assessment for ${genTopic}. Difficulty: ${genDifficulty.toUpperCase()}.`,
           classId: 'general',
           subjectId: 'sub-phys',
+          batchId: genBatchId,
+          batchName: targetBatchName,
           teacherId: userProfile?.userId || 'faculty',
           durationMinutes: 15,
           totalMarks,
@@ -216,12 +232,14 @@ export const QuizzesPage: React.FC = () => {
           createdAt: new Date().toISOString(),
         };
 
-        await setDoc(doc(db, 'quizzes', newQuiz.id), newQuiz);
+        await setDoc(doc(db, 'quizzes', newQuiz.id), sanitizeFirestoreDoc(newQuiz));
         await broadcastSystemNotification({
           title: 'New Quiz Published',
-          message: `"${newQuiz.title}" is now active for 2k28 Science EM students.`,
+          message: `"${newQuiz.title}" is now active for ${targetBatchName} students.`,
           type: 'quiz',
           link: 'quizzes',
+          batchId: genBatchId,
+          batchName: targetBatchName,
         });
         setQuizzes((prev) => [newQuiz, ...prev]);
         setShowGenerator(false);
@@ -466,6 +484,23 @@ export const QuizzesPage: React.FC = () => {
             <div className="space-y-4 text-xs">
               <div>
                 <label className="font-semibold text-stone-600 uppercase tracking-wider block mb-1 text-[11px]">
+                  Target Academic Batch
+                </label>
+                <select
+                  value={genBatchId}
+                  onChange={(e) => setGenBatchId(e.target.value)}
+                  className="w-full rounded-lg border border-stone-200 bg-stone-50 p-2 text-stone-800 font-semibold"
+                >
+                  {batches.map((b) => (
+                    <option key={b.id} value={b.id}>
+                      {b.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="font-semibold text-stone-600 uppercase tracking-wider block mb-1 text-[11px]">
                   Subject
                 </label>
                 <input
@@ -548,28 +583,72 @@ export const QuizzesPage: React.FC = () => {
       {/* Main Page Top Bar */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h2 className="font-serif text-2xl font-bold tracking-tight text-stone-900">
-            Interactive Quizzes & Assessments
-          </h2>
+          <div className="flex items-center gap-2 flex-wrap">
+            <h2 className="font-serif text-2xl font-bold tracking-tight text-stone-900">
+              Interactive Quizzes & Assessments
+            </h2>
+            <span className="rounded-full bg-blue-100 text-blue-800 px-2.5 py-0.5 text-[11px] font-bold">
+              {activeBatch?.name || '2k28 Science EM'}
+            </span>
+          </div>
           <p className="text-xs text-stone-500 mt-1">
-            Automated assessments, objective scoring, and AI question authoring
+            Automated assessments, objective scoring, and AI question authoring for {activeBatch?.name || '2k28 Science EM'}
           </p>
         </div>
 
-        {(activeRole === 'teacher' || activeRole === 'admin') && (
-          <button
-            onClick={() => setShowGenerator(true)}
-            className="inline-flex items-center gap-2 rounded-xl bg-amber-500 hover:bg-amber-600 px-4 py-2.5 text-xs font-bold text-stone-950 transition-all shadow-md shrink-0"
-          >
-            <Sparkles className="w-4 h-4" />
-            <span>Generate Quiz with AI</span>
-          </button>
-        )}
+        <div className="flex flex-wrap items-center gap-2">
+          {!isBatchLocked && (
+            <select
+              value={activeBatchId}
+              onChange={(e) => setActiveBatchId(e.target.value)}
+              className="rounded-xl border border-stone-200 bg-white px-3 py-2 text-xs font-bold text-stone-800 shadow-2xs"
+              aria-label="Filter quizzes by batch"
+            >
+              <option value={ALL_BATCHES_ID}>
+                All Batches ({batches.length})
+              </option>
+              {batches.map((b) => (
+                <option key={b.id} value={b.id}>
+                  Batch: {b.name}
+                </option>
+              ))}
+            </select>
+          )}
+
+          {(activeRole === 'teacher' || activeRole === 'admin') && (
+            <button
+              onClick={() => {
+                setGenBatchId(resolveWriteBatchId(activeBatchId));
+                setShowGenerator(true);
+              }}
+              className="inline-flex items-center gap-2 rounded-xl bg-amber-500 hover:bg-amber-600 px-4 py-2.5 text-xs font-bold text-stone-950 transition-all shadow-md shrink-0"
+            >
+              <Sparkles className="w-4 h-4" />
+              <span>Generate Quiz with AI</span>
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Quizzes List */}
+      {(() => {
+        const batchQuizzes = quizzes.filter((q) => isInBatch(q.batchId, activeBatchId));
+        if (batchQuizzes.length === 0) {
+          return (
+            <div className="rounded-2xl border border-dashed border-stone-300 bg-white p-10 text-center">
+              <FileCheck2 className="w-10 h-10 text-stone-300 mx-auto mb-2" />
+              <h3 className="font-serif text-lg font-bold text-stone-800">
+                No Quizzes Published for {activeBatch?.name || 'This Batch'}
+              </h3>
+              <p className="text-xs text-stone-500 mt-1">
+                Quizzes generated for {activeBatch?.name || 'this batch'} will appear here.
+              </p>
+            </div>
+          );
+        }
+        return (
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {quizzes.map((quiz) => (
+        {batchQuizzes.map((quiz) => (
           <div
             key={quiz.id}
             className="rounded-2xl border border-stone-200 bg-white p-6 shadow-xs hover:shadow-md transition-all flex flex-col justify-between"
@@ -610,6 +689,8 @@ export const QuizzesPage: React.FC = () => {
           </div>
         ))}
       </div>
+        );
+      })()}
     </div>
   );
 };
