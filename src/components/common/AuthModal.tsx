@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
-import { X, Lock, Mail, User, Shield, AlertCircle, GraduationCap, BookOpen, Users, Check } from 'lucide-react';
+import { X, Lock, Mail, User, Shield, AlertCircle, GraduationCap, BookOpen, Users, Check, Layers } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
+import { useBatch } from '../../context/BatchContext';
 import { OFFICIAL_STUDENT_SUBJECTS } from '../../types';
 
 interface AuthModalProps {
@@ -17,11 +18,14 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
     signInWithEmail,
     signUpWithEmail,
   } = useAuth();
+  const { batches } = useBatch();
   const [isSignUp, setIsSignUp] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
+  const [username, setUsername] = useState('');
   const [selectedRole, setSelectedRole] = useState<'student' | 'teacher' | 'parent'>('student');
+  const [selectedBatchId, setSelectedBatchId] = useState<string>('');
   const [selectedSubject, setSelectedSubject] = useState('Combined Mathematics');
   const [customSubject, setCustomSubject] = useState('');
   const [studentStream, setStudentStream] = useState('');
@@ -124,15 +128,27 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    if (isSignUp && selectedRole === 'student' && !selectedBatchId) {
+      setError('Please select your academic batch before creating your student account.');
+      return;
+    }
     if (isSignUp && selectedRole === 'student' && studentSubjects.length === 0) {
       setError('Please select at least 1 subject you are joining (e.g. C.Maths, Bio, Physics, Chemistry, ICT).');
+      return;
+    }
+    if (isSignUp && password.length < 6) {
+      setError('Password must be at least 6 characters long.');
       return;
     }
     setLoading(true);
     try {
       if (isSignUp) {
         const finalSubject = selectedSubject === 'Other' ? customSubject.trim() : selectedSubject;
+        const chosenBatch = batches.find((b) => b.id === selectedBatchId) || batches[0];
         await signUpWithEmail(email, password, name, selectedRole, {
+          username: username.trim() || undefined,
+          batchId: chosenBatch?.id,
+          batchName: chosenBatch?.name,
           subject: selectedRole === 'teacher' ? finalSubject : undefined,
           stream: selectedRole === 'student' ? studentStream.trim() : undefined,
           enrolledSubjects: selectedRole === 'student' ? studentSubjects : undefined,
@@ -167,10 +183,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
             <Lock className="w-5 h-5" />
           </div>
           <h3 className="font-serif text-2xl font-bold text-blue-950">
-            {isSignUp ? 'Create Scholar / Faculty Account' : 'Sign in to Zahira College 2k28 Science EM'}
+            {isSignUp ? 'Create Scholar / Faculty Account' : 'Sign in to Zahira College Mawanella Science Project EM'}
           </h3>
           <p className="text-xs text-slate-500 mt-1">
-            Official portal for Zahira College 2k28 Science EM
+            Official portal for Zahira College Mawanella Science Project EM
           </p>
         </div>
 
@@ -327,18 +343,34 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
                 </div>
               </div>
 
-              <div>
-                <label className="font-semibold text-stone-700 uppercase tracking-wider block mb-1 text-[11px]">
-                  Full Name
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder="e.g. Mohamed Rizwan"
-                  className="w-full rounded-xl border border-stone-200 bg-stone-50 p-2.5 text-stone-800 focus:bg-white focus:outline-none"
-                />
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                <div>
+                  <label className="font-semibold text-stone-700 uppercase tracking-wider block mb-1 text-[11px]">
+                    Full Name *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    placeholder="e.g. Mohamed Rizwan"
+                    className="w-full rounded-xl border border-stone-200 bg-stone-50 p-2.5 text-stone-800 focus:bg-white focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="font-semibold text-stone-700 uppercase tracking-wider block mb-1 text-[11px]">
+                    Username *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    minLength={2}
+                    value={username}
+                    onChange={(e) => setUsername(e.target.value)}
+                    placeholder="e.g. rizwan28"
+                    className="w-full rounded-xl border border-stone-200 bg-stone-50 p-2.5 text-stone-800 focus:bg-white focus:outline-none"
+                  />
+                </div>
               </div>
 
               {selectedRole === 'parent' && (
@@ -427,12 +459,52 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
                 </div>
               )}
 
+              {/* Academic Batch Selection */}
+              <div>
+                <label className="font-semibold text-stone-700 uppercase tracking-wider block mb-1 text-[11px] flex items-center justify-between">
+                  <span className="flex items-center gap-1">
+                    <Layers className="w-3.5 h-3.5 text-blue-700" />
+                    <span>
+                      {selectedRole === 'student' ? 'Select Your Batch *' : 'Academic Batch'}
+                    </span>
+                  </span>
+                  <span className="text-[10px] text-blue-700 font-semibold">
+                    {selectedRole === 'student' ? 'Required · Isolates your portal' : 'Cohort Scope'}
+                  </span>
+                </label>
+                <select
+                  required={selectedRole === 'student'}
+                  value={selectedBatchId}
+                  onChange={(e) => setSelectedBatchId(e.target.value)}
+                  className="w-full rounded-xl border border-blue-200 bg-blue-50/40 p-2.5 text-stone-900 font-semibold focus:bg-white focus:border-blue-500 focus:outline-none"
+                >
+                  <option value="">
+                    {selectedRole === 'student'
+                      ? '-- Select Your Academic Batch --'
+                      : '-- All / Default Batch --'}
+                  </option>
+                  {batches.map((b) => (
+                    <option key={b.id} value={b.id}>
+                      {b.name}
+                      {b.academicYear ? ` (${b.academicYear})` : ''}
+                    </option>
+                  ))}
+                </select>
+                {selectedRole === 'student' && (
+                  <p className="text-[10px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5 mt-1.5 font-medium">
+                    Permanent Selection: Once you select your batch, it is permanently locked to your account and cannot be changed later. Your notes, attendance, marks, chats, and discussion room will sync exclusively to this batch.
+                  </p>
+                )}
+              </div>
+
               {selectedRole === 'student' && (
                 <div className="space-y-3">
                   <div>
                     <label className="font-semibold text-stone-700 uppercase tracking-wider block mb-1 text-[11px] flex items-center justify-between">
                       <span>Academic Stream</span>
-                      <span className="text-[10px] text-stone-400 font-normal">Zahira 2k28 Science EM</span>
+                      <span className="text-[10px] text-stone-400 font-normal">
+                        {batches.find((b) => b.id === selectedBatchId)?.name || 'Zahira Science EM'}
+                      </span>
                     </label>
                     <input
                       type="text"
@@ -517,25 +589,27 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
 
           <div>
             <label className="font-semibold text-stone-700 uppercase tracking-wider block mb-1 text-[11px]">
-              Email Address
+              {isSignUp ? 'Email Address *' : 'Email Address or Username'}
             </label>
             <input
-              type="email"
+              type={isSignUp ? 'email' : 'text'}
               required
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              placeholder="name@example.com"
+              placeholder={isSignUp ? 'name@example.com' : 'name@example.com or username'}
               className="w-full rounded-xl border border-stone-200 bg-stone-50 p-2.5 text-stone-800 focus:bg-white focus:outline-none"
             />
           </div>
 
           <div>
-            <label className="font-semibold text-stone-700 uppercase tracking-wider block mb-1 text-[11px]">
-              Password
+            <label className="font-semibold text-stone-700 uppercase tracking-wider block mb-1 text-[11px] flex items-center justify-between">
+              <span>Password</span>
+              {isSignUp && <span className="text-[10px] font-normal text-stone-400">Minimum 6 characters</span>}
             </label>
             <input
               type="password"
               required
+              minLength={isSignUp ? 6 : undefined}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               placeholder="••••••••"
@@ -562,7 +636,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
               Already registered?{' '}
               <button
                 type="button"
-                onClick={() => setIsSignUp(false)}
+                onClick={() => {
+                  setIsSignUp(false);
+                  setError('');
+                }}
                 className="font-bold text-stone-900 hover:underline"
               >
                 Sign In
@@ -574,7 +651,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
                 New user?{' '}
                 <button
                   type="button"
-                  onClick={() => setIsSignUp(true)}
+                  onClick={() => {
+                    setIsSignUp(true);
+                    setError('');
+                  }}
                   className="font-bold text-stone-900 hover:underline"
                 >
                   Create Account (Student, Teacher, Parent)
@@ -585,6 +665,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
                 onClick={() => {
                   setIsSignUp(true);
                   setSelectedRole('parent');
+                  setError('');
                 }}
                 className="w-full py-2 px-3 rounded-xl bg-amber-50 hover:bg-amber-100 border border-amber-200 text-amber-900 text-xs font-bold transition-colors flex items-center justify-center gap-1.5"
               >
