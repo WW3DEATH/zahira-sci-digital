@@ -10,9 +10,12 @@ import {
   Moon,
   CheckCheck,
   Menu,
+  Layers,
+  Lock,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useTheme } from '../../context/ThemeContext';
+import { ALL_BATCHES_ID, useBatch } from '../../context/BatchContext';
 import { ZahiraLogo } from '../common/ZahiraLogo';
 import {
   isBrowserNotificationSupported,
@@ -44,6 +47,7 @@ export const Header: React.FC<HeaderProps> = ({
     markAllNotificationsRead,
   } = useAuth();
   const { isDark, toggleTheme } = useTheme();
+  const { batches, activeBatchId, activeBatch, setActiveBatchId, isBatchLocked } = useBatch();
 
   const [showNotifs, setShowNotifs] = useState(false);
   const [searchVal, setSearchVal] = useState('');
@@ -115,17 +119,17 @@ export const Header: React.FC<HeaderProps> = ({
         <div
           onClick={() => onNavigate?.('dashboard')}
           className="flex items-center gap-2 sm:gap-2.5 cursor-pointer group min-w-0"
-          title="Zahira College Mawanella • ZNC Science Project"
+          title="Zahira College Mawanella Science Project EM"
         >
           {/* Official Zahira College Mawanella Crest */}
           <ZahiraLogo size="sm" className="group-hover:scale-105 transition-transform" />
 
           <div className="flex flex-col min-w-0">
-            <span className="font-serif text-sm sm:text-lg font-bold tracking-tight text-slate-900 dark:text-slate-100 leading-none truncate">
-              ZNC Science Project
+            <span className="font-serif text-sm sm:text-base lg:text-lg font-bold tracking-tight text-slate-900 dark:text-slate-100 leading-none truncate">
+              Zahira College Mawanella Science Project EM
             </span>
             <span className="text-[9px] sm:text-[10px] font-bold text-red-600 dark:text-red-400 tracking-wider uppercase mt-0.5 truncate">
-              Zahira College Mawanella · 2k28 Science EM
+              Active Batch · {activeBatch?.name || '2k28 Science EM'}
             </span>
           </div>
         </div>
@@ -133,6 +137,38 @@ export const Header: React.FC<HeaderProps> = ({
 
       {/* CENTER / RIGHT ACTION SHORTCUTS: ROLE-RESTRICTED CONTROLS */}
       <div className="flex items-center gap-1 sm:gap-2.5 shrink-0">
+        {/* Global Active Batch Control */}
+        {userProfile && (
+          isBatchLocked ? (
+            <div
+              className="hidden sm:inline-flex items-center gap-1.5 rounded-xl border border-blue-200 dark:border-blue-800 bg-blue-50/80 dark:bg-blue-950/40 px-2.5 py-1.5 text-[11px] font-bold text-blue-900 dark:text-blue-200"
+              title="Academic Batch is permanently locked once selected"
+            >
+              <Lock className="w-3 h-3 text-blue-600 dark:text-blue-400 shrink-0" />
+              <span className="max-w-[140px] truncate">{activeBatch?.name || '2k28 Science EM'}</span>
+            </div>
+          ) : (
+            <div className="flex items-center gap-1 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-2 py-1">
+              <Layers className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400 shrink-0" />
+              <select
+                aria-label="Active Academic Batch"
+                value={activeBatchId}
+                onChange={(e) => setActiveBatchId(e.target.value)}
+                className="bg-transparent text-[11px] font-bold text-slate-800 dark:text-slate-100 focus:outline-none cursor-pointer max-w-[115px] sm:max-w-[160px]"
+              >
+                <option value={ALL_BATCHES_ID} className="bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100">
+                  All Batches ({batches.length})
+                </option>
+                {batches.map((b) => (
+                  <option key={b.id} value={b.id} className="bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100">
+                    {b.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )
+        )}
+
         {/* Prominent Admin Master Panel Button - Strictly for Admin Only */}
         {activeRole === 'admin' ? (
           <button
