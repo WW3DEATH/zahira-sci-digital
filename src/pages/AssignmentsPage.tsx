@@ -22,8 +22,9 @@ import {
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import { collection, doc, onSnapshot, setDoc, updateDoc } from 'firebase/firestore';
-import { db } from '../firebase';
+import { db, sanitizeFirestoreDoc } from '../firebase';
 import { useAuth } from '../context/AuthContext';
+import { ALL_BATCHES_ID, useBatch, isInBatch } from '../context/BatchContext';
 import { Assignment, Submission, SubmissionStatus } from '../types';
 import { SEED_ASSIGNMENTS, SEED_SUBMISSIONS } from '../services/dataService';
 import { broadcastSystemNotification } from '../services/notificationService';
@@ -31,6 +32,7 @@ import { PDFPreviewModal, PDFPreviewData } from '../components/common/PDFPreview
 
 export const AssignmentsPage: React.FC = () => {
   const { activeRole, userProfile } = useAuth();
+  const { batches, activeBatchId, activeBatch, resolveWriteBatchId, setActiveBatchId, isBatchLocked, getBatchName } = useBatch();
   const [assignments, setAssignments] = useState<Assignment[]>(SEED_ASSIGNMENTS);
   const [submissions, setSubmissions] = useState<Submission[]>(SEED_SUBMISSIONS);
   const [loading, setLoading] = useState(true);
@@ -39,6 +41,7 @@ export const AssignmentsPage: React.FC = () => {
 
   // Modals
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [createBatchId, setCreateBatchId] = useState(() => resolveWriteBatchId(activeBatchId));
   const [selectedAssignmentForSubmit, setSelectedAssignmentForSubmit] = useState<Assignment | null>(null);
   const [studentContent, setStudentContent] = useState('');
   
@@ -78,6 +81,10 @@ export const AssignmentsPage: React.FC = () => {
   const [newDueDate, setNewDueDate] = useState('2026-11-20');
   const [newMaxMarks, setNewMaxMarks] = useState(100);
   const [newRubric, setNewRubric] = useState('Accuracy (40 pts), Conceptual Depth (30 pts), Clarity & Methodology (30 pts)');
+
+  useEffect(() => {
+    setCreateBatchId(resolveWriteBatchId(activeBatchId));
+  }, [activeBatchId, batches]);
 
   // Real-time listener for assignments
   useEffect(() => {
@@ -210,6 +217,7 @@ export const AssignmentsPage: React.FC = () => {
       }
 
       const id = `assign-${Date.now()}`;
+      const targetBatchName = getBatchName(createBatchId);
       const newAssign: Assignment = {
         id,
         title: newTitle.trim(),
@@ -217,6 +225,8 @@ export const AssignmentsPage: React.FC = () => {
         instructions: newInstructions.trim(),
         classId: 'general',
         subjectId: 'sub-phys',
+        batchId: createBatchId,
+        batchName: targetBatchName,
         teacherId: userProfile?.userId || 'faculty',
         dueDate: `${newDueDate}T23:59:00.000Z`,
         maxMarks: newMaxMarks,
@@ -227,12 +237,14 @@ export const AssignmentsPage: React.FC = () => {
         createdAt: new Date().toISOString(),
       };
 
-      await setDoc(doc(db, 'assignments', id), newAssign);
+      await setDoc(doc(db, 'assignments', id), sanitizeFirestoreDoc(newAssign));
       await broadcastSystemNotification({
         title: 'New Coursework Assignment',
-        message: `"${newAssign.title}" is published for 2k28 Science EM. Due: ${new Date(newAssign.dueDate).toLocaleDateString()}.`,
+        message: `"${newAssign.title}" is published for ${targetBatchName}. Due: ${new Date(newAssign.dueDate).toLocaleDateString()}.`,
         type: 'assignment',
         link: 'assignments',
+        batchId: createBatchId,
+        batchName: targetBatchName,
       });
 
       setShowCreateModal(false);
@@ -295,12 +307,16 @@ export const AssignmentsPage: React.FC = () => {
       }
 
       const subId = `subm-${Date.now()}`;
+      const assignBatchId = selectedAssignmentForSubmit.batchId || activeBatchId;
+      const assignBatchName = selectedAssignmentForSubmit.batchName || getBatchName(assignBatchId);
       const newSub: Submission = {
         id: subId,
         assignmentId: selectedAssignmentForSubmit.id,
         studentId: userProfile?.userId || 'student_user',
         studentName: userProfile?.fullName || 'Zahira Student Scholar',
         classId: selectedAssignmentForSubmit.classId,
+        batchId: assignBatchId,
+        batchName: assignBatchName,
         content: studentContent.trim() || `Coursework submitted via PDF document: ${finalFileName || 'Coursework Solution.pdf'}`,
         fileUrl: finalFileUrl,
         fileName: finalFileName,
@@ -309,13 +325,15 @@ export const AssignmentsPage: React.FC = () => {
         submittedAt: new Date().toISOString(),
       };
 
-      await setDoc(doc(db, 'submissions', subId), newSub);
+      await setDoc(doc(db, 'submissions', subId), sanitizeFirestoreDoc(newSub));
       await broadcastSystemNotification({
         title: 'New Student Submission Received',
-        message: `${newSub.studentName} submitted coursework for "${selectedAssignmentForSubmit.title}".`,
+        message: `${newSub.studentName} (${assignBatchName}) submitted coursework for "${selectedAssignmentForSubmit.title}".`,
         type: 'assignment',
         link: 'assignments',
         audience: 'teachers',
+        batchId: assignBatchId,
+        batchName: assignBatchName,
       });
 
       setSelectedAssignmentForSubmit(null);
@@ -402,13 +420,17 @@ export const AssignmentsPage: React.FC = () => {
     }
   };
 
+  const batchAssignments = assignments.filter((a) => isInBatch(a.batchId, activeBatchId));
+  const batchSubmissions = submissions.filter((s) => isInBatch(s.batchId, activeBatchId));
+  const activeBatchName = activeBatch?.name || '2k28 Science EM';
+
   // Generate all coursework assignments document
   const generateAllAssignmentsDoc = (): jsPDF => {
     const doc = new jsPDF();
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(18);
     doc.setTextColor(15, 23, 42);
-    doc.text('ZAHIRA COLLEGE MAWANELLA • 2K28 SCIENCE EM', 20, 22);
+    doc.text(`ZAHIRA COLLEGE MAWANELLA • ${activeBatchName.toUpperCase()}`, 20, 22);
 
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(10);
@@ -422,19 +444,19 @@ export const AssignmentsPage: React.FC = () => {
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(10);
     doc.setTextColor(15, 23, 42);
-    doc.text('Cohort: Zahira College 2k28 Science EM', 20, 46);
+    doc.text(`Cohort: Zahira College ${activeBatchName}`, 20, 46);
     doc.text(`Generated: ${new Date().toLocaleDateString()}`, 20, 52);
-    doc.text(`Total Coursework Items: ${assignments.length}`, 120, 46);
+    doc.text(`Total Coursework Items: ${batchAssignments.length}`, 120, 46);
     doc.text('Project Oversight: Zahira College Mawanella Science Project management', 105, 52);
 
     let y = 62;
-    assignments.forEach((assign, index) => {
+    batchAssignments.forEach((assign, index) => {
       if (y > 230) {
         doc.addPage();
         y = 25;
       }
 
-      const assignSubs = submissions.filter((s) => s.assignmentId === assign.id);
+      const assignSubs = batchSubmissions.filter((s) => s.assignmentId === assign.id);
       const mySub = assignSubs.find((s) => s.studentId === userProfile?.userId);
 
       doc.setFillColor(239, 246, 255); // soft blue
@@ -521,7 +543,7 @@ export const AssignmentsPage: React.FC = () => {
       const blobUrl = URL.createObjectURL(blob);
       setPreviewData({
         title: 'Official Academic Coursework Directory',
-        subtitle: 'Zahira College 2k28 Science EM • Assignments & Task Sheets',
+        subtitle: 'Zahira College Mawanella Science Project EM • Assignments & Task Sheets',
         category: 'Coursework Directory',
         filename: `Zahira_Assignments_Directory_${new Date().toISOString().split('T')[0]}.pdf`,
         blobUrl,
@@ -539,7 +561,7 @@ export const AssignmentsPage: React.FC = () => {
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(18);
     doc.setTextColor(15, 23, 42);
-    doc.text('ZAHIRA COLLEGE MAWANELLA • 2K28 SCIENCE EM', 20, 22);
+    doc.text('ZAHIRA COLLEGE MAWANELLA SCIENCE PROJECT EM', 20, 22);
 
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(10);
@@ -560,7 +582,7 @@ export const AssignmentsPage: React.FC = () => {
     doc.setTextColor(71, 85, 105);
     doc.text(`Due Date: ${assign.dueDate}`, 20, 56);
     doc.text(`Maximum Marks: ${assign.maxMarks} Points`, 85, 56);
-    doc.text('Target: Zahira College 2k28 Science EM', 135, 56);
+    doc.text('Target: Zahira College Mawanella Science Project EM', 120, 56);
 
     let y = 68;
     doc.setFillColor(241, 245, 249);
@@ -642,20 +664,38 @@ export const AssignmentsPage: React.FC = () => {
       {/* Top Banner */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <h2 className="font-serif text-2xl font-bold tracking-tight text-slate-900">
               Coursework Assignments & Submissions
             </h2>
             <span className="rounded-full bg-blue-100 text-blue-700 px-3 py-0.5 text-[11px] font-bold border border-blue-200">
-              Zahira College Mawanella
+              {activeBatchName}
             </span>
           </div>
           <p className="text-xs text-slate-500 mt-1">
-            2k28 Science EM coursework briefs, live student submissions, and Gemini Flash rubric evaluation
+            {activeBatchName} coursework briefs, live student submissions, and Gemini Flash rubric evaluation
           </p>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          {!isBatchLocked && (
+            <select
+              value={activeBatchId}
+              onChange={(e) => setActiveBatchId(e.target.value)}
+              className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-800 shadow-2xs"
+              aria-label="Filter assignments by batch"
+            >
+              <option value={ALL_BATCHES_ID}>
+                All Batches ({batches.length})
+              </option>
+              {batches.map((b) => (
+                <option key={b.id} value={b.id}>
+                  Batch: {b.name}
+                </option>
+              ))}
+            </select>
+          )}
+
           <button
             onClick={handlePreviewAllPDF}
             className="inline-flex items-center gap-1.5 rounded-xl border border-blue-200 bg-blue-50/70 hover:bg-blue-100 px-3.5 py-2.5 text-xs font-bold text-blue-900 transition-colors shadow-2xs shrink-0"
@@ -675,7 +715,10 @@ export const AssignmentsPage: React.FC = () => {
 
           {(activeRole === 'teacher' || activeRole === 'admin') && (
             <button
-              onClick={() => setShowCreateModal(true)}
+              onClick={() => {
+                setCreateBatchId(resolveWriteBatchId(activeBatchId));
+                setShowCreateModal(true);
+              }}
               className="inline-flex items-center gap-2 rounded-xl bg-blue-600 hover:bg-blue-700 px-4 py-2.5 text-xs font-bold text-white transition-all shadow-md shrink-0"
             >
               <Plus className="w-4 h-4" />
@@ -687,8 +730,19 @@ export const AssignmentsPage: React.FC = () => {
 
       {/* Assignment List */}
       <div className="space-y-6">
-        {assignments.map((assign) => {
-          const assignSubmissions = submissions.filter((s) => s.assignmentId === assign.id);
+        {batchAssignments.length === 0 ? (
+          <div className="rounded-2xl border border-dashed border-stone-300 bg-white p-10 text-center">
+            <FileText className="w-10 h-10 text-stone-300 mx-auto mb-2" />
+            <h3 className="font-serif text-lg font-bold text-stone-800">
+              No Assignments Uploaded for {activeBatchName}
+            </h3>
+            <p className="text-xs text-stone-500 mt-1 max-w-md mx-auto">
+              Coursework items published specifically to {activeBatchName} will appear here automatically.
+            </p>
+          </div>
+        ) : (
+        batchAssignments.map((assign) => {
+          const assignSubmissions = batchSubmissions.filter((s) => s.assignmentId === assign.id);
           const userSub = assignSubmissions.find(
             (s) => s.studentId === userProfile?.userId
           );
@@ -702,7 +756,7 @@ export const AssignmentsPage: React.FC = () => {
                 <div className="space-y-2 max-w-2xl">
                   <div className="flex items-center gap-2">
                     <span className="rounded bg-stone-100 text-stone-700 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider">
-                      2k28 Science EM
+                      {assign.batchName || activeBatchName}
                     </span>
                     <span className="rounded bg-amber-100 text-amber-800 px-2 py-0.5 text-[10px] font-bold">
                       Max Marks: {assign.maxMarks}
@@ -877,7 +931,8 @@ export const AssignmentsPage: React.FC = () => {
               )}
             </div>
           );
-        })}
+        })
+        )}
       </div>
 
       {/* Teacher Grading & AI Assistant Modal */}
@@ -1202,6 +1257,23 @@ export const AssignmentsPage: React.FC = () => {
             </div>
 
             <div className="space-y-4 text-xs">
+              <div>
+                <label className="font-semibold text-stone-700 uppercase tracking-wider block mb-1 text-[11px]">
+                  Target Academic Batch
+                </label>
+                <select
+                  value={createBatchId}
+                  onChange={(e) => setCreateBatchId(e.target.value)}
+                  className="w-full rounded-lg border border-stone-200 bg-stone-50 p-2 text-stone-800 font-semibold"
+                >
+                  {batches.map((b) => (
+                    <option key={b.id} value={b.id}>
+                      {b.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
               <div>
                 <label className="font-semibold text-stone-700 uppercase tracking-wider block mb-1 text-[11px]">
                   Assignment Title
