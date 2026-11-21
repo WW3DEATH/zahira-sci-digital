@@ -1,14 +1,20 @@
 import React, { useState, useEffect } from 'react';
-import { Save, CheckCircle2, Check } from 'lucide-react';
+import { Save, CheckCircle2, Check, Lock } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { useBatch } from '../context/BatchContext';
 import { doc, setDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import { OFFICIAL_STUDENT_SUBJECTS } from '../types';
 
 export const ProfilePage: React.FC = () => {
   const { userProfile, activeRole } = useAuth();
+  const { getBatchName, isBatchLocked } = useBatch();
+  const assignedBatchLabel =
+    activeRole === 'teacher' || activeRole === 'admin'
+      ? 'All Batches (Multi-Batch Access)'
+      : getBatchName(userProfile?.batchId);
   const [fullName, setFullName] = useState(userProfile?.fullName || 'Zahira Academic Member');
-  const [bio, setBio] = useState(userProfile?.bio || 'Academic scholar at Zahira College 2k28 Science EM.');
+  const [bio, setBio] = useState(userProfile?.bio || 'Academic scholar at Zahira College Mawanella Science Project EM.');
   const [phone, setPhone] = useState(userProfile?.phone || '+94 77 123 4567');
   const [avatarUrl, setAvatarUrl] = useState(userProfile?.avatarUrl || '');
   const [enrolledSubjects, setEnrolledSubjects] = useState<string[]>(
@@ -21,7 +27,7 @@ export const ProfilePage: React.FC = () => {
   useEffect(() => {
     if (userProfile) {
       setFullName(userProfile.fullName || 'Zahira Academic Member');
-      setBio(userProfile.bio || 'Academic scholar at Zahira College 2k28 Science EM.');
+      setBio(userProfile.bio || 'Academic scholar at Zahira College Mawanella Science Project EM.');
       setPhone(userProfile.phone || '+94 77 123 4567');
       setAvatarUrl(userProfile.avatarUrl || '');
       setEnrolledSubjects(userProfile.enrolledSubjects || []);
@@ -111,6 +117,9 @@ export const ProfilePage: React.FC = () => {
               <span className="rounded bg-amber-100 text-amber-800 font-bold px-2 py-0.5 text-[10px] uppercase">
                 {activeRole}
               </span>
+              <span className="rounded-full bg-indigo-50 border border-indigo-200 text-indigo-800 font-bold px-2.5 py-0.5 text-[11px]">
+                Batch: {assignedBatchLabel}
+              </span>
               {(userProfile?.indexNumber || activeRole === 'student' || userProfile?.email?.toLowerCase().trim() === 'mnmjaasim@gmail.com') && (
                 <span className="rounded-full bg-blue-50 border border-blue-200 text-blue-700 font-mono font-bold px-2.5 py-0.5 text-[11px]">
                   Index: {userProfile?.indexNumber || '2860003'}
@@ -161,8 +170,31 @@ export const ProfilePage: React.FC = () => {
           </div>
 
           <div>
+            <label className="font-semibold text-stone-700 uppercase tracking-wider mb-1 text-[11px] flex items-center justify-between">
+              <span>Academic Batch Cohort</span>
+              {isBatchLocked && (
+                <span className="inline-flex items-center gap-1 text-[10px] font-bold text-indigo-700 normal-case">
+                  <Lock className="w-3 h-3" />
+                  Permanently Locked
+                </span>
+              )}
+            </label>
+            <input
+              type="text"
+              disabled
+              value={assignedBatchLabel}
+              className="w-full rounded-xl border border-indigo-200 bg-indigo-50/50 p-2.5 text-indigo-900 font-bold cursor-not-allowed"
+            />
+            {isBatchLocked && (
+              <p className="text-[10px] text-stone-500 mt-1">
+                Locked after initial selection. Contact an administrator if a transfer is required.
+              </p>
+            )}
+          </div>
+
+          <div>
             <label className="font-semibold text-stone-700 uppercase tracking-wider block mb-1 text-[11px]">
-              Official Student Index Number (ZNC 2k28 Science)
+              Official Student Index Number ({assignedBatchLabel})
             </label>
             <input
               type="text"
