@@ -12,13 +12,15 @@ import {
   Send,
 } from 'lucide-react';
 import { collection, doc, onSnapshot, setDoc } from 'firebase/firestore';
-import { db } from '../firebase';
+import { db, sanitizeFirestoreDoc } from '../firebase';
 import { useAuth } from '../context/AuthContext';
+import { ALL_BATCHES_ID, useBatch, isInBatch } from '../context/BatchContext';
 import { Announcement, AnnouncementAudience } from '../types';
 import { broadcastSystemNotification } from '../services/notificationService';
 
 export const AnnouncementsPage: React.FC = () => {
   const { activeRole, userProfile } = useAuth();
+  const { batches, activeBatchId, activeBatch, resolveWriteBatchId, setActiveBatchId, isBatchLocked, getBatchName } = useBatch();
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
   const [loading, setLoading] = useState(true);
   const [filterAudience, setFilterAudience] = useState<string>('all');
@@ -26,11 +28,16 @@ export const AnnouncementsPage: React.FC = () => {
 
   // Create Modal
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [newBatchId, setNewBatchId] = useState(() => resolveWriteBatchId(activeBatchId));
   const [newTitle, setNewTitle] = useState('');
   const [newContent, setNewContent] = useState('');
   const [newAudience, setNewAudience] = useState<AnnouncementAudience>('all');
   const [newClassId, setNewClassId] = useState('all');
   const [newIsPinned, setNewIsPinned] = useState(false);
+
+  useEffect(() => {
+    setNewBatchId(resolveWriteBatchId(activeBatchId));
+  }, [activeBatchId, batches]);
 
   useEffect(() => {
     const unsub = onSnapshot(
@@ -53,10 +60,13 @@ export const AnnouncementsPage: React.FC = () => {
     if (!newTitle.trim() || !newContent.trim()) return;
     try {
       const id = `ann-${Date.now()}`;
+      const targetBatchName = getBatchName(newBatchId);
       const ann: Announcement = {
         id,
         title: newTitle.trim(),
         content: newContent.trim(),
+        batchId: newBatchId,
+        batchName: targetBatchName,
         authorId: userProfile?.userId || 'faculty_lead',
         authorName: userProfile?.fullName || 'Faculty Directorate',
         authorRole: activeRole,
@@ -66,12 +76,14 @@ export const AnnouncementsPage: React.FC = () => {
         createdAt: new Date().toISOString(),
       };
 
-      await setDoc(doc(db, 'announcements', id), ann);
+      await setDoc(doc(db, 'announcements', id), sanitizeFirestoreDoc(ann));
       await broadcastSystemNotification({
-        title: 'New College Announcement',
+        title: `New Notice (${targetBatchName})`,
         message: ann.title + ': ' + ann.content.slice(0, 90),
         type: 'announcement',
         link: 'announcements',
+        batchId: newBatchId,
+        batchName: targetBatchName,
       });
       setShowCreateModal(false);
       setNewTitle('');
@@ -82,7 +94,9 @@ export const AnnouncementsPage: React.FC = () => {
     }
   };
 
-  const filtered = announcements.filter((a) => {
+  const batchAnnouncements = announcements.filter((a) => isInBatch(a.batchId, activeBatchId));
+
+  const filtered = batchAnnouncements.filter((a) => {
     const matchesAudience = filterAudience === 'all' || a.audience === filterAudience || a.audience === 'all';
     const matchesSearch =
       a.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -95,23 +109,51 @@ export const AnnouncementsPage: React.FC = () => {
       {/* Top Banner */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h2 className="font-serif text-2xl font-bold tracking-tight text-stone-900">
-            School Notices & Bulletins
-          </h2>
+          <div className="flex items-center gap-2 flex-wrap">
+            <h2 className="font-serif text-2xl font-bold tracking-tight text-stone-900">
+              School Notices & Bulletins
+            </h2>
+            <span className="rounded-full bg-blue-100 text-blue-800 px-2.5 py-0.5 text-[11px] font-bold">
+              {activeBatch?.name || '2k28 Science EM'}
+            </span>
+          </div>
           <p className="text-xs text-stone-500 mt-1">
-            Official communications, cohort updates, and institutional broadcasts
+            Official communications and batch bulletins for {activeBatch?.name || '2k28 Science EM'}
           </p>
         </div>
 
-        {(activeRole === 'admin' || activeRole === 'teacher') && (
-          <button
-            onClick={() => setShowCreateModal(true)}
-            className="inline-flex items-center gap-2 rounded-xl bg-amber-500 hover:bg-amber-600 px-4 py-2.5 text-xs font-bold text-stone-950 transition-all shadow-md shrink-0"
-          >
-            <Plus className="w-4 h-4" />
-            <span>Publish Notice</span>
-          </button>
-        )}
+        <div className="flex flex-wrap items-center gap-2">
+          {!isBatchLocked && (
+            <select
+              value={activeBatchId}
+              onChange={(e) => setActiveBatchId(e.target.value)}
+              className="rounded-xl border border-stone-200 bg-white px-3 py-2 text-xs font-bold text-stone-800 shadow-2xs"
+              aria-label="Filter announcements by batch"
+            >
+              <option value={ALL_BATCHES_ID}>
+                All Batches ({batches.length})
+              </option>
+              {batches.map((b) => (
+                <option key={b.id} value={b.id}>
+                  Batch: {b.name}
+                </option>
+              ))}
+            </select>
+          )}
+
+          {(activeRole === 'admin' || activeRole === 'teacher') && (
+            <button
+              onClick={() => {
+                setNewBatchId(resolveWriteBatchId(activeBatchId));
+                setShowCreateModal(true);
+              }}
+              className="inline-flex items-center gap-2 rounded-xl bg-amber-500 hover:bg-amber-600 px-4 py-2.5 text-xs font-bold text-stone-950 transition-all shadow-md shrink-0"
+            >
+              <Plus className="w-4 h-4" />
+              <span>Publish Notice</span>
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Filter & Search Bar */}
@@ -203,6 +245,23 @@ export const AnnouncementsPage: React.FC = () => {
             </div>
 
             <div className="space-y-4 text-xs">
+              <div>
+                <label className="font-semibold text-stone-700 uppercase tracking-wider block mb-1 text-[11px]">
+                  Target Academic Batch
+                </label>
+                <select
+                  value={newBatchId}
+                  onChange={(e) => setNewBatchId(e.target.value)}
+                  className="w-full rounded-lg border border-stone-200 bg-stone-50 p-2 text-stone-800 font-semibold"
+                >
+                  {batches.map((b) => (
+                    <option key={b.id} value={b.id}>
+                      {b.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
               <div>
                 <label className="font-semibold text-stone-700 uppercase tracking-wider block mb-1 text-[11px]">
                   Notice Headline
