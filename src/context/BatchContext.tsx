@@ -6,15 +6,20 @@ import { useAuth } from './AuthContext';
 
 export const DEFAULT_BATCH_ID = 'batch-2k28-sci-em';
 export const DEFAULT_BATCH_NAME = '2k28 Science EM';
+export const ALL_BATCHES_ID = 'all';
+export const ALL_BATCHES_NAME = 'All Batches';
 
 const STORAGE_ACTIVE_BATCH_KEY = 'znc_active_batch_id';
 
 export function resolveItemBatchId(itemBatchId?: string): string {
-  return itemBatchId && itemBatchId.trim() ? itemBatchId.trim() : DEFAULT_BATCH_ID;
+  const trimmed = itemBatchId?.trim();
+  if (!trimmed || trimmed === ALL_BATCHES_ID) return DEFAULT_BATCH_ID;
+  return trimmed;
 }
 
 export function isInBatch(itemBatchId: string | undefined, targetBatchId: string): boolean {
   const target = targetBatchId && targetBatchId.trim() ? targetBatchId.trim() : DEFAULT_BATCH_ID;
+  if (target === ALL_BATCHES_ID) return true;
   return resolveItemBatchId(itemBatchId) === target;
 }
 
@@ -23,6 +28,9 @@ interface BatchContextType {
   loadingBatches: boolean;
   activeBatchId: string;
   activeBatch: SchoolBatch | null;
+  defaultBatch: SchoolBatch;
+  isViewingAllBatches: boolean;
+  resolveWriteBatchId: (candidateBatchId?: string) => string;
   setActiveBatchId: (batchId: string) => void;
   isBatchLocked: boolean;
   getBatchName: (batchId?: string) => string;
@@ -49,9 +57,9 @@ export const BatchProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const [loadingBatches, setLoadingBatches] = useState<boolean>(true);
   const [staffBatchId, setStaffBatchId] = useState<string>(() => {
     try {
-      return localStorage.getItem(STORAGE_ACTIVE_BATCH_KEY) || DEFAULT_BATCH_ID;
+      return localStorage.getItem(STORAGE_ACTIVE_BATCH_KEY) || ALL_BATCHES_ID;
     } catch {
-      return DEFAULT_BATCH_ID;
+      return ALL_BATCHES_ID;
     }
   });
 
@@ -101,6 +109,10 @@ export const BatchProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const isBatchLocked = activeRole === 'student' || activeRole === 'parent';
 
+  const defaultBatch = useMemo(() => {
+    return batches.find((b) => b.isDefault) || batches[0] || FALLBACK_DEFAULT_BATCH;
+  }, [batches]);
+
   const activeBatchId = useMemo(() => {
     if (isBatchLocked) {
       const assigned = resolveItemBatchId(userProfile?.batchId);
@@ -109,31 +121,61 @@ export const BatchProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       return assigned;
     }
 
+    if (staffBatchId === ALL_BATCHES_ID) {
+      return ALL_BATCHES_ID;
+    }
+
     if (batches.some((b) => b.id === staffBatchId)) {
       return staffBatchId;
     }
-    const defaultBatch = batches.find((b) => b.isDefault) || batches[0];
-    return defaultBatch?.id || DEFAULT_BATCH_ID;
+    return ALL_BATCHES_ID;
   }, [isBatchLocked, userProfile?.batchId, batches, staffBatchId]);
 
-  const activeBatch = useMemo(() => {
+  const isViewingAllBatches = !isBatchLocked && activeBatchId === ALL_BATCHES_ID;
+
+  const activeBatch = useMemo<SchoolBatch | null>(() => {
+    if (isViewingAllBatches) {
+      return {
+        id: ALL_BATCHES_ID,
+        name: `${ALL_BATCHES_NAME} (${batches.length})`,
+        academicYear: 'Multi-Batch View',
+        description: 'Combined overview across all active academic batches.',
+        isDefault: false,
+        isActive: true,
+        createdAt: '',
+      };
+    }
     return (
       batches.find((b) => b.id === activeBatchId) ||
-      batches.find((b) => b.isDefault) ||
-      batches[0] ||
-      FALLBACK_DEFAULT_BATCH
+      defaultBatch
     );
-  }, [batches, activeBatchId]);
+  }, [isViewingAllBatches, batches, activeBatchId, defaultBatch]);
+
+  const resolveWriteBatchId = (candidateBatchId?: string): string => {
+    if (isBatchLocked) {
+      return resolveItemBatchId(userProfile?.batchId);
+    }
+    const clean = candidateBatchId?.trim();
+    if (clean && clean !== ALL_BATCHES_ID && batches.some((b) => b.id === clean)) {
+      return clean;
+    }
+    if (activeBatchId && activeBatchId !== ALL_BATCHES_ID && batches.some((b) => b.id === activeBatchId)) {
+      return activeBatchId;
+    }
+    return defaultBatch.id;
+  };
 
   const setActiveBatchId = (batchId: string) => {
     if (isBatchLocked) return;
-    setStaffBatchId(batchId);
+    const next = batchId && batchId.trim() ? batchId.trim() : ALL_BATCHES_ID;
+    setStaffBatchId(next);
     try {
-      localStorage.setItem(STORAGE_ACTIVE_BATCH_KEY, batchId);
+      localStorage.setItem(STORAGE_ACTIVE_BATCH_KEY, next);
     } catch {}
   };
 
   const getBatchName = (batchId?: string): string => {
+    if (batchId === ALL_BATCHES_ID) return `${ALL_BATCHES_NAME} (${batches.length})`;
     const resolved = resolveItemBatchId(batchId);
     const found = batches.find((b) => b.id === resolved);
     if (found) return found.name;
@@ -215,10 +257,7 @@ export const BatchProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       }
     }
     if (staffBatchId === batchId) {
-      const remaining = batches.find((b) => b.id !== batchId);
-      if (remaining) {
-        setActiveBatchId(remaining.id);
-      }
+      setActiveBatchId(ALL_BATCHES_ID);
     }
   };
 
@@ -229,6 +268,9 @@ export const BatchProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         loadingBatches,
         activeBatchId,
         activeBatch,
+        defaultBatch,
+        isViewingAllBatches,
+        resolveWriteBatchId,
         setActiveBatchId,
         isBatchLocked,
         getBatchName,
