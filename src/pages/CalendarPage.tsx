@@ -33,7 +33,8 @@ import { collection, doc, onSnapshot, setDoc, deleteDoc } from 'firebase/firesto
 import { jsPDF } from 'jspdf';
 import { db, sanitizeFirestoreDoc, handleFirestoreError, OperationType } from '../firebase';
 import { useAuth } from '../context/AuthContext';
-import { SchoolEvent, SchoolEventType, AttendanceRecord, AttendanceStatus, AttendanceDayControl, UserProfile, SchoolClass, ScheduledClass, RosterStudent } from '../types';
+import { ALL_BATCHES_ID, useBatch, isInBatch } from '../context/BatchContext';
+import { SchoolEvent, SchoolEventType, STUDY_GROUP_ROOMS, AttendanceRecord, AttendanceStatus, AttendanceDayControl, UserProfile, SchoolClass, ScheduledClass, RosterStudent } from '../types';
 import {
   syncGoogleCalendarToFirestore,
   createGoogleCalendarEvent,
@@ -43,6 +44,7 @@ import { PDFPreviewModal, PDFPreviewData } from '../components/common/PDFPreview
 import { isFakeSeedRosterStudent } from '../services/dataService';
 import {
   buildAttendanceRecordId,
+  buildAttendanceDayControlId,
   isAttendanceDateEnabled,
   isAttendanceRecordActive,
 } from '../utils/attendanceUtils';
@@ -53,6 +55,7 @@ export interface CalendarPageProps {
 
 export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events' }) => {
   const { activeRole, userProfile, googleAccessToken, connectGoogleCalendar } = useAuth();
+  const { batches, activeBatchId, activeBatch, setActiveBatchId, isBatchLocked, getBatchName, resolveWriteBatchId } = useBatch();
 
   // Active view tab: 'events' | 'attendance'
   const [activeTab, setActiveTab] = useState<'events' | 'attendance'>(initialTab);
@@ -84,6 +87,7 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
   const [eventEndDate, setEventEndDate] = useState('');
   const [eventTime, setEventTime] = useState('08:30');
   const [eventLocation, setEventLocation] = useState('Science Complex Hall 28');
+  const [eventStudyRoomId, setEventStudyRoomId] = useState<string>('general');
   const [pushToGoogle, setPushToGoogle] = useState(true);
   const [savingEvent, setSavingEvent] = useState(false);
 
@@ -159,14 +163,9 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
       const list: AttendanceRecord[] = [];
       snapshot.forEach((d) => list.push(d.data() as AttendanceRecord));
       setAttendanceRecords(list);
-
-      const existing = list.find((r) => r.classId === selectedClassId && r.date === attendanceDate);
-      if (existing) {
-        setRegister(existing.records);
-      }
     });
     return () => unsub();
-  }, [selectedClassId, attendanceDate]);
+  }, []);
 
   // 2b. Real-time listener for per-date Attendance ON/OFF controls
   useEffect(() => {
@@ -177,7 +176,7 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
         snap.forEach((d) => {
           const data = d.data() as AttendanceDayControl;
           const dateKey = data.date || d.id;
-          if (dateKey) map[dateKey] = { ...data, id: d.id, date: dateKey };
+          if (dateKey) map[d.id] = { ...data, id: d.id, date: dateKey };
         });
         setDayControlsMap(map);
       },
@@ -229,15 +228,51 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
     const unsub = onSnapshot(collection(db, 'classes'), (snapshot) => {
       const list: SchoolClass[] = [];
       snapshot.forEach((d) => list.push(d.data() as SchoolClass));
-      if (list.length > 0) {
-        setClasses(list);
-        if (!list.some((c) => c.id === selectedClassId)) {
-          setSelectedClassId(list[0].id);
-        }
-      }
+      setClasses(list);
     });
     return () => unsub();
-  }, [selectedClassId]);
+  }, []);
+
+  const activeBatchName = activeBatch?.name || getBatchName(activeBatchId);
+  const writeBatchId = resolveWriteBatchId(activeBatchId);
+  const writeBatchName = getBatchName(writeBatchId);
+  const batchClasses = classes.filter((c) => isInBatch(c.batchId, activeBatchId));
+  const batchStudents = students.filter((s) => isInBatch(s.batchId, activeBatchId));
+  const batchSchoolEvents = schoolEvents.filter((ev) => isInBatch(ev.batchId, activeBatchId));
+  const batchScheduledClasses = scheduledClasses.filter((sc) => isInBatch(sc.batchId, activeBatchId));
+  const batchAttendanceRecords = attendanceRecords.filter((r) => isInBatch(r.batchId, activeBatchId));
+
+  useEffect(() => {
+    if (batchClasses.length > 0) {
+      if (!batchClasses.some((c) => c.id === selectedClassId)) {
+        setSelectedClassId(batchClasses[0].id);
+      }
+    } else if (selectedClassId) {
+      setSelectedClassId('');
+    }
+  }, [activeBatchId, classes]);
+
+  useEffect(() => {
+    const existing =
+      batchAttendanceRecords.find(
+        (r) =>
+          r.date === attendanceDate &&
+          (selectedClassId ? r.classId === selectedClassId : !r.classId || r.classId === 'general')
+      ) || batchAttendanceRecords.find((r) => r.date === attendanceDate);
+    if (existing?.records) {
+      const merged: Record<string, AttendanceStatus> = {};
+      batchStudents.forEach((s) => {
+        merged[s.id] = existing.records[s.id] || 'present';
+      });
+      setRegister(merged);
+    } else {
+      const fresh: Record<string, AttendanceStatus> = {};
+      batchStudents.forEach((s) => {
+        fresh[s.id] = 'present';
+      });
+      setRegister(fresh);
+    }
+  }, [selectedClassId, attendanceDate, attendanceRecords, students, activeBatchId]);
 
   // Month navigation helpers
   const year = currentDate.getFullYear();
@@ -316,6 +351,7 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
         }
       }
 
+      const selectedStudyRoom = STUDY_GROUP_ROOMS.find((r) => r.id === eventStudyRoomId);
       const newEvent: SchoolEvent = {
         id: eventId,
         title: eventTitle.trim(),
@@ -325,6 +361,10 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
         time: eventTime || undefined,
         type: eventType,
         classId: selectedClassId || 'general',
+        batchId: writeBatchId,
+        batchName: writeBatchName,
+        studyRoomId: eventType === 'study_group' ? (selectedStudyRoom?.id || 'general') : undefined,
+        studyRoomName: eventType === 'study_group' ? (selectedStudyRoom?.name || 'General Science EM') : undefined,
         location: eventLocation.trim() || 'Zahira College Mawanella',
         createdBy: userProfile?.userId || 'faculty',
         createdByName: userProfile?.fullName || 'Zahira Faculty',
@@ -333,7 +373,7 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
         createdAt: new Date().toISOString(),
       };
 
-      await setDoc(doc(db, 'schoolEvents', eventId), newEvent);
+      await setDoc(doc(db, 'schoolEvents', eventId), sanitizeFirestoreDoc(newEvent));
 
       // Reset form and close
       setEventTitle('');
@@ -378,7 +418,7 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
 
   // Get all scheduled classes for a specific date (custom Firestore records + non-dismissed defaults)
   const getClassesForDate = (dateStr: string): ScheduledClass[] => {
-    const directMatches = scheduledClasses.filter((sc) => sc.date === dateStr);
+    const directMatches = batchScheduledClasses.filter((sc) => sc.date === dateStr);
     const dismissedIds = dismissedDefaultsByDate[dateStr] || [];
     const legacySessionOverride = directMatches.some((sc) => sc.id.startsWith('session-'));
 
@@ -389,7 +429,9 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
             {
               id: `default-${dateStr}-maths`,
               classId: selectedClassId || 'general',
-              className: '2k28 Science EM',
+              className: writeBatchName,
+              batchId: writeBatchId,
+              batchName: writeBatchName,
               date: dateStr,
               timeSlot: '08:00 - 09:30',
               periodName: 'Period 1',
@@ -403,7 +445,9 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
             {
               id: `default-${dateStr}-physics`,
               classId: selectedClassId || 'general',
-              className: '2k28 Science EM',
+              className: writeBatchName,
+              batchId: writeBatchId,
+              batchName: writeBatchName,
               date: dateStr,
               timeSlot: '09:45 - 11:15',
               periodName: 'Period 2',
@@ -417,7 +461,9 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
             {
               id: `default-${dateStr}-chemistry`,
               classId: selectedClassId || 'general',
-              className: '2k28 Science EM',
+              className: writeBatchName,
+              batchId: writeBatchId,
+              batchName: writeBatchName,
               date: dateStr,
               timeSlot: '11:30 - 13:00',
               periodName: 'Period 3',
@@ -445,14 +491,16 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
     try {
       const classSessionId = `class-session-${Date.now()}`;
       const defaultRegister: Record<string, AttendanceStatus> = {};
-      students.forEach((s) => {
+      batchStudents.forEach((s) => {
         defaultRegister[s.id] = 'present';
       });
 
       const newSession: ScheduledClass = {
         id: classSessionId,
-        classId: selectedClassId,
-        className: '2k28 Science EM',
+        classId: selectedClassId || 'general',
+        className: writeBatchName,
+        batchId: writeBatchId,
+        batchName: writeBatchName,
         date: newClassDate,
         timeSlot: newClassTimeSlot,
         periodName: newClassPeriod,
@@ -477,7 +525,9 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
         startDate: newClassDate,
         time: newClassTimeSlot.split('-')[0].trim(),
         type: 'academic',
-        classId: selectedClassId,
+        classId: selectedClassId || 'general',
+        batchId: writeBatchId,
+        batchName: writeBatchName,
         location: newClassRoom,
         createdBy: userProfile?.userId || 'faculty',
         createdByName: 'ZNC Science Project management',
@@ -551,26 +601,29 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
     }
   };
 
-  const isDayAttendanceEnabled = isAttendanceDateEnabled(attendanceDate, dayControlsMap);
+  const isDayAttendanceEnabled = isAttendanceDateEnabled(attendanceDate, dayControlsMap, writeBatchId);
 
   const handleToggleCalendarDayAttendance = async () => {
     if (!isTeacherOrAdmin || togglingDay) return;
     const nextEnabled = !isDayAttendanceEnabled;
     setTogglingDay(true);
     try {
+      const controlId = buildAttendanceDayControlId(attendanceDate, writeBatchId);
       const payload: AttendanceDayControl = {
-        id: attendanceDate,
+        id: controlId,
         date: attendanceDate,
+        batchId: writeBatchId,
+        batchName: writeBatchName,
         enabled: nextEnabled,
         updatedBy: userProfile?.userId || 'faculty',
         updatedByName: userProfile?.fullName || 'Faculty Lead',
         updatedAt: new Date().toISOString(),
       };
-      await setDoc(doc(db, 'attendanceDaySettings', attendanceDate), sanitizeFirestoreDoc(payload));
+      await setDoc(doc(db, 'attendanceDaySettings', controlId), sanitizeFirestoreDoc(payload));
       setSyncMessage(
         nextEnabled
-          ? `Attendance marking turned ON for ${attendanceDate}.`
-          : `Attendance marking turned OFF for ${attendanceDate} (excluded from Student & Teacher graphs).`
+          ? `Attendance marking turned ON for ${attendanceDate} (${writeBatchName}).`
+          : `Attendance marking turned OFF for ${attendanceDate} (${writeBatchName}) (excluded from dashboard graphs).`
       );
       setTimeout(() => setSyncMessage(null), 4000);
     } catch (err) {
@@ -583,19 +636,21 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
   // Save attendance for the selected class session
   const handleSaveClassAttendance = async (targetClass?: ScheduledClass) => {
     if (!isTeacherOrAdmin || !isDayAttendanceEnabled) return;
-    const activeClass = targetClass || (selectedScheduledClassId ? scheduledClasses.find((c) => c.id === selectedScheduledClassId) : null);
+    const activeClass = targetClass || (selectedScheduledClassId ? batchScheduledClasses.find((c) => c.id === selectedScheduledClassId) : null);
     const activeSubject = activeClass ? activeClass.subject : 'General Roll-Call';
     const activeClassId = activeClass?.classId || selectedClassId || 'general';
     const activeDate = attendanceDate;
 
     try {
-      // 1. Save to attendance collection with session isolation so multiple classes per day never overwrite each other
+      // 1. Save to attendance collection with batch + session isolation
       const recordId = activeClass
-        ? buildAttendanceRecordId(activeDate, activeClassId, activeClass.id)
-        : buildAttendanceRecordId(activeDate, activeClassId, 'daily');
+        ? buildAttendanceRecordId(activeDate, activeClassId, activeClass.id, writeBatchId)
+        : buildAttendanceRecordId(activeDate, activeClassId, 'daily', writeBatchId);
       const record: AttendanceRecord = sanitizeFirestoreDoc({
         id: recordId,
         classId: activeClassId,
+        batchId: writeBatchId,
+        batchName: writeBatchName,
         date: activeDate,
         sessionId: activeClass?.id,
         sessionSubject: activeSubject,
@@ -615,13 +670,15 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
         );
       } else if (activeClass && activeClass.id.startsWith('default-')) {
         // Persist default template into a real Firestore doc
-        const newId = `sc-${activeDate}-${activeClass.periodName?.replace(/\s+/g, '_') || 'period'}`;
-        await setDoc(doc(db, 'scheduledClasses', newId), {
+        const newId = `sc-${writeBatchId}-${activeDate}-${activeClass.periodName?.replace(/\s+/g, '_') || 'period'}`;
+        await setDoc(doc(db, 'scheduledClasses', newId), sanitizeFirestoreDoc({
           ...activeClass,
           id: newId,
+          batchId: writeBatchId,
+          batchName: writeBatchName,
           attendanceRecords: register,
           attendanceTaken: true,
-        });
+        }));
       }
 
       setAttendanceSaved(true);
@@ -636,7 +693,7 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
   const handleMarkAllPresent = () => {
     if (!isTeacherOrAdmin || !isDayAttendanceEnabled) return;
     const updated: Record<string, AttendanceStatus> = {};
-    students.forEach((st) => {
+    batchStudents.forEach((st) => {
       updated[st.id] = 'present';
     });
     setRegister(updated);
@@ -667,7 +724,7 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
       {
         id: `day-${dateStr}-general`,
         classId: selectedClassId,
-        className: '2k28 Science EM',
+        className: activeBatchName,
         date: dateStr,
         timeSlot: '08:00 - 13:30',
         periodName: 'Academic Schedule',
@@ -684,7 +741,7 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(16);
     doc.setTextColor(15, 23, 42);
-    doc.text('ZAHIRA COLLEGE MAWANELLA • 2K28 SCIENCE EM', 20, 20);
+    doc.text(`ZAHIRA COLLEGE MAWANELLA • ${activeBatchName.toUpperCase()}`, 20, 20);
 
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(9.5);
@@ -706,7 +763,7 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(8.5);
     doc.setTextColor(51, 65, 85);
-    doc.text(`Cohort: 2k28 Science EM • Total Classes Conducted Today: ${classesToRender.length}`, 24, 52);
+    doc.text(`Batch: ${activeBatchName} • Total Classes Conducted Today: ${classesToRender.length}`, 24, 52);
     doc.text('Supervisor: ZNC Science Project management', 115, 52);
 
     let y = 65;
@@ -751,7 +808,7 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
       let lCount = 0;
       let aCount = 0;
 
-      students.forEach((st, sIdx) => {
+      batchStudents.forEach((st, sIdx) => {
         if (y > 275) {
           doc.addPage();
           y = 25;
@@ -796,7 +853,7 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
       });
 
       // Class Summary Line
-      const classTotal = students.length || 1;
+      const classTotal = batchStudents.length || 1;
       const classRate = Math.round(((pCount + lCount * 0.5) / classTotal) * 100);
       doc.setFont('helvetica', 'italic');
       doc.setFontSize(8);
@@ -881,7 +938,7 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
   const monthName = currentDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
 
   // Filtered events
-  const filteredEvents = schoolEvents.filter((ev) => {
+  const filteredEvents = batchSchoolEvents.filter((ev) => {
     if (eventTypeFilter === 'all') return true;
     return ev.type === eventTypeFilter;
   });
@@ -894,12 +951,14 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
     });
   };
 
+  const validBatchStudentIds = new Set(batchStudents.map((s) => s.id));
+
   const getAttendanceSummaryForDate = (dateStr: string) => {
-    const rec = attendanceRecords.find(
+    const rec = batchAttendanceRecords.find(
       (r) =>
         r.date === dateStr &&
         (!r.classId || r.classId === selectedClassId || selectedClassId === '') &&
-        isAttendanceRecordActive(r, dayControlsMap)
+        isAttendanceRecordActive(r, dayControlsMap, validBatchStudentIds, activeBatchId)
     );
     if (!rec) return null;
     const values = Object.values(rec.records);
@@ -911,11 +970,11 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
     };
   };
 
-  // Stats for the active attendance date (calculated strictly from active real scholars)
-  const totalStudents = students.length;
-  const presentCount = students.filter((s) => (register[s.id] || 'present') === 'present').length;
-  const absentCount = students.filter((s) => register[s.id] === 'absent').length;
-  const lateCount = students.filter((s) => register[s.id] === 'late').length;
+  // Stats for the active attendance date (calculated strictly from active real scholars in active batch)
+  const totalStudents = batchStudents.length;
+  const presentCount = batchStudents.filter((s) => (register[s.id] || 'present') === 'present').length;
+  const absentCount = batchStudents.filter((s) => register[s.id] === 'absent').length;
+  const lateCount = batchStudents.filter((s) => register[s.id] === 'late').length;
   const attendanceRate = totalStudents > 0 ? Math.round((presentCount / totalStudents) * 100) : 0;
 
   return (
@@ -923,9 +982,9 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
       {/* Top Header & Overview */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <span className="rounded-lg bg-stone-900 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-amber-400">
-              2k28 Science EM
+              {activeBatchName}
             </span>
             <span className="text-xs font-semibold text-stone-500">Zahira College Mawanella</span>
           </div>
@@ -933,12 +992,27 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
             Academic Calendar & Student Attendance
           </h2>
           <p className="text-xs text-stone-500 mt-0.5">
-            Manage school holidays, examination timetables, Google Calendar synchronization, and student roll calls.
+            Manage school holidays, examination timetables, Google Calendar synchronization, and batch roll calls for {activeBatchName}.
           </p>
         </div>
 
         {/* Action Buttons */}
         <div className="flex flex-wrap items-center gap-2">
+          {!isBatchLocked && (
+            <select
+              value={activeBatchId}
+              onChange={(e) => setActiveBatchId(e.target.value)}
+              className="rounded-xl border border-stone-300 bg-white px-3 py-2 text-xs font-bold text-stone-800 shadow-xs"
+              aria-label="Filter calendar by batch"
+            >
+              {batches.map((b) => (
+                <option key={b.id} value={b.id}>
+                  Batch: {b.name}
+                </option>
+              ))}
+              <option value={ALL_BATCHES_ID}>All Batches ({batches.length})</option>
+            </select>
+          )}
           {/* Google Calendar Sync Button */}
           <button
             onClick={handleSyncGoogleCalendar}
@@ -960,8 +1034,8 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
             </span>
           </button>
 
-          {/* Mark Holiday or Exam Button (Teachers & Admins) */}
-          {isTeacherOrAdmin && (
+          {/* Mark Holiday, Exam, or Study Group Button */}
+          {isTeacherOrAdmin ? (
             <button
               onClick={() => {
                 setEventStartDate(selectedDateStr);
@@ -970,8 +1044,22 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
               className="flex items-center gap-1.5 rounded-xl bg-stone-900 px-4 py-2 text-xs font-bold text-white hover:bg-stone-800 transition-colors shadow-xs"
             >
               <Plus className="w-4 h-4 text-amber-400" />
-              <span>Mark Holiday or Exam</span>
+              <span>Mark Holiday, Exam or Study Group</span>
             </button>
+          ) : (
+            userProfile && (
+              <button
+                onClick={() => {
+                  setEventType('study_group');
+                  setEventStartDate(selectedDateStr);
+                  setIsAddModalOpen(true);
+                }}
+                className="flex items-center gap-1.5 rounded-xl bg-violet-700 px-4 py-2 text-xs font-bold text-white hover:bg-violet-800 transition-colors shadow-xs"
+              >
+                <Users className="w-4 h-4 text-violet-200" />
+                <span>Schedule Study Group</span>
+              </button>
+            )
           )}
         </div>
       </div>
@@ -1002,7 +1090,7 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
           <CalendarIcon className="w-4 h-4 shrink-0" />
           <span>School Events & Holidays</span>
           <span className="rounded-full bg-stone-100 px-2 py-0.5 text-[10px] text-stone-700 font-semibold">
-            {schoolEvents.length}
+            {batchSchoolEvents.length}
           </span>
         </button>
 
@@ -1077,6 +1165,14 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
                       }`}
                     >
                       Academic
+                    </button>
+                    <button
+                      onClick={() => setEventTypeFilter('study_group')}
+                      className={`rounded px-2 py-1 ${
+                        eventTypeFilter === 'study_group' ? 'bg-violet-700 text-white' : 'text-violet-700 hover:bg-violet-50'
+                      }`}
+                    >
+                      Study Groups
                     </button>
                   </div>
 
@@ -1175,6 +1271,8 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
                                 ? 'bg-rose-100 text-rose-800 border-rose-200'
                                 : ev.type === 'academic'
                                 ? 'bg-sky-100 text-sky-800 border-sky-200'
+                                : ev.type === 'study_group'
+                                ? 'bg-violet-100 text-violet-800 border-violet-200'
                                 : 'bg-stone-100 text-stone-700 border-stone-200'
                             }`}
                             title={`${ev.title} (${ev.type.toUpperCase()})`}
@@ -1210,7 +1308,11 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
                 <span>Academic Lab & Lecture</span>
               </div>
               <div className="flex items-center gap-1.5">
-                <span className="h-2.5 w-2.5 rounded-full bg-purple-500" />
+                <span className="h-2.5 w-2.5 rounded-full bg-violet-500" />
+                <span>Peer Study Group</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="h-2.5 w-2.5 rounded-full bg-stone-500" />
                 <span>Meeting / General</span>
               </div>
             </div>
@@ -1271,24 +1373,35 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
                           ? 'border-rose-200 bg-rose-50/40'
                           : ev.type === 'academic'
                           ? 'border-sky-200 bg-sky-50/40'
+                          : ev.type === 'study_group'
+                          ? 'border-violet-200 bg-violet-50/40'
                           : 'border-stone-200 bg-stone-50/50'
                       }`}
                     >
                       <div className="flex items-start justify-between gap-2">
                         <div>
-                          <span
-                            className={`rounded px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider ${
-                              ev.type === 'holiday'
-                                ? 'bg-emerald-100 text-emerald-800'
-                                : ev.type === 'exam'
-                                ? 'bg-rose-100 text-rose-800'
-                                : ev.type === 'academic'
-                                ? 'bg-sky-100 text-sky-800'
-                                : 'bg-stone-200 text-stone-800'
-                            }`}
-                          >
-                            {ev.type}
-                          </span>
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span
+                              className={`rounded px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider ${
+                                ev.type === 'holiday'
+                                  ? 'bg-emerald-100 text-emerald-800'
+                                  : ev.type === 'exam'
+                                  ? 'bg-rose-100 text-rose-800'
+                                  : ev.type === 'academic'
+                                  ? 'bg-sky-100 text-sky-800'
+                                  : ev.type === 'study_group'
+                                  ? 'bg-violet-100 text-violet-800'
+                                  : 'bg-stone-200 text-stone-800'
+                              }`}
+                            >
+                              {ev.type === 'study_group' ? 'Study Group' : ev.type}
+                            </span>
+                            {ev.studyRoomName && (
+                              <span className="rounded bg-white px-2 py-0.5 text-[9px] font-bold text-violet-700 border border-violet-200">
+                                Room: {ev.studyRoomName}
+                              </span>
+                            )}
+                          </div>
                           <h5 className="font-bold text-stone-900 text-sm mt-1">{ev.title}</h5>
                         </div>
 
@@ -1416,16 +1529,16 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
               </h4>
 
               <div className="space-y-2.5">
-                {schoolEvents
-                  .filter((e) => e.type === 'exam' || e.type === 'holiday')
-                  .slice(0, 4)
+                {batchSchoolEvents
+                  .filter((e) => e.type === 'exam' || e.type === 'holiday' || e.type === 'study_group')
+                  .slice(0, 5)
                   .map((ev) => (
                     <div
                       key={ev.id}
                       onClick={() => setSelectedDateStr(ev.startDate)}
                       className="group cursor-pointer rounded-xl border border-stone-100 hover:border-stone-300 p-2.5 transition-all hover:bg-stone-50/50"
                     >
-                      <div className="flex items-center justify-between text-xs">
+                      <div className="flex items-center justify-between text-xs gap-2">
                         <span className="font-bold text-stone-800 group-hover:text-stone-900 truncate">
                           {ev.title}
                         </span>
@@ -1433,13 +1546,17 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
                           className={`rounded px-1.5 py-0.2 text-[9px] font-bold uppercase shrink-0 ${
                             ev.type === 'holiday'
                               ? 'bg-emerald-100 text-emerald-800'
+                              : ev.type === 'study_group'
+                              ? 'bg-violet-100 text-violet-800'
                               : 'bg-rose-100 text-rose-800'
                           }`}
                         >
-                          {ev.type}
+                          {ev.type === 'study_group' ? 'Study Group' : ev.type}
                         </span>
                       </div>
-                      <p className="text-[10px] text-stone-400 mt-0.5">{ev.startDate}</p>
+                      <p className="text-[10px] text-stone-400 mt-0.5">
+                        {ev.startDate}{ev.studyRoomName ? ` • ${ev.studyRoomName}` : ''}
+                      </p>
                     </div>
                   ))}
               </div>
@@ -1476,7 +1593,7 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
                     onChange={(e) => setSelectedClassId(e.target.value)}
                     className="rounded-lg border border-stone-200 bg-stone-50 px-3 py-1.5 text-stone-800 font-semibold focus:outline-none"
                   >
-                    {classes.map((c) => (
+                    {batchClasses.map((c) => (
                       <option key={c.id} value={c.id}>
                         {c.name} ({c.grade})
                       </option>
@@ -1486,7 +1603,7 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
                     <button
                       type="button"
                       onClick={() => {
-                        const targetCohort = classes.find((c) => c.id === selectedClassId);
+                        const targetCohort = batchClasses.find((c) => c.id === selectedClassId);
                         if (targetCohort) setCohortToDelete(targetCohort);
                       }}
                       className="p-1.5 rounded-lg border border-stone-200 hover:bg-rose-50 hover:text-rose-600 text-stone-400 transition-colors"
@@ -1582,7 +1699,7 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
                   <button
                     onClick={() => {
                       const activeClass = selectedScheduledClassId
-                        ? scheduledClasses.find((c) => c.id === selectedScheduledClassId) ||
+                        ? batchScheduledClasses.find((c) => c.id === selectedScheduledClassId) ||
                           getClassesForDate(attendanceDate).find((c) => c.id === selectedScheduledClassId)
                         : getClassesForDate(attendanceDate)[0];
                       handleSaveClassAttendance(activeClass);
@@ -1642,7 +1759,7 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
                   selectedScheduledClassId === cls.id || (!selectedScheduledClassId && idx === 0);
                 const classRecs = cls.attendanceRecords || (isSelected ? register : {});
                 const pCount = Object.values(classRecs).filter((s) => s === 'present').length;
-                const total = students.length || 1;
+                const total = batchStudents.length || 1;
                 const rate = Math.round((pCount / total) * 100);
 
                 return (
@@ -1732,18 +1849,18 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-stone-100 text-stone-800">
-                  {students.length === 0 ? (
+                  {batchStudents.length === 0 ? (
                     <tr>
                       <td colSpan={4} className="py-10 text-center text-stone-500">
                         <Users className="w-8 h-8 mx-auto text-stone-400 mb-2" />
-                        <p className="font-semibold text-stone-700">No scholars enrolled in attendance roster yet.</p>
+                        <p className="font-semibold text-stone-700">No scholars enrolled in {activeBatchName} attendance roster yet.</p>
                         <p className="text-xs text-stone-400 mt-1">
-                          Teachers can bulk import or add student names directly from the Attendance page without creating website accounts.
+                          Teachers can bulk import or add student names for {activeBatchName} from the Attendance page.
                         </p>
                       </td>
                     </tr>
                   ) : (
-                    students.map((student) => {
+                    batchStudents.map((student) => {
                       const status = register[student.id] || 'present';
 
                       return (
@@ -1756,7 +1873,7 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
                               <div>
                                 <p className="font-bold text-stone-900">{student.fullName}</p>
                                 <p className="text-[10px] text-stone-400">
-                                  Index: {student.indexNumber} • 2k28 Science EM Scholar
+                                  Index: {student.indexNumber} • {getBatchName(student.batchId)} Scholar
                                 </p>
                               </div>
                             </div>
@@ -1859,9 +1976,13 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
             </button>
 
             <div className="mb-5">
-              <h3 className="font-serif text-xl font-bold text-stone-900">Mark Holiday or Exam Date</h3>
+              <h3 className="font-serif text-xl font-bold text-stone-900">
+                {isTeacherOrAdmin ? 'Schedule Academic Calendar Event' : 'Schedule Peer Study Group'}
+              </h3>
               <p className="text-xs text-stone-500 mt-1">
-                Add an official date to Zahira College 2k28 Science EM calendar.
+                {isTeacherOrAdmin
+                  ? 'Add an official exam, holiday, lab, or peer study group session for Zahira College Mawanella.'
+                  : 'Propose a peer study group session so classmates in your batch can request to join a study room.'}
               </p>
             </div>
 
@@ -1871,45 +1992,80 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
                 <label className="font-semibold text-stone-700 uppercase tracking-wider block mb-1 text-[10px]">
                   Category / Event Type
                 </label>
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                <div className={`grid grid-cols-2 ${isTeacherOrAdmin ? 'sm:grid-cols-4' : 'sm:grid-cols-1'} gap-2`}>
+                  {isTeacherOrAdmin && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => setEventType('holiday')}
+                        className={`flex items-center justify-center gap-1.5 rounded-xl p-2.5 font-bold border transition-all ${
+                          eventType === 'holiday'
+                            ? 'bg-emerald-800 text-white border-emerald-800 shadow-xs'
+                            : 'bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100'
+                        }`}
+                      >
+                        <Sun className="w-3.5 h-3.5" />
+                        <span>Holiday</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setEventType('exam')}
+                        className={`flex items-center justify-center gap-1.5 rounded-xl p-2.5 font-bold border transition-all ${
+                          eventType === 'exam'
+                            ? 'bg-rose-800 text-white border-rose-800 shadow-xs'
+                            : 'bg-rose-50 text-rose-800 border-rose-200 hover:bg-rose-100'
+                        }`}
+                      >
+                        <Award className="w-3.5 h-3.5" />
+                        <span>Exam Date</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setEventType('academic')}
+                        className={`flex items-center justify-center gap-1.5 rounded-xl p-2.5 font-bold border transition-all ${
+                          eventType === 'academic'
+                            ? 'bg-sky-800 text-white border-sky-800 shadow-xs'
+                            : 'bg-sky-50 text-sky-800 border-sky-200 hover:bg-sky-100'
+                        }`}
+                      >
+                        <BookOpen className="w-3.5 h-3.5" />
+                        <span>Academic Lab</span>
+                      </button>
+                    </>
+                  )}
                   <button
                     type="button"
-                    onClick={() => setEventType('holiday')}
+                    onClick={() => setEventType('study_group')}
                     className={`flex items-center justify-center gap-1.5 rounded-xl p-2.5 font-bold border transition-all ${
-                      eventType === 'holiday'
-                        ? 'bg-emerald-800 text-white border-emerald-800 shadow-xs'
-                        : 'bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100'
+                      eventType === 'study_group'
+                        ? 'bg-violet-800 text-white border-violet-800 shadow-xs'
+                        : 'bg-violet-50 text-violet-800 border-violet-200 hover:bg-violet-100'
                     }`}
                   >
-                    <Sun className="w-3.5 h-3.5" />
-                    <span>Holiday</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setEventType('exam')}
-                    className={`flex items-center justify-center gap-1.5 rounded-xl p-2.5 font-bold border transition-all ${
-                      eventType === 'exam'
-                        ? 'bg-rose-800 text-white border-rose-800 shadow-xs'
-                        : 'bg-rose-50 text-rose-800 border-rose-200 hover:bg-rose-100'
-                    }`}
-                  >
-                    <Award className="w-3.5 h-3.5" />
-                    <span>Exam Date</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setEventType('academic')}
-                    className={`flex items-center justify-center gap-1.5 rounded-xl p-2.5 font-bold border transition-all ${
-                      eventType === 'academic'
-                        ? 'bg-sky-800 text-white border-sky-800 shadow-xs'
-                        : 'bg-sky-50 text-sky-800 border-sky-200 hover:bg-sky-100'
-                    }`}
-                  >
-                    <BookOpen className="w-3.5 h-3.5" />
-                    <span>Academic Lab</span>
+                    <Users className="w-3.5 h-3.5" />
+                    <span>Study Group</span>
                   </button>
                 </div>
               </div>
+
+              {eventType === 'study_group' && (
+                <div>
+                  <label className="font-semibold text-stone-700 uppercase tracking-wider block mb-1 text-[10px]">
+                    Target Study Room
+                  </label>
+                  <select
+                    value={eventStudyRoomId}
+                    onChange={(e) => setEventStudyRoomId(e.target.value)}
+                    className="w-full rounded-xl border border-violet-200 bg-violet-50/50 p-2.5 font-semibold text-stone-800 focus:bg-white focus:outline-none"
+                  >
+                    {STUDY_GROUP_ROOMS.map((room) => (
+                      <option key={room.id} value={room.id}>
+                        {room.name} — {room.description}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
 
               {/* Title */}
               <div>
@@ -1926,6 +2082,8 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
                       ? 'e.g. National Poya Day Holiday'
                       : eventType === 'exam'
                       ? 'e.g. Combined Mathematics Mid-Term Paper'
+                      : eventType === 'study_group'
+                      ? 'e.g. Organic Chemistry Mechanisms Peer Study'
                       : 'e.g. Physics Mechanics Practical Lab'
                   }
                   className="w-full rounded-xl border border-stone-200 bg-stone-50 p-2.5 text-stone-800 focus:bg-white focus:outline-none"
