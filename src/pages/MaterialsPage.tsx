@@ -20,14 +20,21 @@ import {
   Check,
 } from 'lucide-react';
 import { collection, doc, onSnapshot, setDoc } from 'firebase/firestore';
-import { db } from '../firebase';
+import { db, sanitizeFirestoreDoc } from '../firebase';
 import { useAuth } from '../context/AuthContext';
+import { ALL_BATCHES_ID, useBatch, isInBatch } from '../context/BatchContext';
 import { LearningMaterial, Subject } from '../types';
 import { SEED_MATERIALS, SEED_SUBJECTS } from '../services/dataService';
 import { broadcastSystemNotification } from '../services/notificationService';
+import {
+  LiveMorphIcon,
+  LivePaperScannerGraphic,
+  LiveOrbitalScienceGraphic,
+} from '../components/common/LiveVisuals';
 
 export const MaterialsPage: React.FC = () => {
   const { activeRole, userProfile } = useAuth();
+  const { batches, activeBatchId, activeBatch, resolveWriteBatchId, setActiveBatchId, isBatchLocked, getBatchName } = useBatch();
   const [materials, setMaterials] = useState<LearningMaterial[]>(SEED_MATERIALS);
   const [subjects, setSubjects] = useState<Subject[]>(SEED_SUBJECTS);
   const [loading, setLoading] = useState(true);
@@ -37,6 +44,7 @@ export const MaterialsPage: React.FC = () => {
 
   // Upload Material Modal
   const [showUploadModal, setShowUploadModal] = useState(false);
+  const [uploadBatchId, setUploadBatchId] = useState(() => resolveWriteBatchId(activeBatchId));
   const [newTitle, setNewTitle] = useState('');
   const [newDesc, setNewDesc] = useState('');
   const [newSubjectId, setNewSubjectId] = useState('sub-cmath');
@@ -47,6 +55,10 @@ export const MaterialsPage: React.FC = () => {
   const [fileError, setFileError] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [useManualUrl, setUseManualUrl] = useState(false);
+
+  useEffect(() => {
+    setUploadBatchId(resolveWriteBatchId(activeBatchId));
+  }, [activeBatchId, batches]);
 
   // Real-time listener for materials
   useEffect(() => {
@@ -157,12 +169,15 @@ export const MaterialsPage: React.FC = () => {
       }
 
       const id = `mat-${Date.now()}`;
+      const targetBatchName = getBatchName(uploadBatchId);
       const mat: LearningMaterial = {
         id,
         title: newTitle.trim(),
-        description: newDesc.trim() || 'Curriculum resource for Zahira College 2k28 Science EM.',
+        description: newDesc.trim() || `Curriculum resource for Zahira College ${targetBatchName}.`,
         classId: 'general',
         subjectId: newSubjectId,
+        batchId: uploadBatchId,
+        batchName: targetBatchName,
         teacherId: userProfile?.userId || 'faculty',
         teacherName: userProfile?.fullName || 'Faculty Lead',
         fileType: newType,
@@ -171,12 +186,14 @@ export const MaterialsPage: React.FC = () => {
         createdAt: new Date().toISOString(),
       };
 
-      await setDoc(doc(db, 'learningMaterials', id), mat);
+      await setDoc(doc(db, 'learningMaterials', id), sanitizeFirestoreDoc(mat));
       await broadcastSystemNotification({
         title: 'New Study Material Uploaded',
-        message: `${userProfile?.fullName || 'Faculty'} uploaded "${mat.title}" for 2k28 Science EM.`,
+        message: `${userProfile?.fullName || 'Faculty'} uploaded "${mat.title}" for ${targetBatchName}.`,
         type: 'material',
         link: 'materials',
+        batchId: uploadBatchId,
+        batchName: targetBatchName,
       });
 
       setShowUploadModal(false);
@@ -194,7 +211,11 @@ export const MaterialsPage: React.FC = () => {
     }
   };
 
-  const filtered = materials.filter((m) => {
+  const batchMaterials = materials.filter((m) => isInBatch(m.batchId, activeBatchId));
+  const batchScopedSubjects = subjects.filter((s) => isInBatch(s.batchId, activeBatchId));
+  const dropdownSubjects = batchScopedSubjects.length > 0 ? batchScopedSubjects : subjects;
+
+  const filtered = batchMaterials.filter((m) => {
     const subj = subjects.find((s) => s.id === m.subjectId);
     const matchesType = filterType === 'all' || m.fileType === filterType;
     const matchesSubject = filterSubject === 'all' || m.subjectId === filterSubject;
@@ -216,30 +237,60 @@ export const MaterialsPage: React.FC = () => {
   return (
     <div className="space-y-6 animate-in fade-in duration-300">
       {/* Header Banner - Light Royal Blue with Red Accents */}
-      <div className="rounded-2xl border border-blue-100 bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-800 p-6 md:p-8 text-white shadow-md relative overflow-hidden">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+      <div className="live-gradient-banner rounded-2xl border border-blue-100 bg-gradient-to-r from-blue-700 via-blue-800 to-indigo-800 p-6 md:p-8 text-white shadow-md relative overflow-hidden">
+        <LiveOrbitalScienceGraphic className="w-24 h-24 opacity-20 pointer-events-none hidden md:block absolute right-6 top-3" />
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 relative z-10">
           <div>
             <div className="inline-flex items-center gap-1.5 rounded-full bg-red-600 px-3 py-1 text-xs font-bold text-white shadow-xs">
-              <BookMarked className="w-3.5 h-3.5" />
-              <span>Zahira College Mawanella • 2k28 Science EM</span>
+              <LiveMorphIcon
+                icons={[BookMarked, BookOpen, FileText, Sparkles]}
+                intervalMs={2300}
+                className="w-3.5 h-3.5"
+              />
+              <span>Zahira College Mawanella • {activeBatch?.name || '2k28 Science EM'}</span>
             </div>
             <h1 className="font-serif text-2xl md:text-3xl font-bold tracking-tight text-white mt-2">
               Curriculum & Study Materials
             </h1>
             <p className="text-blue-100 text-xs md:text-sm mt-1 max-w-xl">
-              Access lecture notes, worked tutorials, laboratory guides, and formula booklets for Advanced Level Science EM.
+              {isBatchLocked
+                ? `Showing study resources uploaded exclusively for ${activeBatch?.name || 'your batch'}.`
+                : `Access and upload lecture notes, tutorials, and guides scoped by academic batch.`}
             </p>
           </div>
 
-          {activeRole !== 'student' && activeRole !== 'parent' && activeRole !== 'guest' && (
-            <button
-              onClick={() => setShowUploadModal(true)}
-              className="inline-flex items-center gap-2 rounded-xl bg-red-600 hover:bg-red-700 px-4 py-2.5 text-xs font-bold text-white transition-all shadow-sm shrink-0"
-            >
-              <Plus className="w-4 h-4" />
-              <span>Publish Learning Material</span>
-            </button>
-          )}
+          <div className="flex flex-wrap items-center gap-2">
+            {!isBatchLocked && (
+              <select
+                value={activeBatchId}
+                onChange={(e) => setActiveBatchId(e.target.value)}
+                className="rounded-xl bg-white/15 border border-white/25 px-3 py-2 text-xs font-bold text-white focus:outline-none"
+                aria-label="Filter materials by batch"
+              >
+                <option value={ALL_BATCHES_ID} className="text-slate-900">
+                  All Batches ({batches.length})
+                </option>
+                {batches.map((b) => (
+                  <option key={b.id} value={b.id} className="text-slate-900">
+                    Batch: {b.name}
+                  </option>
+                ))}
+              </select>
+            )}
+
+            {activeRole !== 'student' && activeRole !== 'parent' && activeRole !== 'guest' && (
+              <button
+                onClick={() => {
+                  setUploadBatchId(resolveWriteBatchId(activeBatchId));
+                  setShowUploadModal(true);
+                }}
+                className="inline-flex items-center gap-2 rounded-xl bg-red-600 hover:bg-red-700 px-4 py-2.5 text-xs font-bold text-white transition-all shadow-sm shrink-0"
+              >
+                <Plus className="w-4 h-4" />
+                <span>Publish Learning Material</span>
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
@@ -298,8 +349,8 @@ export const MaterialsPage: React.FC = () => {
               onChange={(e) => setFilterSubject(e.target.value)}
               className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-700 focus:bg-white focus:outline-none"
             >
-              <option value="all">All Subjects ({subjects.length})</option>
-              {subjects.map((s) => (
+              <option value="all">All Subjects ({dropdownSubjects.length})</option>
+              {dropdownSubjects.map((s) => (
                 <option key={s.id} value={s.id}>
                   {s.name}
                 </option>
@@ -312,7 +363,8 @@ export const MaterialsPage: React.FC = () => {
         <div className="flex items-center justify-between text-xs text-slate-500 pt-1">
           <p>
             Showing <span className="font-bold text-blue-950">{filtered.length}</span> of{' '}
-            <span className="font-bold text-blue-950">{materials.length}</span> materials
+            <span className="font-bold text-blue-950">{batchMaterials.length}</span> materials in{' '}
+            <span className="font-bold text-blue-800">{activeBatch?.name || '2k28 Science EM'}</span>
           </p>
           {(searchQuery || filterType !== 'all' || filterSubject !== 'all') && (
             <button
@@ -332,9 +384,7 @@ export const MaterialsPage: React.FC = () => {
       {/* Materials Grid */}
       {filtered.length === 0 ? (
         <div className="rounded-2xl border border-blue-100 bg-white p-12 text-center shadow-xs">
-          <div className="inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-blue-50 text-blue-700 mb-3">
-            <Search className="w-6 h-6" />
-          </div>
+          <LivePaperScannerGraphic accent="blue" className="w-20 h-20 mx-auto mb-2" />
           <h3 className="font-serif text-lg font-bold text-blue-950">No study materials found</h3>
           <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto">
             No materials matched your search query "{searchQuery}". Try searching for another topic or clear filters.
@@ -418,6 +468,23 @@ export const MaterialsPage: React.FC = () => {
             <div className="space-y-4 text-xs">
               <div>
                 <label className="font-bold text-blue-950 uppercase tracking-wider block mb-1 text-[11px]">
+                  Target Academic Batch
+                </label>
+                <select
+                  value={uploadBatchId}
+                  onChange={(e) => setUploadBatchId(e.target.value)}
+                  className="w-full rounded-xl border border-slate-200 bg-slate-50 p-2.5 text-slate-800 font-semibold focus:bg-white focus:outline-none"
+                >
+                  {batches.map((b) => (
+                    <option key={b.id} value={b.id}>
+                      {b.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="font-bold text-blue-950 uppercase tracking-wider block mb-1 text-[11px]">
                   Material Title
                 </label>
                 <input
@@ -439,7 +506,7 @@ export const MaterialsPage: React.FC = () => {
                     onChange={(e) => setNewSubjectId(e.target.value)}
                     className="w-full rounded-xl border border-slate-200 bg-slate-50 p-2.5 text-slate-800 font-semibold focus:bg-white focus:outline-none"
                   >
-                    {subjects.map((s) => (
+                    {dropdownSubjects.map((s) => (
                       <option key={s.id} value={s.id}>
                         {s.name}
                       </option>
