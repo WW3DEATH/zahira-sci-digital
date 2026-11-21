@@ -30,12 +30,23 @@ import {
 } from 'firebase/firestore';
 import { db, sanitizeFirestoreDoc } from '../firebase';
 import { useAuth } from '../context/AuthContext';
+import {
+  ALL_BATCHES_ID,
+  DEFAULT_BATCH_ID,
+  isInBatch,
+  resolveItemBatchId,
+  useBatch,
+} from '../context/BatchContext';
 import { Conversation, DirectMessage, UserProfile } from '../types';
 import { sendDirectNotification } from '../services/notificationService';
 
 export const MessagesPage: React.FC = () => {
   const { userProfile, activeRole } = useAuth();
-  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const { batches, activeBatchId, activeBatch, resolveWriteBatchId, setActiveBatchId, isBatchLocked, getBatchName } = useBatch();
+  const activeBatchName = activeBatch?.name || getBatchName(activeBatchId);
+
+  const [allConversations, setAllConversations] = useState<Conversation[]>([]);
+  const [convsLoaded, setConvsLoaded] = useState(false);
   const [activeConversationId, setActiveConversationId] = useState<string>('conv-zahira-lead');
   const [messages, setMessages] = useState<DirectMessage[]>([]);
   const [inputText, setInputText] = useState('');
@@ -43,7 +54,7 @@ export const MessagesPage: React.FC = () => {
 
   // New Chat Modal state
   const [showNewChatModal, setShowNewChatModal] = useState(false);
-  const [availableUsers, setAvailableUsers] = useState<UserProfile[]>([]);
+  const [allUsers, setAllUsers] = useState<UserProfile[]>([]);
   const [modalSearch, setModalSearch] = useState('');
   const [mobileView, setMobileView] = useState<'list' | 'chat'>('list');
 
@@ -51,6 +62,7 @@ export const MessagesPage: React.FC = () => {
   const [confirmDeleteMsgId, setConfirmDeleteMsgId] = useState<string | null>(null);
   const [confirmDeleteConvId, setConfirmDeleteConvId] = useState<string | null>(null);
   const [deleteFeedback, setDeleteFeedback] = useState<string | null>(null);
+  const [batchPolicyError, setBatchPolicyError] = useState<string | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -68,7 +80,7 @@ export const MessagesPage: React.FC = () => {
           list.push(u);
         }
       });
-      setAvailableUsers(list);
+      setAllUsers(list);
     });
     return () => unsub();
   }, [userProfile?.userId]);
@@ -89,39 +101,92 @@ export const MessagesPage: React.FC = () => {
             list.push(conv);
           }
         });
-
-        if (list.length > 0) {
-          setConversations(list);
-          if (!list.some((c) => c.id === activeConversationId)) {
-            setActiveConversationId(list[0].id);
-          }
-        } else {
-          // Initialize default Zahira 2k28 academic conversation
-          const defaultConv: Conversation = {
-            id: 'conv-zahira-lead',
-            participantIds: ['faculty_lead', userProfile?.userId || 'student_user'],
-            participantNames: {
-              faculty_lead: 'Science Academic Faculty Lead',
-              [userProfile?.userId || 'student_user']: userProfile?.fullName || 'Scholar',
-            },
-            requestStatus: 'accepted',
-            requestedBy: 'faculty_lead',
-            requestedTo: userProfile?.userId || 'student_user',
-            lastMessage: 'Welcome to Zahira College 2k28 Science EM academic messaging.',
-            lastMessageAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-          };
-          setDoc(doc(db, 'conversations', defaultConv.id), sanitizeFirestoreDoc(defaultConv)).catch(() => {});
-          setConversations([defaultConv]);
-          setActiveConversationId(defaultConv.id);
-        }
+        setAllConversations(list);
+        setConvsLoaded(true);
       },
       (error) => {
         console.warn('Real-time conversations note:', error);
+        setConvsLoaded(true);
       }
     );
     return () => unsub();
-  }, [userProfile?.userId, userProfile?.fullName, activeRole, activeConversationId]);
+  }, [userProfile?.userId, activeRole]);
+
+  // Same-batch user directory: only users belonging to activeBatchId can be messaged
+  const availableUsers = React.useMemo(
+    () => allUsers.filter((u) => isInBatch(u.batchId, activeBatchId)),
+    [allUsers, activeBatchId]
+  );
+
+  const userBatchLookup = React.useMemo(() => {
+    const map = new Map<string, string>();
+    if (userProfile?.userId) {
+      map.set(userProfile.userId, resolveItemBatchId(userProfile.batchId));
+    }
+    allUsers.forEach((u) => {
+      map.set(u.userId, resolveItemBatchId(u.batchId));
+    });
+    return map;
+  }, [allUsers, userProfile?.userId, userProfile?.batchId]);
+
+  // Filter conversations strictly to the active batch (and verify participant batch alignment for locked roles)
+  const conversations = React.useMemo(() => {
+    return allConversations.filter((conv) => {
+      if (!isInBatch(conv.batchId, activeBatchId)) return false;
+      if (isBatchLocked && conv.participantIds) {
+        const hasCrossBatchUser = conv.participantIds.some((pid) => {
+          if (pid === 'faculty_lead' || pid === userProfile?.userId) return false;
+          const pBatch = userBatchLookup.get(pid);
+          return pBatch !== undefined && pBatch !== activeBatchId;
+        });
+        if (hasCrossBatchUser) return false;
+      }
+      return true;
+    });
+  }, [allConversations, activeBatchId, isBatchLocked, userProfile?.userId, userBatchLookup]);
+
+  // Keep activeConversationId synchronized with batch-filtered list & auto-init batch lead channel if empty
+  useEffect(() => {
+    if (!convsLoaded) return;
+    if (conversations.length > 0) {
+      if (!conversations.some((c) => c.id === activeConversationId)) {
+        setActiveConversationId(conversations[0].id);
+      }
+      return;
+    }
+
+    const initBatchId = resolveWriteBatchId(activeBatchId);
+    const initBatchName = getBatchName(initBatchId);
+    const defaultLeadId =
+      initBatchId === DEFAULT_BATCH_ID
+        ? 'conv-zahira-lead'
+        : `conv-zahira-lead-${initBatchId}`;
+    const defaultConv: Conversation = {
+      id: defaultLeadId,
+      participantIds: ['faculty_lead', userProfile?.userId || 'student_user'],
+      participantNames: {
+        faculty_lead: `${initBatchName} Faculty Lead`,
+        [userProfile?.userId || 'student_user']: userProfile?.fullName || 'Scholar',
+      },
+      batchId: initBatchId,
+      batchName: initBatchName,
+      requestStatus: 'accepted',
+      requestedBy: 'faculty_lead',
+      requestedTo: userProfile?.userId || 'student_user',
+      lastMessage: `Welcome to Zahira College ${initBatchName} academic messaging.`,
+      lastMessageAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    setDoc(doc(db, 'conversations', defaultConv.id), sanitizeFirestoreDoc(defaultConv)).catch(() => {});
+    setActiveConversationId(defaultConv.id);
+  }, [
+    convsLoaded,
+    conversations,
+    activeConversationId,
+    activeBatchId,
+    userProfile?.userId,
+    userProfile?.fullName,
+  ]);
 
   // Listen to messages for active conversation in real time
   useEffect(() => {
@@ -239,13 +304,22 @@ export const MessagesPage: React.FC = () => {
     }
   };
 
-  // Start new direct consultation request with a user
+  // Start new direct consultation request with a user (strictly same batch)
   const handleStartConsultation = async (targetUser: UserProfile) => {
+    if (!isInBatch(targetUser.batchId, activeBatchId)) {
+      setBatchPolicyError(
+        `Direct messaging is restricted to same-batch members (${activeBatchName}).`
+      );
+      setTimeout(() => setBatchPolicyError(null), 4000);
+      return;
+    }
+
+    setBatchPolicyError(null);
     setShowNewChatModal(false);
     const myId = userProfile?.userId || 'user_anon';
     const myName = userProfile?.fullName || 'Scholar';
 
-    // Check if conversation already exists with this user
+    // Check if conversation already exists with this user in this batch
     const existing = conversations.find(
       (c) => c.participantIds?.includes(myId) && c.participantIds?.includes(targetUser.userId)
     );
@@ -256,8 +330,13 @@ export const MessagesPage: React.FC = () => {
       return;
     }
 
-    // Create new pending conversation
-    const newConvId = `conv-${myId}-${targetUser.userId}`;
+    // Create new pending conversation scoped to target user's batch (or selected concrete batch)
+    const convBatchId = resolveWriteBatchId(targetUser.batchId || activeBatchId);
+    const convBatchName = getBatchName(convBatchId);
+    const newConvId =
+      convBatchId === DEFAULT_BATCH_ID
+        ? `conv-${myId}-${targetUser.userId}`
+        : `conv-${convBatchId}-${myId}-${targetUser.userId}`;
     const newConv: Conversation = {
       id: newConvId,
       participantIds: [myId, targetUser.userId],
@@ -265,6 +344,8 @@ export const MessagesPage: React.FC = () => {
         [myId]: myName,
         [targetUser.userId]: targetUser.fullName || 'Academic Member',
       },
+      batchId: convBatchId,
+      batchName: convBatchName,
       requestStatus: 'pending',
       requestedBy: myId,
       requestedTo: targetUser.userId,
@@ -282,7 +363,7 @@ export const MessagesPage: React.FC = () => {
       await sendDirectNotification({
         recipientId: targetUser.userId,
         title: `💬 New Academic Consultation Request`,
-        message: `${myName} (${userProfile?.role || 'scholar'}) has requested a 1-on-1 academic consultation with you. Please accept or decline in Messages.`,
+        message: `${myName} (${userProfile?.role || 'scholar'} · ${convBatchName}) has requested a 1-on-1 academic consultation with you. Please accept or decline in Messages.`,
         link: 'messages',
         type: 'message',
       });
@@ -291,29 +372,54 @@ export const MessagesPage: React.FC = () => {
     }
   };
 
-  // Send message in accepted chat
+  // Send message in accepted chat (enforces same-batch lock)
   const handleSendMessage = async () => {
     if (!inputText.trim() || !activeConversationId || !isChatUnlocked) return;
+    if (activeConv && !isInBatch(activeConv.batchId, activeBatchId)) {
+      setBatchPolicyError(`Cannot message across batches. Active batch is ${activeBatchName}.`);
+      setTimeout(() => setBatchPolicyError(null), 4000);
+      return;
+    }
+    if (isBatchLocked && otherParticipantId && otherParticipantId !== 'faculty_lead') {
+      const otherBatch = userBatchLookup.get(otherParticipantId);
+      if (otherBatch && otherBatch !== activeBatchId) {
+        setBatchPolicyError(
+          `Direct messaging is restricted strictly to members in your batch (${activeBatchName}).`
+        );
+        setTimeout(() => setBatchPolicyError(null), 4000);
+        return;
+      }
+    }
+
     const text = inputText.trim();
     setInputText('');
+    setBatchPolicyError(null);
 
     try {
       const msgId = `msg-${Date.now()}`;
+      const msgBatchId = activeConv?.batchId
+        ? resolveItemBatchId(activeConv.batchId)
+        : resolveWriteBatchId(activeBatchId);
+      const msgBatchName = activeConv?.batchName || getBatchName(msgBatchId);
       const newMsg: DirectMessage = {
         id: msgId,
         conversationId: activeConversationId,
         senderId: userProfile?.userId || 'zahira_user',
         senderName: userProfile?.fullName || 'Zahira Member',
+        batchId: msgBatchId,
+        batchName: msgBatchName,
         text,
         createdAt: new Date().toISOString(),
       };
 
       await setDoc(doc(db, 'messages', msgId), sanitizeFirestoreDoc(newMsg));
 
-      // Update conversation lastMessage
+      // Update conversation lastMessage & ensure batch metadata
       await setDoc(
         doc(db, 'conversations', activeConversationId),
         {
+          batchId: msgBatchId,
+          batchName: msgBatchName,
           lastMessage: text,
           lastMessageAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
@@ -369,7 +475,7 @@ export const MessagesPage: React.FC = () => {
   // Delete a conversation and all its messages from UI & Firestore
   const handleDeleteConversation = async (convId: string) => {
     const remainingConvs = conversations.filter((c) => c.id !== convId);
-    setConversations(remainingConvs);
+    setAllConversations((prev) => prev.filter((c) => c.id !== convId));
     setConfirmDeleteConvId(null);
     if (activeConversationId === convId) {
       setActiveConversationId(remainingConvs[0]?.id || '');
@@ -410,27 +516,65 @@ export const MessagesPage: React.FC = () => {
       {/* Top Banner */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <h2 className="font-serif text-2xl font-bold tracking-tight text-stone-900">
               Academic Direct Messaging
             </h2>
             <span className="rounded-full bg-amber-100 text-amber-900 px-3 py-0.5 text-[11px] font-bold border border-amber-200">
-              Private 1-on-1 Consultations
+              Same-Batch Private 1-on-1
+            </span>
+            <span className="rounded-full bg-blue-900 text-amber-300 px-3 py-0.5 text-[11px] font-bold">
+              Batch: {activeBatchName}
             </span>
           </div>
           <p className="text-xs text-stone-500 mt-1">
-            Secure consultations for Zahira College 2k28 Science EM students, faculty, and administration with Accept/Decline request approval
+            Restricted strictly to {activeBatchName} members. Only users within the same batch can connect and chat 1-on-1.
           </p>
         </div>
 
-        <button
-          onClick={() => setShowNewChatModal(true)}
-          className="inline-flex items-center gap-2 rounded-xl bg-blue-900 hover:bg-blue-950 px-4 py-2.5 text-xs font-bold text-white transition-all shadow-sm shrink-0"
-        >
-          <Plus className="w-4 h-4" />
-          <span>New Direct Consultation</span>
-        </button>
+        <div className="flex flex-wrap items-center gap-2 shrink-0">
+          {!isBatchLocked && (
+            <select
+              value={activeBatchId}
+              onChange={(e) => setActiveBatchId(e.target.value)}
+              className="rounded-xl border border-stone-200 bg-white px-3 py-2 text-xs font-bold text-stone-800 shadow-xs focus:outline-none"
+              aria-label="Filter messaging by batch"
+            >
+              <option value={ALL_BATCHES_ID}>
+                All Batches ({batches.length})
+              </option>
+              {batches.map((b) => (
+                <option key={b.id} value={b.id}>
+                  Batch: {b.name}
+                </option>
+              ))}
+            </select>
+          )}
+          <button
+            onClick={() => setShowNewChatModal(true)}
+            className="inline-flex items-center gap-2 rounded-xl bg-blue-900 hover:bg-blue-950 px-4 py-2.5 text-xs font-bold text-white transition-all shadow-sm shrink-0"
+          >
+            <Plus className="w-4 h-4" />
+            <span>New Direct Consultation</span>
+          </button>
+        </div>
       </div>
+
+      {batchPolicyError && (
+        <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-2.5 text-xs font-semibold text-rose-800 flex items-center justify-between gap-2">
+          <span className="flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 shrink-0 text-rose-600" />
+            <span>{batchPolicyError}</span>
+          </span>
+          <button
+            type="button"
+            onClick={() => setBatchPolicyError(null)}
+            className="text-rose-700 font-bold hover:underline"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
 
       {/* Main Messaging Layout */}
       <div className="grid grid-cols-1 md:grid-cols-3 rounded-2xl border border-stone-200 bg-white shadow-xs overflow-hidden h-[calc(100dvh-15rem)] min-h-[480px] md:h-[670px]">
@@ -815,7 +959,7 @@ export const MessagesPage: React.FC = () => {
                   New Direct Consultation
                 </h3>
                 <p className="text-xs text-stone-500 mt-0.5">
-                  Select a student, teacher, parent, or admin to send a direct message request
+                  Same-batch consultations only — showing verified contacts in <strong className="text-stone-800">{activeBatchName}</strong>
                 </p>
               </div>
               <button
@@ -842,7 +986,7 @@ export const MessagesPage: React.FC = () => {
             <div className="max-h-80 overflow-y-auto divide-y divide-stone-100 rounded-xl border border-stone-100">
               {filteredAvailableUsers.length === 0 ? (
                 <div className="p-8 text-center text-xs text-stone-400">
-                  No academic users found matching your search.
+                  No users in batch &ldquo;{activeBatchName}&rdquo; found matching your search.
                 </div>
               ) : (
                 filteredAvailableUsers.map((u) => (
@@ -855,7 +999,7 @@ export const MessagesPage: React.FC = () => {
                         {u.fullName?.charAt(0) || 'U'}
                       </div>
                       <div>
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
                           <p className="font-bold text-stone-900">
                             {u.fullName?.replace(/\s*\(Admin.*?\)/gi, '')}
                           </p>
@@ -871,6 +1015,9 @@ export const MessagesPage: React.FC = () => {
                             }`}
                           >
                             {u.role === 'admin' ? 'Faculty Lead' : u.role}
+                          </span>
+                          <span className="rounded bg-stone-100 text-stone-700 px-1.5 py-0.2 text-[9px] font-semibold">
+                            {u.batchName || getBatchName(u.batchId)}
                           </span>
                         </div>
                         <p className="text-[11px] text-stone-500 mt-0.5">
