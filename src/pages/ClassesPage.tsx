@@ -11,13 +11,15 @@ import {
   Trash2,
 } from 'lucide-react';
 import { collection, doc, onSnapshot, setDoc, deleteDoc } from 'firebase/firestore';
-import { db } from '../firebase';
+import { db, sanitizeFirestoreDoc } from '../firebase';
 import { useAuth } from '../context/AuthContext';
+import { ALL_BATCHES_ID, useBatch, isInBatch } from '../context/BatchContext';
 import { SchoolClass, UserProfile } from '../types';
 import { SEED_CLASSES } from '../services/dataService';
 
 export const ClassesPage: React.FC = () => {
   const { activeRole, userProfile } = useAuth();
+  const { batches, activeBatchId, activeBatch, resolveWriteBatchId, setActiveBatchId, isBatchLocked, getBatchName } = useBatch();
   const [classes, setClasses] = useState<SchoolClass[]>([]);
   const [selectedClass, setSelectedClass] = useState<SchoolClass | null>(null);
   const [allUsers, setAllUsers] = useState<UserProfile[]>([]);
@@ -30,11 +32,16 @@ export const ClassesPage: React.FC = () => {
 
   // Add Class Modal
   const [showAddModal, setShowAddModal] = useState(false);
+  const [newBatchId, setNewBatchId] = useState(() => resolveWriteBatchId(activeBatchId));
   const [newName, setNewName] = useState('');
   const [newGrade, setNewGrade] = useState('A/L Batch 2028');
   const [newYear, setNewYear] = useState('2026-2028');
   const [newRoom, setNewRoom] = useState('Science Complex - Hall 28');
   const [newDesc, setNewDesc] = useState('');
+
+  useEffect(() => {
+    setNewBatchId(resolveWriteBatchId(activeBatchId));
+  }, [activeBatchId, batches]);
 
   // Real-time listener for classes
   useEffect(() => {
@@ -44,13 +51,6 @@ export const ClassesPage: React.FC = () => {
         const list: SchoolClass[] = [];
         snap.forEach((d) => list.push(d.data() as SchoolClass));
         setClasses(list);
-        if (list.length > 0) {
-          if (!selectedClass || !list.some((c) => c.id === selectedClass.id)) {
-            setSelectedClass(list[0]);
-          }
-        } else {
-          setSelectedClass(null);
-        }
         setLoading(false);
       },
       (error) => {
@@ -61,7 +61,7 @@ export const ClassesPage: React.FC = () => {
       }
     );
     return () => unsub();
-  }, [selectedClass]);
+  }, []);
 
   // Real-time listener for user profiles to display real teachers & students
   useEffect(() => {
@@ -75,16 +75,31 @@ export const ClassesPage: React.FC = () => {
 
   const canManageClasses = activeRole === 'admin' || activeRole === 'teacher';
 
+  const batchClasses = classes.filter((c) => isInBatch(c.batchId, activeBatchId));
+
+  useEffect(() => {
+    if (batchClasses.length > 0) {
+      if (!selectedClass || !batchClasses.some((c) => c.id === selectedClass.id)) {
+        setSelectedClass(batchClasses[0]);
+      }
+    } else if (selectedClass) {
+      setSelectedClass(null);
+    }
+  }, [activeBatchId, classes]);
+
   const handleAddClass = async () => {
     if (!newName.trim()) return;
     try {
       const id = `class-${Date.now()}`;
+      const targetBatchName = getBatchName(newBatchId);
       const newClass: SchoolClass = {
         id,
         name: newName.trim(),
         grade: newGrade.trim(),
         academicYear: newYear.trim(),
-        description: newDesc.trim() || 'Zahira College Science Cohort',
+        batchId: newBatchId,
+        batchName: targetBatchName,
+        description: newDesc.trim() || `Zahira College ${targetBatchName} Cohort`,
         room: newRoom.trim() || 'Science Complex - Hall 28',
         teacherIds: [userProfile?.userId || 'faculty_lead'],
         studentIds: [],
@@ -92,12 +107,14 @@ export const ClassesPage: React.FC = () => {
         createdAt: new Date().toISOString(),
       };
 
-      await setDoc(doc(db, 'classes', id), newClass);
+      await setDoc(doc(db, 'classes', id), sanitizeFirestoreDoc(newClass));
       setShowAddModal(false);
       setNewName('');
       setNewDesc('');
-      setSelectedClass(newClass);
-      setFeedbackNotice(`Created class cohort "${newClass.name}".`);
+      if (newBatchId === activeBatchId) {
+        setSelectedClass(newClass);
+      }
+      setFeedbackNotice(`Created class cohort "${newClass.name}" in ${targetBatchName}.`);
       setTimeout(() => setFeedbackNotice(null), 3000);
     } catch (e: any) {
       console.error('Failed to add class:', e);
@@ -133,39 +150,68 @@ export const ClassesPage: React.FC = () => {
     }
   };
 
-  const studentUsers = allUsers.filter((u) => u.role === 'student');
+  const studentUsers = allUsers.filter((u) => u.role === 'student' && isInBatch(u.batchId, activeBatchId));
   const teacherUsers = allUsers.filter((u) => u.role === 'teacher');
+  const activeBatchName = activeBatch?.name || '2k28 Science EM';
 
   return (
     <div className="space-y-6 animate-in fade-in duration-300">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h2 className="font-serif text-2xl font-bold tracking-tight text-stone-900">
-            Classes & Academic Cohorts
-          </h2>
+          <div className="flex items-center gap-2 flex-wrap">
+            <h2 className="font-serif text-2xl font-bold tracking-tight text-stone-900">
+              Classes & Academic Cohorts
+            </h2>
+            <span className="rounded-full bg-blue-100 text-blue-800 px-2.5 py-0.5 text-[11px] font-bold">
+              {activeBatchName}
+            </span>
+          </div>
           <p className="text-xs text-stone-500 mt-1">
-            Zahira College 2k28 Science EM class rosters, assigned lead teachers, and timetabled rooms
+            Zahira College {activeBatchName} class rosters, assigned lead teachers, and timetabled rooms
           </p>
         </div>
 
-        {canManageClasses && (
-          <button
-            onClick={() => setShowAddModal(true)}
-            className="inline-flex items-center gap-2 rounded-xl bg-blue-600 hover:bg-blue-700 px-4 py-2.5 text-xs font-bold text-white transition-all shadow-md shrink-0"
-          >
-            <Plus className="w-4 h-4" />
-            <span>Create Academic Class</span>
-          </button>
-        )}
+        <div className="flex flex-wrap items-center gap-2">
+          {!isBatchLocked && (
+            <select
+              value={activeBatchId}
+              onChange={(e) => setActiveBatchId(e.target.value)}
+              className="rounded-xl border border-stone-200 bg-white px-3 py-2 text-xs font-bold text-stone-800 shadow-2xs"
+              aria-label="Filter classes by batch"
+            >
+              <option value={ALL_BATCHES_ID}>
+                All Batches ({batches.length})
+              </option>
+              {batches.map((b) => (
+                <option key={b.id} value={b.id}>
+                  Batch: {b.name}
+                </option>
+              ))}
+            </select>
+          )}
+
+          {canManageClasses && (
+            <button
+              onClick={() => {
+                setNewBatchId(resolveWriteBatchId(activeBatchId));
+                setShowAddModal(true);
+              }}
+              className="inline-flex items-center gap-2 rounded-xl bg-blue-600 hover:bg-blue-700 px-4 py-2.5 text-xs font-bold text-white transition-all shadow-md shrink-0"
+            >
+              <Plus className="w-4 h-4" />
+              <span>Create Academic Class</span>
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Classes List */}
         <div className="space-y-3">
           <h3 className="text-xs font-bold uppercase tracking-wider text-stone-500 px-1">
-            Active Cohorts ({classes.length})
+            Active Cohorts ({batchClasses.length})
           </h3>
-          {classes.map((c) => {
+          {batchClasses.map((c) => {
             const isSelected = selectedClass?.id === c.id;
             return (
               <div
@@ -210,10 +256,10 @@ export const ClassesPage: React.FC = () => {
             );
           })}
 
-          {classes.length === 0 && (
+          {batchClasses.length === 0 && (
             <div className="p-8 rounded-2xl border border-dashed border-stone-200 bg-white text-center text-xs text-stone-500 space-y-2">
               <GraduationCap className="w-8 h-8 text-stone-300 mx-auto" />
-              <p className="font-semibold text-stone-700">No active class cohorts found.</p>
+              <p className="font-semibold text-stone-700">No active class cohorts in {activeBatchName}.</p>
               <p className="text-[11px] text-stone-400">
                 {canManageClasses ? 'Click "Create Academic Class" above to set up a new cohort.' : 'Classes will appear here once created by faculty.'}
               </p>
@@ -288,11 +334,11 @@ export const ClassesPage: React.FC = () => {
             <div>
               <h4 className="text-xs font-bold uppercase tracking-wider text-stone-500 mb-3 flex items-center gap-1.5">
                 <GraduationCap className="w-3.5 h-3.5 text-stone-400" />
-                <span>Enrolled 2k28 Science EM Scholars ({studentUsers.length})</span>
+                <span>Enrolled {activeBatchName} Scholars ({studentUsers.length})</span>
               </h4>
               {studentUsers.length === 0 ? (
                 <div className="p-6 text-center rounded-xl bg-stone-50 border border-stone-100 text-stone-500 text-xs">
-                  No students have signed up yet. When students register with their account, they will automatically appear in this cohort roster in real time.
+                  No students enrolled in {activeBatchName} yet. When students sign up with this batch, they will appear here automatically in real time.
                 </div>
               ) : (
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -338,13 +384,30 @@ export const ClassesPage: React.FC = () => {
             <div className="space-y-4 text-xs">
               <div>
                 <label className="font-semibold text-stone-700 uppercase tracking-wider block mb-1 text-[11px]">
+                  Academic Batch
+                </label>
+                <select
+                  value={newBatchId}
+                  onChange={(e) => setNewBatchId(e.target.value)}
+                  className="w-full rounded-lg border border-stone-200 bg-stone-50 p-2 text-stone-800 font-semibold"
+                >
+                  {batches.map((b) => (
+                    <option key={b.id} value={b.id}>
+                      {b.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="font-semibold text-stone-700 uppercase tracking-wider block mb-1 text-[11px]">
                   Class Name
                 </label>
                 <input
                   type="text"
                   value={newName}
                   onChange={(e) => setNewName(e.target.value)}
-                  placeholder="e.g. 2k28 Science EM (Bio Stream)"
+                  placeholder="e.g. Science EM (Bio Stream)"
                   className="w-full rounded-lg border border-stone-200 bg-stone-50 p-2 text-stone-800"
                 />
               </div>
