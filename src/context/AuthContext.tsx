@@ -27,6 +27,7 @@ import { UserProfile, UserRole, AppNotification } from '../types';
 import { REAL_ADMIN_PROFILE, seedInitialDatabaseIfEmpty } from '../services/dataService';
 import { ensureStudentIndexNumber, generateNextStudentIndex } from '../services/studentIndexService';
 import { triggerBrowserNotification } from '../services/notificationService';
+import { DEFAULT_BATCH_ID, DEFAULT_BATCH_NAME, resolveItemBatchId } from './BatchContext';
 
 interface AuthContextType {
   firebaseUser: FirebaseUser | null;
@@ -40,13 +41,16 @@ interface AuthContextType {
   signInWithGoogleRedirect: () => Promise<void>;
   completeGoogleFallbackSignIn: (email: string, fullName?: string) => Promise<void>;
   connectGoogleCalendar: () => Promise<string | null>;
-  signInWithEmail: (email: string, pass: string) => Promise<void>;
+  signInWithEmail: (identifier: string, pass: string) => Promise<void>;
   signUpWithEmail: (
     email: string,
     pass: string,
     name: string,
     role: 'teacher' | 'student' | 'parent',
     extra?: {
+      username?: string;
+      batchId?: string;
+      batchName?: string;
       subject?: string;
       stream?: string;
       enrolledSubjects?: string[];
@@ -55,6 +59,7 @@ interface AuthContextType {
       relationship?: string;
     }
   ) => Promise<void>;
+  updateCurrentUserBatch: (batchId: string, batchName: string) => Promise<void>;
   signOut: () => Promise<void>;
   notifications: AppNotification[];
   markNotificationRead: (id: string) => Promise<void>;
@@ -65,13 +70,81 @@ interface AuthContextType {
 interface PendingSignUpData {
   email: string;
   name: string;
+  username?: string;
   role: 'teacher' | 'student' | 'parent';
+  batchId?: string;
+  batchName?: string;
   subject?: string;
   stream?: string;
   enrolledSubjects?: string[];
   studentNameOrIndex?: string;
   phone?: string;
   relationship?: string;
+}
+
+interface StoredUserCredential {
+  userId: string;
+  email: string;
+  username?: string;
+  usernameLower?: string;
+  passwordHash: string;
+  authMethod?: 'firebase_auth' | 'firestore_email' | 'google';
+  role?: UserRole;
+  updatedAt?: string;
+}
+
+function shortEmailHash(str: string): string {
+  let h = 2166136261;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return (h >>> 0).toString(36);
+}
+
+function getCredentialDocId(email: string): string {
+  const clean = email.toLowerCase().trim();
+  const slug = clean.replace(/[^a-z0-9]/g, '_').slice(0, 48);
+  return `cred_${slug}_${shortEmailHash(clean)}`;
+}
+
+async function hashPassword(password: string, existingSalt?: string): Promise<string> {
+  const salt =
+    existingSalt ||
+    (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function'
+      ? Array.from(crypto.getRandomValues(new Uint8Array(12)))
+          .map((b) => b.toString(16).padStart(2, '0'))
+          .join('')
+      : `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`);
+
+  const data = new TextEncoder().encode(`${salt}:${password}`);
+  if (typeof crypto !== 'undefined' && crypto.subtle) {
+    try {
+      const digest = await crypto.subtle.digest('SHA-256', data);
+      const hex = Array.from(new Uint8Array(digest))
+        .map((b) => b.toString(16).padStart(2, '0'))
+        .join('');
+      return `${salt}$${hex}`;
+    } catch {
+      // fallback below
+    }
+  }
+
+  let h1 = 2166136261;
+  let h2 = 0x811c9dc5;
+  for (let i = 0; i < data.length; i++) {
+    h1 ^= data[i];
+    h1 = Math.imul(h1, 16777619);
+    h2 = Math.imul(h2 ^ data[i], 2654435761);
+  }
+  return `${salt}$fb_${(h1 >>> 0).toString(16)}_${(h2 >>> 0).toString(16)}`;
+}
+
+async function verifyPasswordHash(password: string, storedHash: string): Promise<boolean> {
+  if (!storedHash || !storedHash.includes('$')) return false;
+  const [salt] = storedHash.split('$');
+  const computed = await hashPassword(password, salt);
+  return computed === storedHash;
 }
 
 // In-memory pending signup tracker to prevent race conditions during Firebase user creation
@@ -101,6 +174,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const notifiedIdsRef = useRef<Set<string>>(new Set());
   const initializedNotifsForRef = useRef<string | null>(null);
+  const isSigningUpRef = useRef<boolean>(false);
 
   // Seed Zahira College 2k28 Science EM on boot
   useEffect(() => {
@@ -146,20 +220,26 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
         if (pending && pending.email.toLowerCase() === user.email?.toLowerCase().trim()) {
           const assignedRole: UserRole = isBootstrappedAdmin ? 'admin' : pending.role;
-          let bioText = `${pending.name} (${assignedRole.toUpperCase()}) - Zahira College 2k28 Science EM`;
+          const batchLabel = pending.batchName || DEFAULT_BATCH_NAME;
+          let bioText = `${pending.name} (${assignedRole.toUpperCase()}) - Zahira College ${batchLabel}`;
           if (assignedRole === 'teacher' && pending.subject) {
-            bioText = `${pending.subject} Faculty - Zahira College 2k28 Science EM`;
+            bioText = `${pending.subject} Faculty - Zahira College ${batchLabel}`;
           } else if (assignedRole === 'student' && pending.stream) {
-            bioText = `${pending.stream} Scholar - Zahira College 2k28 Science EM`;
+            bioText = `${pending.stream} Scholar - Zahira College ${batchLabel}`;
           } else if (assignedRole === 'parent') {
-            bioText = `${pending.name} (${pending.relationship || 'Parent'}) of ${pending.studentNameOrIndex || '2k28 Science EM Scholar'} - Zahira College`;
+            bioText = `${pending.name} (${pending.relationship || 'Parent'}) of ${pending.studentNameOrIndex || `${batchLabel} Scholar`} - Zahira College`;
           }
 
           initialProfile = {
             userId: user.uid,
             email: user.email || pending.email,
             fullName: pending.name,
+            username: pending.username,
+            usernameLower: pending.username ? pending.username.toLowerCase() : undefined,
+            authMethod: 'firebase_auth',
             role: assignedRole,
+            batchId: pending.batchId || (assignedRole === 'student' ? DEFAULT_BATCH_ID : undefined),
+            batchName: pending.batchName || (assignedRole === 'student' ? DEFAULT_BATCH_NAME : undefined),
             avatarUrl: user.photoURL || '',
             bio: bioText,
             phone: pending.phone || '',
@@ -195,8 +275,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               role: isBootstrappedAdmin ? 'admin' : 'student',
               avatarUrl: user.photoURL || '',
               bio: isBootstrappedAdmin
-                ? 'Administrator & Academic Lead - Zahira College 2k28 Science EM'
-                : `${defaultName} • Zahira College 2k28 Science EM Scholar`,
+                ? 'Administrator & Academic Lead - Zahira College Mawanella Science Project EM'
+                : `${defaultName} • Zahira College Mawanella Science Project EM Scholar`,
               createdAt: new Date().toISOString(),
               assignedClassIds: [],
               enrolledClassIds: [],
@@ -204,9 +284,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           }
         }
 
-        // Establish profile in React state and localStorage immediately
-        setUserProfile(initialProfile);
-        localStorage.setItem('zahira_auth_session', JSON.stringify(initialProfile));
+        // Establish profile in React state and localStorage immediately (unless signUpWithEmail is writing complete doc)
+        if (!isSigningUpRef.current) {
+          setUserProfile(initialProfile);
+          localStorage.setItem('zahira_auth_session', JSON.stringify(initialProfile));
+        }
 
         // 2. Attach real-time Firestore sync and persist profile
         try {
@@ -219,6 +301,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           unsubProfile = onSnapshot(
             profileRef,
             async (snap) => {
+              if (isSigningUpRef.current) return;
               if (snap.exists()) {
                 const rawData = snap.data() as UserProfile;
                 let data: UserProfile = { ...rawData, userId: user.uid };
@@ -231,8 +314,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 setUserProfile(data);
                 localStorage.setItem('zahira_auth_session', JSON.stringify(data));
               } else {
-                // Ensure profile is created in Firestore userProfiles collection with a valid student index!
+                // Before creating default profile, check if a profile with this email already exists under another doc ID
                 let profileToSave = initialProfile;
+                if (user.email) {
+                  const emailSnap = await getDocs(
+                    query(collection(db, 'userProfiles'), where('email', '==', user.email.toLowerCase().trim()))
+                  ).catch(() => null);
+                  if (emailSnap && !emailSnap.empty) {
+                    profileToSave = { ...(emailSnap.docs[0].data() as UserProfile), userId: user.uid };
+                  }
+                }
                 if (profileToSave.role === 'student' || user.email?.toLowerCase().trim() === 'mnmjaasim@gmail.com') {
                   profileToSave = await ensureStudentIndexNumber(profileToSave);
                 }
@@ -255,12 +346,25 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           unsubProfile();
           unsubProfile = null;
         }
-        // If no Firebase Auth user currently, check if we have a locally stored active session
+        // If no Firebase Auth user currently, check if we have a locally stored active Firestore session
         const storedSession = localStorage.getItem('zahira_auth_session');
         if (storedSession) {
           try {
             const parsed = JSON.parse(storedSession) as UserProfile;
             setUserProfile(parsed);
+            if (parsed?.userId) {
+              unsubProfile = onSnapshot(
+                doc(db, 'userProfiles', parsed.userId),
+                (snap) => {
+                  if (snap.exists() && localStorage.getItem('zahira_auth_session')) {
+                    const updated = { ...(snap.data() as UserProfile), userId: parsed.userId };
+                    setUserProfile(updated);
+                    localStorage.setItem('zahira_auth_session', JSON.stringify(updated));
+                  }
+                },
+                () => {}
+              );
+            }
           } catch {
             setUserProfile(null);
           }
@@ -330,6 +434,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           } else if (data.audience === 'all' || !data.audience) {
             // Broadcasts (study materials, coursework, assignments, announcements)
             isForMe = true;
+          }
+
+          // Strict batch isolation for non-targeted student/parent broadcast notifications
+          if (
+            isForMe &&
+            !isTargetedUser &&
+            (activeRole === 'student' || activeRole === 'parent') &&
+            data.batchId
+          ) {
+            const myBatch = resolveItemBatchId(userProfile?.batchId);
+            if (resolveItemBatchId(data.batchId) !== myBatch) {
+              isForMe = false;
+            }
           }
 
           if (isForMe) {
@@ -414,8 +531,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         role: isBootstrappedAdmin ? 'admin' : 'student',
         avatarUrl: user.photoURL || '',
         bio: isBootstrappedAdmin
-          ? 'Administrator - Zahira College Science Project Management'
-          : `${displayName} • Zahira College 2k28 Science EM Scholar`,
+          ? 'Administrator - Zahira College Mawanella Science Project EM'
+          : `${displayName} • Zahira College Mawanella Science Project EM Scholar`,
         createdAt: new Date().toISOString(),
         assignedClassIds: [],
         enrolledClassIds: [],
@@ -488,8 +605,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           role: isAdmin ? 'admin' : 'student',
           avatarUrl: '',
           bio: isAdmin
-            ? 'Administrator - Zahira College Science Project Management'
-            : `${chosenName} • Zahira College 2k28 Science EM Scholar`,
+            ? 'Administrator - Zahira College Mawanella Science Project EM'
+            : `${chosenName} • Zahira College Mawanella Science Project EM Scholar`,
           createdAt: new Date().toISOString(),
           assignedClassIds: [],
           enrolledClassIds: [],
@@ -524,44 +641,181 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  const signInWithEmail = async (email: string, pass: string) => {
-    const cleanEmail = email.toLowerCase().trim();
+  const findAccountInFirestore = async (
+    identifier: string
+  ): Promise<{
+    resolvedEmail: string | null;
+    credDoc: StoredUserCredential | null;
+    profileDoc: UserProfile | null;
+  }> => {
+    const cleanInput = identifier.trim();
+    const lowerInput = cleanInput.toLowerCase();
+    let resolvedEmail: string | null = lowerInput.includes('@') ? lowerInput : null;
+    let credDoc: StoredUserCredential | null = null;
+    let profileDoc: UserProfile | null = null;
+
+    // 1. Lookup in userCredentials
+    try {
+      if (resolvedEmail) {
+        const directCred = await getDoc(doc(db, 'userCredentials', getCredentialDocId(resolvedEmail))).catch(() => null);
+        if (directCred && directCred.exists()) {
+          credDoc = directCred.data() as StoredUserCredential;
+        } else {
+          const emailCredSnap = await getDocs(
+            query(collection(db, 'userCredentials'), where('email', '==', resolvedEmail))
+          ).catch(() => null);
+          if (emailCredSnap && !emailCredSnap.empty) {
+            credDoc = emailCredSnap.docs[0].data() as StoredUserCredential;
+          }
+        }
+      } else {
+        const unameCredSnap = await getDocs(
+          query(collection(db, 'userCredentials'), where('usernameLower', '==', lowerInput))
+        ).catch(() => null);
+        if (unameCredSnap && !unameCredSnap.empty) {
+          credDoc = unameCredSnap.docs[0].data() as StoredUserCredential;
+          resolvedEmail = credDoc.email?.toLowerCase().trim() || null;
+        }
+      }
+    } catch {
+      // ignore query failure
+    }
+
+    // 2. Lookup in userProfiles
+    try {
+      if (resolvedEmail) {
+        const emailProfSnap = await getDocs(
+          query(collection(db, 'userProfiles'), where('email', '==', resolvedEmail))
+        ).catch(() => null);
+        if (emailProfSnap && !emailProfSnap.empty) {
+          const d = emailProfSnap.docs[0];
+          const raw = d.data() as UserProfile;
+          profileDoc = { ...raw, userId: raw.userId || d.id };
+        }
+      } else {
+        const unameProfSnap = await getDocs(
+          query(collection(db, 'userProfiles'), where('usernameLower', '==', lowerInput))
+        ).catch(() => null);
+        if (unameProfSnap && !unameProfSnap.empty) {
+          const d = unameProfSnap.docs[0];
+          const raw = d.data() as UserProfile;
+          profileDoc = { ...raw, userId: raw.userId || d.id };
+          resolvedEmail = profileDoc.email?.toLowerCase().trim() || null;
+        } else {
+          // Fallback scan for accounts whose username/fullName was saved without usernameLower
+          const allProfs = await getDocs(collection(db, 'userProfiles')).catch(() => null);
+          if (allProfs) {
+            const match = allProfs.docs.find((d) => {
+              const p = d.data() as UserProfile;
+              return (
+                p.username?.toLowerCase().trim() === lowerInput ||
+                p.usernameLower?.toLowerCase().trim() === lowerInput ||
+                p.fullName?.toLowerCase().trim() === lowerInput
+              );
+            });
+            if (match) {
+              const raw = match.data() as UserProfile;
+              profileDoc = { ...raw, userId: raw.userId || match.id };
+              resolvedEmail = profileDoc.email?.toLowerCase().trim() || null;
+            }
+          }
+        }
+
+        // Now that we resolved email from userProfiles, also fetch credDoc if still missing
+        if (resolvedEmail && !credDoc) {
+          const directCred = await getDoc(doc(db, 'userCredentials', getCredentialDocId(resolvedEmail))).catch(() => null);
+          if (directCred && directCred.exists()) {
+            credDoc = directCred.data() as StoredUserCredential;
+          }
+        }
+      }
+    } catch {
+      // ignore query failure
+    }
+
+    return { resolvedEmail, credDoc, profileDoc };
+  };
+
+  const signInWithEmail = async (identifier: string, pass: string) => {
+    const cleanInput = identifier.trim();
+    const lowerInput = cleanInput.toLowerCase();
+
+    if (!cleanInput || !pass) {
+      throw new Error('Please enter both your email/username and password.');
+    }
+
+    const { resolvedEmail, credDoc, profileDoc } = await findAccountInFirestore(cleanInput);
+    const cleanEmail =
+      resolvedEmail ||
+      (lowerInput === 'mnmjaasim' ? 'mnmjaasim@gmail.com' : lowerInput.includes('@') ? lowerInput : '');
+
+    if (!cleanEmail) {
+      throw new Error(
+        'No account found with that username. Please check your username, sign in with your email address, or create a new account.'
+      );
+    }
+
     const isAdminEmail = cleanEmail === 'mnmjaasim@gmail.com';
 
     try {
       const cred = await signInWithEmailAndPassword(auth, cleanEmail, pass);
       if (cred.user) {
-        const existingSnap = await getDoc(doc(db, 'userProfiles', cred.user.uid)).catch(() => null);
-        const existingData = existingSnap?.exists() ? (existingSnap.data() as UserProfile) : null;
+        const uidSnap = await getDoc(doc(db, 'userProfiles', cred.user.uid)).catch(() => null);
+        const existingData = uidSnap?.exists()
+          ? (uidSnap.data() as UserProfile)
+          : profileDoc;
+
         let prof: UserProfile = existingData
           ? {
               ...existingData,
               userId: cred.user.uid,
+              email: cleanEmail,
+              authMethod: 'firebase_auth',
               role: isAdminEmail ? 'admin' : existingData.role,
             }
           : {
               userId: cred.user.uid,
               email: cred.user.email || cleanEmail,
-              fullName: cred.user.displayName || (isAdminEmail ? 'Science Project Admin' : cleanEmail.split('@')[0]),
+              fullName:
+                cred.user.displayName || (isAdminEmail ? 'Science Project Admin' : cleanEmail.split('@')[0]),
+              username: cleanEmail.split('@')[0],
+              usernameLower: cleanEmail.split('@')[0].toLowerCase(),
+              authMethod: 'firebase_auth',
               role: isAdminEmail ? 'admin' : 'student',
               avatarUrl: cred.user.photoURL || '',
               bio: isAdminEmail
-                ? 'Administrator - Zahira College Science Project Management'
-                : 'Zahira College 2k28 Science EM Scholar',
+                ? 'Administrator - Zahira College Mawanella Science Project EM'
+                : 'Zahira College Mawanella Science Project EM Scholar',
               createdAt: new Date().toISOString(),
               assignedClassIds: [],
               enrolledClassIds: [],
             };
+
         if (prof.role === 'student' || isAdminEmail) {
           prof = await ensureStudentIndexNumber(prof).catch(() => prof);
         }
+
         setUserProfile(prof);
         localStorage.setItem('zahira_auth_session', JSON.stringify(prof));
-        try {
-          await setDoc(doc(db, 'userProfiles', cred.user.uid), sanitizeFirestoreDoc(prof), { merge: true });
-        } catch {
-          // offline ok
-        }
+
+        // Ensure profile and credential hash stay synced in Firebase Firestore
+        const passwordHash = await hashPassword(pass);
+        await setDoc(doc(db, 'userProfiles', cred.user.uid), sanitizeFirestoreDoc(prof), { merge: true }).catch(() => {});
+        await setDoc(
+          doc(db, 'userCredentials', getCredentialDocId(cleanEmail)),
+          sanitizeFirestoreDoc({
+            userId: cred.user.uid,
+            email: cleanEmail,
+            username: prof.username || credDoc?.username || cleanEmail.split('@')[0],
+            usernameLower: (prof.username || credDoc?.username || cleanEmail.split('@')[0]).toLowerCase(),
+            passwordHash,
+            authMethod: 'firebase_auth',
+            role: prof.role,
+            updatedAt: new Date().toISOString(),
+          }),
+          { merge: true }
+        ).catch(() => {});
+        return;
       }
     } catch (err: any) {
       console.warn('signInWithEmail error:', err?.code, err?.message);
@@ -572,7 +826,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           throw new Error('Incorrect password for administrator account mnmjaasim@gmail.com.');
         }
 
-        // Provision in Firebase Auth if Email/Password is enabled and user doesn't exist yet
         if (
           err.code === 'auth/user-not-found' ||
           err.code === 'auth/invalid-credential' ||
@@ -586,6 +839,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               userId: cred.user.uid,
               email: cleanEmail,
               fullName: 'Science Project Admin',
+              username: 'mnmjaasim',
+              usernameLower: 'mnmjaasim',
+              authMethod: 'firebase_auth',
               role: 'admin',
               indexNumber: '2860003',
               avatarUrl: '',
@@ -599,56 +855,152 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           }
         }
 
-        // Fallback to verified Firestore admin profile when Firebase Auth Email/Password is disabled or linked to Google
         const adminProf: UserProfile = {
           userId: 'admin_mnmjaasim',
           email: 'mnmjaasim@gmail.com',
           fullName: 'Science Project Admin',
+          username: 'mnmjaasim',
+          usernameLower: 'mnmjaasim',
+          authMethod: 'firestore_email',
           role: 'admin',
           indexNumber: '2860003',
           avatarUrl: '',
-          bio: 'Administrator - Zahira College Science Project Management',
+          bio: 'Administrator - Zahira College Mawanella Science Project EM',
           createdAt: new Date().toISOString(),
           assignedClassIds: [],
           enrolledClassIds: [],
         };
         setUserProfile(adminProf);
         localStorage.setItem('zahira_auth_session', JSON.stringify(adminProf));
-        try {
-          await setDoc(doc(db, 'userProfiles', adminProf.userId), sanitizeFirestoreDoc(adminProf), { merge: true });
-        } catch {}
+        await setDoc(doc(db, 'userProfiles', adminProf.userId), sanitizeFirestoreDoc(adminProf), { merge: true }).catch(() => {});
         return;
       }
 
-      // If Firebase Email/Password provider is disabled on the project (auth/operation-not-allowed),
-      // look up verified profile stored in Firestore userProfiles so accounts created locally can sign in.
-      if (
-        err.code === 'auth/operation-not-allowed' ||
-        err.code === 'auth/configuration-not-found' ||
-        err.code === 'auth/admin-restricted-operation' ||
-        err.message?.includes('operation-not-allowed')
-      ) {
-        const userQuery = query(collection(db, 'userProfiles'), where('email', '==', cleanEmail));
-        const querySnap = await getDocs(userQuery).catch(() => null);
-        if (querySnap && !querySnap.empty) {
-          const foundDoc = querySnap.docs[0];
-          const raw = foundDoc.data() as UserProfile;
-          let profile: UserProfile = { ...raw, userId: raw.userId || foundDoc.id };
-          if (profile.role === 'student') {
-            profile = await ensureStudentIndexNumber(profile).catch(() => profile);
+      // Check Firestore-persisted credentials (handles both disabled Email/Password Auth provider AND accounts saved in Firestore)
+      if (credDoc?.passwordHash) {
+        const isMatch = await verifyPasswordHash(pass, credDoc.passwordHash);
+        if (!isMatch) {
+          throw new Error('Incorrect password. Please check your password and try again.');
+        }
+
+        // Password verified against Firebase Firestore!
+        // If Firebase Auth is enabled now but didn't have this user yet, auto-register them into Firebase Auth silently
+        let activeUserId = profileDoc?.userId || credDoc.userId;
+        let activeAuthMethod: 'firebase_auth' | 'firestore_email' = profileDoc?.authMethod === 'firebase_auth' ? 'firebase_auth' : 'firestore_email';
+        if (
+          err.code === 'auth/user-not-found' ||
+          err.code === 'auth/invalid-credential' ||
+          err.code === 'auth/invalid-login-credentials'
+        ) {
+          try {
+            const newCred = await createUserWithEmailAndPassword(auth, cleanEmail, pass);
+            if (newCred.user) {
+              activeUserId = newCred.user.uid;
+              activeAuthMethod = 'firebase_auth';
+              if (profileDoc?.fullName) {
+                await updateProfile(newCred.user, { displayName: profileDoc.fullName }).catch(() => {});
+              }
+            }
+          } catch {
+            // Firebase Auth disabled or email exists with different state; continue with verified Firestore sign-in
           }
-          setUserProfile(profile);
-          localStorage.setItem('zahira_auth_session', JSON.stringify(profile));
+        }
+
+        let resolvedProfile: UserProfile = profileDoc
+          ? {
+              ...profileDoc,
+              userId: activeUserId,
+              email: cleanEmail,
+              authMethod: activeAuthMethod,
+            }
+          : {
+              userId: activeUserId,
+              email: cleanEmail,
+              fullName: credDoc.username || cleanEmail.split('@')[0],
+              username: credDoc.username,
+              usernameLower: credDoc.usernameLower,
+              authMethod: activeAuthMethod,
+              role: credDoc.role || 'student',
+              batchId: DEFAULT_BATCH_ID,
+              batchName: DEFAULT_BATCH_NAME,
+              avatarUrl: '',
+              bio: `${credDoc.username || cleanEmail.split('@')[0]} • Zahira College Mawanella Science Project EM Scholar`,
+              createdAt: new Date().toISOString(),
+              assignedClassIds: [],
+              enrolledClassIds: [],
+            };
+
+        if (resolvedProfile.role === 'student') {
+          resolvedProfile = await ensureStudentIndexNumber(resolvedProfile).catch(() => resolvedProfile);
+        }
+
+        await setDoc(doc(db, 'userProfiles', resolvedProfile.userId), sanitizeFirestoreDoc(resolvedProfile), {
+          merge: true,
+        }).catch(() => {});
+        await setDoc(
+          doc(db, 'userCredentials', getCredentialDocId(cleanEmail)),
+          sanitizeFirestoreDoc({
+            userId: resolvedProfile.userId,
+            authMethod: activeAuthMethod,
+            updatedAt: new Date().toISOString(),
+          }),
+          { merge: true }
+        ).catch(() => {});
+
+        setUserProfile(resolvedProfile);
+        localStorage.setItem('zahira_auth_session', JSON.stringify(resolvedProfile));
+        return;
+      }
+
+      // Legacy Firestore profile without userCredentials record
+      if (profileDoc) {
+        if (err.code === 'auth/wrong-password' || profileDoc.authMethod === 'firebase_auth') {
+          throw new Error('Incorrect password. Please check your password and try again.');
+        }
+
+        if (
+          err.code === 'auth/operation-not-allowed' ||
+          err.code === 'auth/configuration-not-found' ||
+          err.code === 'auth/admin-restricted-operation' ||
+          err.code === 'auth/user-not-found' ||
+          err.message?.includes('operation-not-allowed')
+        ) {
+          let upgradedProfile = { ...profileDoc };
+          if (upgradedProfile.role === 'student') {
+            upgradedProfile = await ensureStudentIndexNumber(upgradedProfile).catch(() => upgradedProfile);
+          }
+          const passwordHash = await hashPassword(pass);
+          await setDoc(
+            doc(db, 'userCredentials', getCredentialDocId(cleanEmail)),
+            sanitizeFirestoreDoc({
+              userId: upgradedProfile.userId,
+              email: cleanEmail,
+              username: upgradedProfile.username || cleanEmail.split('@')[0],
+              usernameLower: (upgradedProfile.username || cleanEmail.split('@')[0]).toLowerCase(),
+              passwordHash,
+              authMethod: 'firestore_email',
+              role: upgradedProfile.role,
+              updatedAt: new Date().toISOString(),
+            }),
+            { merge: true }
+          ).catch(() => {});
+
+          setUserProfile(upgradedProfile);
+          localStorage.setItem('zahira_auth_session', JSON.stringify(upgradedProfile));
           return;
         }
       }
 
-      if (err.code === 'auth/wrong-password' || err.code === 'auth/invalid-credential' || err.code === 'auth/invalid-login-credentials') {
-        throw new Error('Invalid email or password. Please verify your credentials or create an account.');
+      if (
+        err.code === 'auth/wrong-password' ||
+        err.code === 'auth/invalid-credential' ||
+        err.code === 'auth/invalid-login-credentials'
+      ) {
+        throw new Error('Invalid email/username or password. Please verify your credentials or create an account.');
       }
 
       throw new Error(
-        'No account found with this email. Please switch to "Create Account" below to register as Student, Teacher, or Parent.'
+        'No account found with this email or username. Please switch to "Create Account" below to register.'
       );
     }
   };
@@ -659,6 +1011,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     name: string,
     role: 'teacher' | 'student' | 'parent',
     extra?: {
+      username?: string;
+      batchId?: string;
+      batchName?: string;
       subject?: string;
       stream?: string;
       enrolledSubjects?: string[];
@@ -668,175 +1023,225 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   ) => {
     const cleanEmail = email.toLowerCase().trim();
-    // Cache pending signup data to eliminate race condition with onAuthStateChanged listener
+    const cleanName = name.trim();
+    const cleanUsername = (extra?.username || cleanName || cleanEmail.split('@')[0]).trim();
+    const usernameLower = cleanUsername.toLowerCase();
+    const resolvedBatchId = extra?.batchId || DEFAULT_BATCH_ID;
+    const resolvedBatchName = extra?.batchName || DEFAULT_BATCH_NAME;
+
+    if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      throw new Error('Please enter a valid email address.');
+    }
+    if (!cleanUsername || cleanUsername.length < 2) {
+      throw new Error('Please enter a username (at least 2 characters).');
+    }
+    if (!pass || pass.length < 6) {
+      throw new Error('Password must be at least 6 characters long.');
+    }
+
+    // Check if email or username already exists as a registered account in Firestore
+    const existingByEmail = await findAccountInFirestore(cleanEmail);
+    if (
+      existingByEmail.credDoc ||
+      existingByEmail.profileDoc?.authMethod === 'firebase_auth' ||
+      existingByEmail.profileDoc?.authMethod === 'firestore_email'
+    ) {
+      throw new Error('An account with this email already exists. Please switch to Sign In.');
+    }
+
+    if (extra?.username) {
+      const existingCredByUname = await getDocs(
+        query(collection(db, 'userCredentials'), where('usernameLower', '==', usernameLower))
+      ).catch(() => null);
+      const existingProfByUname = await getDocs(
+        query(collection(db, 'userProfiles'), where('usernameLower', '==', usernameLower))
+      ).catch(() => null);
+      if ((existingCredByUname && !existingCredByUname.empty) || (existingProfByUname && !existingProfByUname.empty)) {
+        throw new Error('This username is already taken. Please choose another username.');
+      }
+    }
+
+    const passwordHash = await hashPassword(pass);
+
+    // Cache pending signup data and guard onAuthStateChanged against race conditions
+    isSigningUpRef.current = true;
     pendingSignUpData = {
       email: cleanEmail,
-      name,
+      name: cleanName,
+      username: cleanUsername,
       role,
       ...extra,
+      batchId: resolvedBatchId,
+      batchName: resolvedBatchName,
     };
     try {
       sessionStorage.setItem('zahira_pending_signup', JSON.stringify(pendingSignUpData));
     } catch {}
 
     try {
-      const credential = await createUserWithEmailAndPassword(auth, cleanEmail, pass);
-      if (credential.user) {
-        await updateProfile(credential.user, { displayName: name }).catch(() => {});
-        const isAdmin = cleanEmail === 'mnmjaasim@gmail.com';
-        const assignedRole: UserRole = isAdmin ? 'admin' : role;
+      let uid = '';
+      let authMethod: 'firebase_auth' | 'firestore_email' = 'firebase_auth';
+      const isAdmin = cleanEmail === 'mnmjaasim@gmail.com';
+      const assignedRole: UserRole = isAdmin ? 'admin' : role;
 
-        // Generate official 7-digit student index number for new student scholars
-        let studentIndex: string | undefined = undefined;
-        if (assignedRole === 'student' || isAdmin) {
-          studentIndex = await generateNextStudentIndex(cleanEmail);
+      try {
+        const credential = await createUserWithEmailAndPassword(auth, cleanEmail, pass);
+        uid = credential.user.uid;
+        await updateProfile(credential.user, { displayName: cleanName }).catch(() => {});
+      } catch (authErr: any) {
+        console.warn('Firebase createUserWithEmailAndPassword note:', authErr?.code, authErr?.message);
+        if (authErr.code === 'auth/email-already-in-use') {
+          throw new Error('This email is already registered. Please switch to Sign In and enter your password.');
+        }
+        if (authErr.code === 'auth/weak-password') {
+          throw new Error('Password must be at least 6 characters long.');
+        }
+        if (authErr.code === 'auth/invalid-email') {
+          throw new Error('Please enter a valid email address.');
         }
 
-        let bioText = `${name} (${assignedRole.toUpperCase()}) - Zahira College 2k28 Science EM`;
-        if (assignedRole === 'teacher' && extra?.subject) {
-          bioText = `${extra.subject} Faculty - Zahira College 2k28 Science EM`;
-        } else if (assignedRole === 'student' && extra?.stream) {
-          bioText = `${extra.stream} Scholar (Index: ${studentIndex}) - Zahira College 2k28 Science EM`;
-        } else if (assignedRole === 'parent') {
-          bioText = `${name} (${extra?.relationship || 'Parent'}) of ${extra?.studentNameOrIndex || '2k28 Science EM Scholar'} - Zahira College`;
+        // When Email/Password provider is disabled in Firebase Console or network-restricted, persist cleanly in Firestore
+        if (
+          authErr.code === 'auth/operation-not-allowed' ||
+          authErr.code === 'auth/network-request-failed' ||
+          authErr.code === 'auth/configuration-not-found' ||
+          authErr.code === 'auth/admin-restricted-operation' ||
+          authErr.message?.includes('operation-not-allowed')
+        ) {
+          const slug = cleanEmail.replace(/[^a-z0-9]/g, '_').slice(0, 40);
+          uid = isAdmin ? 'admin_mnmjaasim' : `user_${slug}_${shortEmailHash(cleanEmail)}`;
+          authMethod = 'firestore_email';
+        } else {
+          throw authErr;
         }
-
-        const studentEnrolledSubjects =
-          assignedRole === 'student' ? (extra?.enrolledSubjects || []) : [];
-
-        const profile: UserProfile = {
-          userId: credential.user.uid,
-          email: cleanEmail,
-          fullName: name,
-          role: assignedRole,
-          indexNumber: studentIndex,
-          avatarUrl: '',
-          phone: extra?.phone || '',
-          subject: (assignedRole === 'teacher' ? extra?.subject : '') || '',
-          stream: (assignedRole === 'student' ? extra?.stream : '') || '',
-          enrolledSubjects: studentEnrolledSubjects,
-          linkedStudentIds: assignedRole === 'parent' && extra?.studentNameOrIndex ? [extra.studentNameOrIndex] : [],
-          enrolledClassIds: [],
-          assignedClassIds: [],
-          bio: bioText,
-          createdAt: new Date().toISOString(),
-        };
-
-        // Write directly to userProfiles collection with merge: true
-        await setDoc(doc(db, 'userProfiles', credential.user.uid), sanitizeFirestoreDoc(profile), { merge: true });
-
-        // Ensure newly registered student is registered in students collection for attendance rosters
-        if (assignedRole === 'student') {
-          await setDoc(
-            doc(db, 'students', credential.user.uid),
-            {
-              userId: credential.user.uid,
-              fullName: name,
-              email: cleanEmail,
-              indexNumber: studentIndex,
-              stream: extra?.stream || '2k28 Science EM',
-              enrolledSubjects: studentEnrolledSubjects,
-              enrolledAt: new Date().toISOString(),
-            },
-            { merge: true }
-          ).catch((dbErr) => console.warn('Students collection sync:', dbErr));
-        }
-
-        setUserProfile(profile);
-        localStorage.setItem('zahira_auth_session', JSON.stringify(profile));
-        pendingSignUpData = null;
-        try {
-          sessionStorage.removeItem('zahira_pending_signup');
-        } catch {}
-      }
-    } catch (err: any) {
-      console.warn('signUpWithEmail error:', err?.code, err?.message);
-
-      // If Email/Password is not enabled in Firebase Console (auth/operation-not-allowed),
-      // or network issue, or weak password, or config not found, save to Firestore userProfiles directly so the user is registered immediately
-      if (
-        err.code === 'auth/operation-not-allowed' ||
-        err.code === 'auth/network-request-failed' ||
-        err.code === 'auth/configuration-not-found' ||
-        err.code === 'auth/admin-restricted-operation' ||
-        err.code === 'auth/email-already-in-use' ||
-        err.code === 'auth/weak-password' ||
-        err.code === 'auth/invalid-email' ||
-        err.message?.includes('operation-not-allowed')
-      ) {
-        const isAdmin = cleanEmail === 'mnmjaasim@gmail.com';
-        const assignedRole: UserRole = isAdmin ? 'admin' : role;
-        const localId = isAdmin ? 'admin_mnmjaasim' : `user_${cleanEmail.replace(/[^a-zA-Z0-9]/g, '_')}`;
-
-        let studentIndex: string | undefined = undefined;
-        if (assignedRole === 'student' || isAdmin) {
-          studentIndex = await generateNextStudentIndex(cleanEmail);
-        }
-
-        let bioText = `${name} (${assignedRole.toUpperCase()}) - Zahira College 2k28 Science EM`;
-        if (assignedRole === 'teacher' && extra?.subject) {
-          bioText = `${extra.subject} Faculty - Zahira College 2k28 Science EM`;
-        } else if (assignedRole === 'student' && extra?.stream) {
-          bioText = `${extra.stream} Scholar (Index: ${studentIndex}) - Zahira College 2k28 Science EM`;
-        } else if (assignedRole === 'parent') {
-          bioText = `${name} (${extra?.relationship || 'Parent'}) of ${extra?.studentNameOrIndex || '2k28 Science EM Scholar'} - Zahira College`;
-        }
-
-        const studentEnrolledSubjects =
-          assignedRole === 'student' ? (extra?.enrolledSubjects || []) : [];
-
-        const profile: UserProfile = {
-          userId: localId,
-          email: cleanEmail,
-          fullName: name || (isAdmin ? 'Science Project Admin' : cleanEmail.split('@')[0]),
-          role: assignedRole,
-          indexNumber: studentIndex,
-          avatarUrl: '',
-          phone: extra?.phone || '',
-          subject: (assignedRole === 'teacher' ? extra?.subject : '') || '',
-          stream: (assignedRole === 'student' ? extra?.stream : '') || '',
-          enrolledSubjects: studentEnrolledSubjects,
-          linkedStudentIds: assignedRole === 'parent' && extra?.studentNameOrIndex ? [extra.studentNameOrIndex] : [],
-          enrolledClassIds: [],
-          assignedClassIds: [],
-          bio: bioText,
-          createdAt: new Date().toISOString(),
-        };
-
-        setUserProfile(profile);
-        localStorage.setItem('zahira_auth_session', JSON.stringify(profile));
-        try {
-          await setDoc(doc(db, 'userProfiles', profile.userId), sanitizeFirestoreDoc(profile), { merge: true });
-          if (assignedRole === 'student') {
-            await setDoc(
-              doc(db, 'students', profile.userId),
-              {
-                userId: profile.userId,
-                fullName: profile.fullName,
-                email: cleanEmail,
-                indexNumber: studentIndex,
-                stream: extra?.stream || '2k28 Science EM',
-                enrolledSubjects: studentEnrolledSubjects,
-                enrolledAt: new Date().toISOString(),
-              },
-              { merge: true }
-            );
-          }
-        } catch (dbErr) {
-          console.warn('Failed to save profile to Firestore userProfiles:', dbErr);
-        }
-        pendingSignUpData = null;
-        try {
-          sessionStorage.removeItem('zahira_pending_signup');
-        } catch {}
-        return;
       }
 
+      // Generate official 7-digit student index number for new student scholars
+      let studentIndex: string | undefined = undefined;
+      if (assignedRole === 'student' || isAdmin) {
+        studentIndex = await generateNextStudentIndex(cleanEmail);
+      }
+
+      let bioText = `${cleanName} (${assignedRole.toUpperCase()}) - Zahira College ${resolvedBatchName}`;
+      if (assignedRole === 'teacher' && extra?.subject) {
+        bioText = `${extra.subject} Faculty - Zahira College ${resolvedBatchName}`;
+      } else if (assignedRole === 'student' && extra?.stream) {
+        bioText = `${extra.stream} Scholar (Index: ${studentIndex}) - Zahira College ${resolvedBatchName}`;
+      } else if (assignedRole === 'parent') {
+        bioText = `${cleanName} (${extra?.relationship || 'Parent'}) of ${extra?.studentNameOrIndex || `${resolvedBatchName} Scholar`} - Zahira College`;
+      }
+
+      const studentEnrolledSubjects =
+        assignedRole === 'student' ? (extra?.enrolledSubjects || []) : [];
+
+      const profile: UserProfile = {
+        userId: uid,
+        email: cleanEmail,
+        fullName: cleanName || (isAdmin ? 'Science Project Admin' : cleanUsername),
+        username: cleanUsername,
+        usernameLower,
+        authMethod,
+        role: assignedRole,
+        batchId: resolvedBatchId,
+        batchName: resolvedBatchName,
+        indexNumber: studentIndex,
+        avatarUrl: '',
+        phone: extra?.phone || '',
+        subject: (assignedRole === 'teacher' ? extra?.subject : '') || '',
+        stream: (assignedRole === 'student' ? extra?.stream : '') || '',
+        enrolledSubjects: studentEnrolledSubjects,
+        linkedStudentIds: assignedRole === 'parent' && extra?.studentNameOrIndex ? [extra.studentNameOrIndex] : [],
+        enrolledClassIds: [],
+        assignedClassIds: [],
+        bio: bioText,
+        createdAt: new Date().toISOString(),
+      };
+
+      // Save profile AND credential hash to Firebase Firestore database
+      await setDoc(doc(db, 'userProfiles', uid), sanitizeFirestoreDoc(profile), { merge: true });
+      await setDoc(
+        doc(db, 'userCredentials', getCredentialDocId(cleanEmail)),
+        sanitizeFirestoreDoc({
+          userId: uid,
+          email: cleanEmail,
+          username: cleanUsername,
+          usernameLower,
+          passwordHash,
+          authMethod,
+          role: assignedRole,
+          updatedAt: new Date().toISOString(),
+        }),
+        { merge: true }
+      );
+
+      // Ensure newly registered student is registered in students collection for attendance rosters
+      if (assignedRole === 'student') {
+        await setDoc(
+          doc(db, 'students', uid),
+          sanitizeFirestoreDoc({
+            userId: uid,
+            fullName: profile.fullName,
+            username: cleanUsername,
+            email: cleanEmail,
+            indexNumber: studentIndex,
+            batchId: resolvedBatchId,
+            batchName: resolvedBatchName,
+            stream: extra?.stream || resolvedBatchName,
+            enrolledSubjects: studentEnrolledSubjects,
+            enrolledAt: new Date().toISOString(),
+          }),
+          { merge: true }
+        ).catch((dbErr) => console.warn('Students collection sync:', dbErr));
+      }
+
+      setUserProfile(profile);
+      localStorage.setItem('zahira_auth_session', JSON.stringify(profile));
+    } finally {
+      isSigningUpRef.current = false;
       pendingSignUpData = null;
       try {
         sessionStorage.removeItem('zahira_pending_signup');
       } catch {}
-      throw err;
+    }
+  };
+
+  const updateCurrentUserBatch = async (batchId: string, batchName: string) => {
+    if (!userProfile?.userId) return;
+    if (!batchId || batchId.trim() === '' || batchId === 'all') {
+      throw new Error('Please choose a valid academic batch.');
+    }
+    if (
+      userProfile.role === 'student' &&
+      userProfile.batchId &&
+      userProfile.batchId.trim() !== '' &&
+      userProfile.batchId.trim() !== batchId.trim()
+    ) {
+      throw new Error('Your academic batch is permanently locked once selected and cannot be changed.');
+    }
+    const updatedAt = new Date().toISOString();
+    const updatedProfile: UserProfile = {
+      ...userProfile,
+      batchId,
+      batchName,
+      updatedAt,
+    };
+    setUserProfile(updatedProfile);
+    localStorage.setItem('zahira_auth_session', JSON.stringify(updatedProfile));
+    try {
+      await setDoc(
+        doc(db, 'userProfiles', userProfile.userId),
+        sanitizeFirestoreDoc({ batchId, batchName, updatedAt }),
+        { merge: true }
+      );
+      if (userProfile.role === 'student') {
+        await setDoc(
+          doc(db, 'students', userProfile.userId),
+          sanitizeFirestoreDoc({ batchId, batchName }),
+          { merge: true }
+        ).catch(() => {});
+      }
+    } catch (e) {
+      console.warn('Failed to update user batch:', e);
     }
   };
 
@@ -906,6 +1311,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         connectGoogleCalendar,
         signInWithEmail,
         signUpWithEmail,
+        updateCurrentUserBatch,
         signOut,
         notifications,
         markNotificationRead,
