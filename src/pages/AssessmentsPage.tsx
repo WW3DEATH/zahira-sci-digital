@@ -19,11 +19,13 @@ import {
   Loader2,
   Lock,
   GraduationCap,
+  Layers,
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import { collection, doc, onSnapshot, setDoc, deleteDoc } from 'firebase/firestore';
 import { db, sanitizeFirestoreDoc, handleFirestoreError, OperationType } from '../firebase';
 import { useAuth } from '../context/AuthContext';
+import { ALL_BATCHES_ID, useBatch, DEFAULT_BATCH_ID, isInBatch } from '../context/BatchContext';
 import { AcademicTest, TestMark, Subject, RosterStudent } from '../types';
 import { SEED_TESTS, SEED_SUBJECTS, isFakeSeedRosterStudent } from '../services/dataService';
 import { PDFPreviewModal, PDFPreviewData } from '../components/common/PDFPreviewModal';
@@ -52,12 +54,16 @@ const DEFAULT_SUBJECT_OPTIONS = [
 
 export const AssessmentsPage: React.FC = () => {
   const { activeRole, userProfile } = useAuth();
+  const { batches, activeBatchId, activeBatch, resolveWriteBatchId, setActiveBatchId, isBatchLocked, getBatchName } = useBatch();
+  const activeBatchName = activeBatch?.name || getBatchName(activeBatchId);
+  const writeBatchId = resolveWriteBatchId(activeBatchId);
+  const writeBatchName = getBatchName(writeBatchId);
   const isTeacherOrAdmin = activeRole === 'teacher' || activeRole === 'admin';
 
-  const [tests, setTests] = useState<AcademicTest[]>(SEED_TESTS);
-  const [testMarks, setTestMarks] = useState<TestMark[]>([]);
-  const [subjects, setSubjects] = useState<Subject[]>(SEED_SUBJECTS);
-  const [rosterStudents, setRosterStudents] = useState<RosterStudent[]>([]);
+  const [allTests, setAllTests] = useState<AcademicTest[]>(SEED_TESTS);
+  const [allTestMarks, setAllTestMarks] = useState<TestMark[]>([]);
+  const [allSubjects, setAllSubjects] = useState<Subject[]>(SEED_SUBJECTS);
+  const [allRosterStudents, setAllRosterStudents] = useState<RosterStudent[]>([]);
   const [loadingRoster, setLoadingRoster] = useState(true);
 
   const [previewData, setPreviewData] = useState<PDFPreviewData | null>(null);
@@ -110,7 +116,7 @@ export const AssessmentsPage: React.FC = () => {
         const list: AcademicTest[] = [];
         snap.forEach((d) => list.push(d.data() as AcademicTest));
         list.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
-        setTests(list.length > 0 ? list : SEED_TESTS);
+        setAllTests(list.length > 0 ? list : SEED_TESTS);
       },
       (error) => {
         handleFirestoreError(error, OperationType.LIST, 'tests');
@@ -126,7 +132,7 @@ export const AssessmentsPage: React.FC = () => {
       (snap) => {
         const list: TestMark[] = [];
         snap.forEach((d) => list.push(d.data() as TestMark));
-        setTestMarks(list);
+        setAllTestMarks(list);
       },
       (error) => {
         handleFirestoreError(error, OperationType.LIST, 'testMarks');
@@ -140,7 +146,7 @@ export const AssessmentsPage: React.FC = () => {
     const unsub = onSnapshot(collection(db, 'subjects'), (snap) => {
       const list: Subject[] = [];
       snap.forEach((d) => list.push(d.data() as Subject));
-      if (list.length > 0) setSubjects(list);
+      if (list.length > 0) setAllSubjects(list);
     });
     return () => unsub();
   }, []);
@@ -149,7 +155,7 @@ export const AssessmentsPage: React.FC = () => {
   // Strictly restricted to Teachers & Admins; intentionally does NOT sync website accounts (`userProfiles`)
   useEffect(() => {
     if (!isTeacherOrAdmin) {
-      setRosterStudents([]);
+      setAllRosterStudents([]);
       setLoadingRoster(false);
       return;
     }
@@ -177,7 +183,7 @@ export const AssessmentsPage: React.FC = () => {
           return idxCmp !== 0 ? idxCmp : (a.fullName || '').localeCompare(b.fullName || '');
         });
 
-        setRosterStudents(list);
+        setAllRosterStudents(list);
         setLoadingRoster(false);
       },
       (error) => {
@@ -187,6 +193,31 @@ export const AssessmentsPage: React.FC = () => {
     );
     return () => unsub();
   }, [isTeacherOrAdmin]);
+
+  // Batch-divided slices
+  const tests = useMemo(
+    () => allTests.filter((t) => isInBatch(t.batchId, activeBatchId)),
+    [allTests, activeBatchId]
+  );
+  const testMarks = useMemo(
+    () => allTestMarks.filter((m) => isInBatch(m.batchId, activeBatchId)),
+    [allTestMarks, activeBatchId]
+  );
+  const subjects = useMemo(
+    () => allSubjects.filter((s) => isInBatch(s.batchId, activeBatchId)),
+    [allSubjects, activeBatchId]
+  );
+  const rosterStudents = useMemo(
+    () => allRosterStudents.filter((s) => isInBatch(s.batchId, activeBatchId)),
+    [allRosterStudents, activeBatchId]
+  );
+
+  // Reset batch selection if switching batches changes test availability
+  useEffect(() => {
+    if (batchSelectedTestId && !tests.some((t) => t.id === batchSelectedTestId)) {
+      setBatchSelectedTestId(tests[0]?.id || '');
+    }
+  }, [activeBatchId, tests, batchSelectedTestId]);
 
   // Keep selected report card student synced to valid bulk-added roster students
   useEffect(() => {
@@ -367,6 +398,8 @@ export const AssessmentsPage: React.FC = () => {
         const newTestDoc: AcademicTest = {
           id: targetTestId,
           title: targetTitle,
+          batchId: writeBatchId,
+          batchName: writeBatchName,
           classId: 'general',
           subjectId: targetSubject,
           teacherId: userProfile?.userId || 'faculty',
@@ -394,12 +427,16 @@ export const AssessmentsPage: React.FC = () => {
 
         if (raw !== '' && !Number.isNaN(Number(raw))) {
           const score = Math.max(0, Math.min(Number(raw), targetMaxMarks));
+          const studentBatchId = resolveWriteBatchId(student.batchId || writeBatchId);
+          const studentBatchName = student.batchName || getBatchName(studentBatchId);
           const markDoc: TestMark = {
             id: markId,
             testId: targetTestId,
             studentId: student.id,
             studentName: student.fullName,
             studentIndex: student.indexNumber || '',
+            batchId: studentBatchId,
+            batchName: studentBatchName,
             classId: student.classId || targetClassId,
             subjectId: targetSubject,
             marksObtained: score,
@@ -448,6 +485,8 @@ export const AssessmentsPage: React.FC = () => {
       const newT: AcademicTest = {
         id,
         title: newTestTitle.trim(),
+        batchId: writeBatchId,
+        batchName: writeBatchName,
         classId: 'general',
         subjectId: newTestSubject,
         teacherId: userProfile?.userId || 'faculty',
@@ -555,7 +594,7 @@ export const AssessmentsPage: React.FC = () => {
     pdf.setFont('helvetica', 'bold');
     pdf.setFontSize(17);
     pdf.setTextColor(15, 23, 42);
-    pdf.text('ZAHIRA COLLEGE MAWANELLA • 2K28 SCIENCE EM', 20, 20);
+    pdf.text(`ZAHIRA COLLEGE MAWANELLA • ${activeBatchName.toUpperCase()}`, 20, 20);
 
     pdf.setFont('helvetica', 'bold');
     pdf.setFontSize(10.5);
@@ -590,7 +629,7 @@ export const AssessmentsPage: React.FC = () => {
     pdf.text(studentName.toUpperCase(), 65, 50);
     pdf.setTextColor(51, 65, 85);
     pdf.text(studentIndex, 65, 57);
-    pdf.text('2k28 Science EM (Combined Maths & Bio Science)', 65, 64);
+    pdf.text(`${activeBatchName} (Combined Maths & Bio Science)`, 65, 64);
 
     pdf.setFont('helvetica', 'bold');
     pdf.setTextColor(15, 23, 42);
@@ -766,7 +805,7 @@ export const AssessmentsPage: React.FC = () => {
     pdf.setFont('helvetica', 'normal');
     pdf.setFontSize(7);
     pdf.setTextColor(100, 116, 139);
-    pdf.text('Zahira College 2k28 Science EM', 133, y + 10);
+    pdf.text(`Zahira College ${activeBatchName}`, 133, y + 10);
 
     return pdf;
   };
@@ -775,7 +814,7 @@ export const AssessmentsPage: React.FC = () => {
     if (!activeStudent) return;
     try {
       const pdf = generateAcademicPerformancePDF();
-      const filename = `ZNC_Academic_Performance_${activeStudent.fullName.replace(/\s+/g, '_')}_2k28_Science.pdf`;
+      const filename = `ZNC_Academic_Performance_${activeStudent.fullName.replace(/\s+/g, '_')}_${activeBatchName.replace(/\s+/g, '_')}.pdf`;
       pdf.save(filename);
       setStatusToast(`Downloaded academic performance PDF for ${activeStudent.fullName}.`);
       setTimeout(() => setStatusToast(null), 4000);
@@ -792,9 +831,9 @@ export const AssessmentsPage: React.FC = () => {
       const blobUrl = URL.createObjectURL(blob);
       setPreviewData({
         title: `Official Academic Performance: ${activeStudent.fullName}`,
-        subtitle: 'ZNC Science Project • Zahira College 2k28 Science EM Report Card',
+        subtitle: `ZNC Science Project • Zahira College ${activeBatchName} Report Card`,
         category: 'Academic Performance PDF',
-        filename: `ZNC_Academic_Performance_${activeStudent.fullName.replace(/\s+/g, '_')}_2k28_Science.pdf`,
+        filename: `ZNC_Academic_Performance_${activeStudent.fullName.replace(/\s+/g, '_')}_${activeBatchName.replace(/\s+/g, '_')}.pdf`,
         blobUrl,
         blob,
       });
@@ -809,10 +848,13 @@ export const AssessmentsPage: React.FC = () => {
       {/* Top Banner */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <div className="flex items-center gap-2.5">
+          <div className="flex flex-wrap items-center gap-2.5">
             <h2 className="font-serif text-2xl font-bold tracking-tight text-slate-900 dark:text-white">
               Marks &amp; Assessments
             </h2>
+            <span className="rounded-md bg-indigo-100 dark:bg-indigo-900/40 text-indigo-800 dark:text-indigo-200 px-2.5 py-0.5 text-[11px] font-bold border border-indigo-200 dark:border-indigo-800">
+              {activeBatchName}
+            </span>
             {isTeacherOrAdmin ? (
               <span className="rounded-md bg-blue-100 dark:bg-blue-900/40 text-blue-800 dark:text-blue-200 px-2.5 py-0.5 text-[11px] font-bold border border-blue-200 dark:border-blue-800 tabular-nums">
                 {rosterStudents.length} Synced Roster Student{rosterStudents.length === 1 ? '' : 's'}
@@ -826,12 +868,32 @@ export const AssessmentsPage: React.FC = () => {
           </div>
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
             {isTeacherOrAdmin
-              ? 'Bulk-added roll-call students sync automatically from the Attendance Roster • Certified G.C.E. A/L Report Cards & Transcripts'
-              : 'Official G.C.E. A/L performance records & downloadable certified transcripts (exam creation and mark entry are restricted to Teachers & Admins)'}
+              ? `Bulk-added roll-call students for ${activeBatchName} sync automatically from the Attendance Roster`
+              : `Official G.C.E. A/L performance records for ${activeBatchName} (mark entry restricted to Teachers & Admins)`}
           </p>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          {!isBatchLocked && (
+            <div className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 shadow-2xs">
+              <Layers className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400 shrink-0" />
+              <select
+                value={activeBatchId}
+                onChange={(e) => setActiveBatchId(e.target.value)}
+                aria-label="Filter marks by academic batch"
+                className="bg-transparent text-xs font-bold text-slate-800 dark:text-slate-100 focus:outline-none"
+              >
+                <option value={ALL_BATCHES_ID}>
+                  All Batches ({batches.length})
+                </option>
+                {batches.map((b) => (
+                  <option key={b.id} value={b.id}>
+                    {b.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
           {isTeacherOrAdmin && (
             <>
               <button
@@ -946,6 +1008,8 @@ export const AssessmentsPage: React.FC = () => {
       {/* TAB 0: TERM EXAM MARKS (SEPARATED BIO & PHYSICAL STREAMS + REAL REPORT CARD PDF) */}
       {activeTab === 'term_exams' && (
         <TermExamMarksSection
+          activeBatchId={activeBatchId}
+          activeBatchName={activeBatchName}
           isTeacherOrAdmin={isTeacherOrAdmin}
           userProfile={userProfile}
           rosterStudents={rosterStudents}
@@ -1433,7 +1497,7 @@ export const AssessmentsPage: React.FC = () => {
                     <span className="font-mono font-bold text-white tabular-nums">
                       {activeStudent.indexNumber}
                     </span>{' '}
-                    • Zahira College 2k28 Science EM
+                    • Zahira College {activeBatchName}
                   </p>
                   <div className="flex flex-wrap items-center gap-3 pt-2 text-xs tabular-nums">
                     <span className="bg-white/10 px-2.5 py-1 rounded-lg border border-white/10">
@@ -1579,7 +1643,7 @@ export const AssessmentsPage: React.FC = () => {
               <div className="rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-800/60 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-stone-600 dark:text-slate-300">
                 <div className="flex items-center gap-2">
                   <ShieldCheck className="w-5 h-5 text-emerald-600 dark:text-emerald-400 shrink-0" />
-                  <span>Certified and sealed by Zahira College 2k28 Science EM Academic Board.</span>
+                  <span>Certified and sealed by Zahira College {activeBatchName} Academic Board.</span>
                 </div>
                 <div className="flex items-center gap-3">
                   <span className="font-semibold text-stone-800 dark:text-slate-100">
