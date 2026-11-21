@@ -39,6 +39,7 @@ import {
 } from 'firebase/firestore';
 import { db, sanitizeFirestoreDoc } from '../firebase';
 import { useAuth } from '../context/AuthContext';
+import { ALL_BATCHES_ID, isInBatch, resolveItemBatchId, useBatch } from '../context/BatchContext';
 import {
   OFFICIAL_STUDENT_SUBJECTS,
   PvPMatch,
@@ -100,6 +101,10 @@ export const PvPQuizArenaPage: React.FC<PvPQuizArenaPageProps> = ({
   onOpenAuthModal,
 }) => {
   const { userProfile, activeRole } = useAuth();
+  const { batches, activeBatchId, activeBatch, resolveWriteBatchId, setActiveBatchId, isBatchLocked, getBatchName } = useBatch();
+  const activeBatchName = activeBatch?.name || getBatchName(activeBatchId);
+  const writeBatchId = resolveWriteBatchId(activeBatchId);
+  const writeBatchName = getBatchName(writeBatchId);
   const [activeTab, setActiveTab] = useState<'arena' | 'leaderboard'>(initialTab);
 
   // Sync tab when parent switches Sidebar item between pvp_quiz and leaderboard
@@ -107,11 +112,11 @@ export const PvPQuizArenaPage: React.FC<PvPQuizArenaPageProps> = ({
     setActiveTab(initialTab);
   }, [initialTab]);
 
-  // Firestore collections
-  const [matches, setMatches] = useState<PvPMatch[]>([]);
-  const [scoreEvents, setScoreEvents] = useState<QuizScoreEvent[]>([]);
-  const [legacyAttempts, setLegacyAttempts] = useState<QuizAttempt[]>([]);
-  const [directoryUsers, setDirectoryUsers] = useState<UserProfile[]>([]);
+  // Firestore collections (raw, then filtered by activeBatchId)
+  const [allMatches, setAllMatches] = useState<PvPMatch[]>([]);
+  const [allScoreEvents, setAllScoreEvents] = useState<QuizScoreEvent[]>([]);
+  const [allLegacyAttempts, setAllLegacyAttempts] = useState<QuizAttempt[]>([]);
+  const [allDirectoryUsers, setAllDirectoryUsers] = useState<UserProfile[]>([]);
 
   // Active Match ID
   const [activeMatchId, setActiveMatchId] = useState<string | null>(null);
@@ -218,26 +223,26 @@ export const PvPQuizArenaPage: React.FC<PvPQuizArenaPageProps> = ({
       const list: PvPMatch[] = [];
       snap.forEach((d) => list.push({ ...(d.data() as PvPMatch), id: d.id }));
       list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-      setMatches(list);
+      setAllMatches(list);
     });
 
     const unsubScores = onSnapshot(collection(db, 'quizScoreEvents'), (snap) => {
       const list: QuizScoreEvent[] = [];
       snap.forEach((d) => list.push({ ...(d.data() as QuizScoreEvent), id: d.id }));
-      setScoreEvents(list);
+      setAllScoreEvents(list);
     });
 
     const unsubAttempts = onSnapshot(collection(db, 'quizAttempts'), (snap) => {
       const list: QuizAttempt[] = [];
       snap.forEach((d) => list.push({ ...(d.data() as QuizAttempt), id: d.id }));
-      setLegacyAttempts(list);
+      setAllLegacyAttempts(list);
     });
 
     const unsubUsers = onSnapshot(collection(db, 'userProfiles'), (snap) => {
       const list: UserProfile[] = [];
       snap.forEach((d) => list.push({ ...(d.data() as UserProfile), userId: d.id }));
       list.sort((a, b) => (a.fullName || '').localeCompare(b.fullName || ''));
-      setDirectoryUsers(list);
+      setAllDirectoryUsers(list);
     });
 
     return () => {
@@ -247,6 +252,34 @@ export const PvPQuizArenaPage: React.FC<PvPQuizArenaPageProps> = ({
       unsubUsers();
     };
   }, []);
+
+  // Batch-isolated collections
+  const matches = useMemo(
+    () => allMatches.filter((m) => isInBatch(m.batchId, activeBatchId)),
+    [allMatches, activeBatchId]
+  );
+  const scoreEvents = useMemo(
+    () => allScoreEvents.filter((s) => isInBatch(s.batchId, activeBatchId)),
+    [allScoreEvents, activeBatchId]
+  );
+  const legacyAttempts = useMemo(
+    () => allLegacyAttempts.filter((a) => isInBatch(a.batchId, activeBatchId)),
+    [allLegacyAttempts, activeBatchId]
+  );
+  const directoryUsers = useMemo(
+    () => allDirectoryUsers.filter((u) => isInBatch(u.batchId, activeBatchId)),
+    [allDirectoryUsers, activeBatchId]
+  );
+
+  // Clear active match or invited user if switched outside current batch
+  useEffect(() => {
+    if (activeMatchId && !matches.some((m) => m.id === activeMatchId)) {
+      setActiveMatchId(null);
+    }
+    if (invitedUserId && !directoryUsers.some((u) => u.userId === invitedUserId)) {
+      setInvitedUserId('');
+    }
+  }, [activeBatchId, matches, activeMatchId, directoryUsers, invitedUserId]);
 
   const currentMatch = useMemo(
     () => (activeMatchId ? matches.find((m) => m.id === activeMatchId) || null : null),
@@ -362,6 +395,8 @@ export const PvPQuizArenaPage: React.FC<PvPQuizArenaPageProps> = ({
             userName: pState.userName,
             userRole: pState.userRole,
             indexNumber: pState.indexNumber,
+            batchId: currentMatch.batchId || activeBatchId,
+            batchName: currentMatch.batchName || activeBatchName,
             mode: 'pvp',
             matchId: currentMatch.id,
             subject: currentMatch.subject,
@@ -377,7 +412,7 @@ export const PvPQuizArenaPage: React.FC<PvPQuizArenaPageProps> = ({
         });
       }
     }
-  }, [currentMatch, myUserId]);
+  }, [currentMatch, myUserId, activeBatchId, activeBatchName]);
 
   // Sync own deterministic leaderboard score event when match finishes / updates winnerId
   useEffect(() => {
@@ -392,6 +427,8 @@ export const PvPQuizArenaPage: React.FC<PvPQuizArenaPageProps> = ({
       userName: myState.userName,
       userRole: myState.userRole,
       indexNumber: myState.indexNumber,
+      batchId: currentMatch.batchId || activeBatchId,
+      batchName: currentMatch.batchName || activeBatchName,
       mode: currentMatch.mode,
       matchId: currentMatch.id,
       subject: currentMatch.subject,
@@ -405,7 +442,7 @@ export const PvPQuizArenaPage: React.FC<PvPQuizArenaPageProps> = ({
     setDoc(doc(db, 'quizScoreEvents', eventId), sanitizeFirestoreDoc(scoreDoc), { merge: true }).catch(
       (err) => console.warn('Leaderboard log sync note:', err)
     );
-  }, [currentMatch?.id, currentMatch?.winnerId, currentMatch?.status, myUserId, myState?.finished, myState?.score]);
+  }, [currentMatch?.id, currentMatch?.winnerId, currentMatch?.status, myUserId, myState?.finished, myState?.score, activeBatchId, activeBatchName]);
 
   const showToast = (msg: string) => {
     setArenaMessage(msg);
@@ -507,6 +544,8 @@ export const PvPQuizArenaPage: React.FC<PvPQuizArenaPageProps> = ({
         id: matchId,
         roomCode,
         mode: matchMode,
+        batchId: writeBatchId,
+        batchName: writeBatchName,
         subject: subjectLabel,
         subjects: activeSubjects,
         topic: topic.trim() || `${subjectLabel} Challenge`,
@@ -534,7 +573,7 @@ export const PvPQuizArenaPage: React.FC<PvPQuizArenaPageProps> = ({
         await sendDirectNotification({
           recipientId: invitedUser.userId,
           title: 'PvP Quiz Challenge Invite',
-          message: `${userProfile.fullName} challenged you to a ${questions.length}-question match in ${subjectLabel} (Room ${roomCode}).`,
+          message: `${userProfile.fullName} challenged you to a ${questions.length}-question match in ${subjectLabel} (${activeBatchName} · Room ${roomCode}).`,
           type: 'quiz',
           link: 'pvp_quiz',
         }).catch(() => {});
@@ -555,6 +594,11 @@ export const PvPQuizArenaPage: React.FC<PvPQuizArenaPageProps> = ({
   const handleJoinMatch = async (match: PvPMatch) => {
     if (!userProfile) {
       onOpenAuthModal?.();
+      return;
+    }
+
+    if (isBatchLocked && resolveItemBatchId(match.batchId) !== activeBatchId) {
+      showToast(`This PvP room belongs to another batch (${match.batchName || getBatchName(match.batchId)}).`);
       return;
     }
 
@@ -622,7 +666,7 @@ export const PvPQuizArenaPage: React.FC<PvPQuizArenaPageProps> = ({
     if (!currentMatch || (currentMatch.hostId !== myUserId && activeRole !== 'admin') || currentMatch.status !== 'waiting') return;
     try {
       await deleteDoc(doc(db, 'pvpMatches', currentMatch.id));
-      setMatches((prev) => prev.filter((m) => m.id !== currentMatch.id));
+      setAllMatches((prev) => prev.filter((m) => m.id !== currentMatch.id));
       setActiveMatchId(null);
       showToast('Cancelled open PvP challenge.');
     } catch (err) {
@@ -633,7 +677,7 @@ export const PvPQuizArenaPage: React.FC<PvPQuizArenaPageProps> = ({
 
   const handleDeleteLobbyMatch = async (matchId: string) => {
     try {
-      setMatches((prev) => prev.filter((m) => m.id !== matchId));
+      setAllMatches((prev) => prev.filter((m) => m.id !== matchId));
       setConfirmDeleteRoomId(null);
       await deleteDoc(doc(db, 'pvpMatches', matchId));
       showToast('Match removed from PvP lobby and database.');
@@ -872,20 +916,42 @@ export const PvPQuizArenaPage: React.FC<PvPQuizArenaPageProps> = ({
               {activeTab === 'arena' ? <Swords className="w-5 h-5" /> : <Trophy className="w-5 h-5" />}
             </div>
             <div>
-              <h2 className="font-serif text-xl sm:text-2xl font-bold tracking-tight text-slate-900 dark:text-slate-100">
-                {activeTab === 'arena'
-                  ? 'PvP Quiz Competition Arena'
-                  : 'Official Top 20 Scholar Leaderboards'}
-              </h2>
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="font-serif text-xl sm:text-2xl font-bold tracking-tight text-slate-900 dark:text-slate-100">
+                  {activeTab === 'arena'
+                    ? 'PvP Quiz Competition Arena'
+                    : 'Official Top 20 Scholar Leaderboards'}
+                </h2>
+                <span className="rounded-full bg-blue-900 text-amber-300 px-3 py-0.5 text-[11px] font-bold">
+                  Batch: {activeBatchName}
+                </span>
+              </div>
               <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
                 {activeTab === 'arena'
-                  ? 'Real-time 1v1 duels & ranked sprints with brand-new Gemini AI questions generated every round'
-                  : 'Track Most Points & Most Quizzes Done across Weekly, Monthly, and Yearly Top 20 rankings'}
+                  ? `Real-time 1v1 duels & ranked sprints scoped to ${activeBatchName} with brand-new Gemini AI questions`
+                  : `Most Points & Most Quizzes Done in ${activeBatchName} across Weekly, Monthly, and Yearly Top 20 rankings`}
               </p>
             </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-2 shrink-0">
+            {!isBatchLocked && (
+              <select
+                value={activeBatchId}
+                onChange={(e) => setActiveBatchId(e.target.value)}
+                className="min-h-[42px] rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3 py-2 text-xs font-bold text-slate-800 dark:text-slate-100 focus:outline-none"
+                aria-label="Filter PvP Arena by batch"
+              >
+                <option value={ALL_BATCHES_ID}>
+                  All Batches ({batches.length})
+                </option>
+                {batches.map((b) => (
+                  <option key={b.id} value={b.id}>
+                    Batch: {b.name}
+                  </option>
+                ))}
+              </select>
+            )}
             <button
               type="button"
               onClick={() => setShowApiKeyPanel((prev) => !prev)}
