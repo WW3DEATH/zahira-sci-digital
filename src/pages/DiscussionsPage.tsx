@@ -18,6 +18,8 @@ import {
   Loader2,
   AlertCircle,
   MessageSquareText,
+  Check,
+  Calendar,
 } from 'lucide-react';
 import {
   collection,
@@ -31,11 +33,13 @@ import {
 } from 'firebase/firestore';
 import { db, sanitizeFirestoreDoc } from '../firebase';
 import { useAuth } from '../context/AuthContext';
+import { ALL_BATCHES_ID, isInBatch, useBatch } from '../context/BatchContext';
 import {
   Discussion,
   DiscussionReply,
   DiscussionCategory,
   DiscussionRoomMessage,
+  StudyGroupJoinRequest,
 } from '../types';
 import { broadcastSystemNotification } from '../services/notificationService';
 import { AIMarkdownMath } from '../components/common/AIMarkdownMath';
@@ -111,6 +115,10 @@ function formatRoleLabel(role?: string): string {
 
 export const DiscussionsPage: React.FC<DiscussionsPageProps> = ({ onOpenAuthModal }) => {
   const { activeRole, userProfile } = useAuth();
+  const { batches, activeBatchId, activeBatch, resolveWriteBatchId, setActiveBatchId, isBatchLocked, getBatchName } = useBatch();
+  const activeBatchName = activeBatch?.name || getBatchName(activeBatchId);
+  const writeBatchId = resolveWriteBatchId(activeBatchId);
+  const writeBatchName = getBatchName(writeBatchId);
 
   // Top View Mode: Live Chat Room vs Structured Topic Threads
   const [viewMode, setViewMode] = useState<'room' | 'threads'>('room');
@@ -119,7 +127,7 @@ export const DiscussionsPage: React.FC<DiscussionsPageProps> = ({ onOpenAuthModa
   // LIVE DISCUSSION ROOM STATE
   // =========================================================================
   const [activeRoomId, setActiveRoomId] = useState<string>('general');
-  const [roomMessages, setRoomMessages] = useState<DiscussionRoomMessage[]>([]);
+  const [allRoomMessages, setAllRoomMessages] = useState<DiscussionRoomMessage[]>([]);
   const [roomLoading, setRoomLoading] = useState(true);
   const [chatText, setChatText] = useState('');
   const [pendingRoomFile, setPendingRoomFile] = useState<PendingAttachment | null>(null);
@@ -127,6 +135,8 @@ export const DiscussionsPage: React.FC<DiscussionsPageProps> = ({ onOpenAuthModa
   const [sendingRoomMsg, setSendingRoomMsg] = useState(false);
   const [confirmDeleteRoomMsgId, setConfirmDeleteRoomMsgId] = useState<string | null>(null);
   const [lightboxImage, setLightboxImage] = useState<{ url: string; name: string } | null>(null);
+  const [allStudyGroupRequests, setAllStudyGroupRequests] = useState<StudyGroupJoinRequest[]>([]);
+  const [updatingRequestId, setUpdatingRequestId] = useState<string | null>(null);
 
   const roomFileInputRef = useRef<HTMLInputElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
@@ -134,8 +144,8 @@ export const DiscussionsPage: React.FC<DiscussionsPageProps> = ({ onOpenAuthModa
   // =========================================================================
   // STRUCTURED FORUM TOPICS STATE
   // =========================================================================
-  const [discussions, setDiscussions] = useState<Discussion[]>([]);
-  const [replies, setReplies] = useState<DiscussionReply[]>([]);
+  const [allDiscussions, setAllDiscussions] = useState<Discussion[]>([]);
+  const [allReplies, setAllReplies] = useState<DiscussionReply[]>([]);
   const [selectedDiscussionId, setSelectedDiscussionId] = useState<string | null>(null);
   const [activeCategory, setActiveCategory] = useState<string>('all');
 
@@ -175,7 +185,7 @@ export const DiscussionsPage: React.FC<DiscussionsPageProps> = ({ onOpenAuthModa
         const list: DiscussionRoomMessage[] = [];
         snap.forEach((d) => list.push({ ...(d.data() as DiscussionRoomMessage), id: d.id }));
         list.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
-        setRoomMessages(list);
+        setAllRoomMessages(list);
         setRoomLoading(false);
       },
       (err) => {
@@ -195,8 +205,7 @@ export const DiscussionsPage: React.FC<DiscussionsPageProps> = ({ onOpenAuthModa
           }
           return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
         });
-        setDiscussions(sorted);
-        setSelectedDiscussionId((prev) => prev || sorted[0]?.id || null);
+        setAllDiscussions(sorted);
       },
       (err) => console.warn('Discussions listener note:', err)
     );
@@ -207,22 +216,97 @@ export const DiscussionsPage: React.FC<DiscussionsPageProps> = ({ onOpenAuthModa
         const rList: DiscussionReply[] = [];
         snap.forEach((d) => rList.push({ ...(d.data() as DiscussionReply), id: d.id }));
         rList.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
-        setReplies(rList);
+        setAllReplies(rList);
       },
       (err) => console.warn('Replies listener note:', err)
+    );
+
+    const unsubStudyReqs = onSnapshot(
+      collection(db, 'studyGroupRequests'),
+      (snap) => {
+        const list: StudyGroupJoinRequest[] = [];
+        snap.forEach((d) => list.push({ ...(d.data() as StudyGroupJoinRequest), id: d.id }));
+        list.sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime());
+        setAllStudyGroupRequests(list);
+      },
+      (err) => console.warn('Study group requests listener note:', err)
     );
 
     return () => {
       unsubRoom();
       unsubDisc();
       unsubRep();
+      unsubStudyReqs();
     };
   }, []);
 
-  const currentRoom = useMemo(
-    () => DISCUSSION_ROOMS.find((r) => r.id === activeRoomId) || DISCUSSION_ROOMS[0],
-    [activeRoomId]
+  // Batch-isolated slices
+  const roomMessages = useMemo(
+    () => allRoomMessages.filter((m) => isInBatch(m.batchId, activeBatchId)),
+    [allRoomMessages, activeBatchId]
   );
+
+  const studyGroupRequests = useMemo(
+    () => allStudyGroupRequests.filter((r) => isInBatch(r.batchId, activeBatchId)),
+    [allStudyGroupRequests, activeBatchId]
+  );
+
+  const activeRoomJoinRequests = useMemo(
+    () => studyGroupRequests.filter((r) => r.roomId === activeRoomId),
+    [studyGroupRequests, activeRoomId]
+  );
+
+  const handleUpdateStudyRequestStatus = async (
+    reqId: string,
+    status: 'approved' | 'declined'
+  ) => {
+    if (activeRole !== 'admin' && activeRole !== 'teacher') return;
+    setUpdatingRequestId(reqId);
+    try {
+      await setDoc(
+        doc(db, 'studyGroupRequests', reqId),
+        { status, updatedAt: new Date().toISOString() },
+        { merge: true }
+      );
+    } catch (err) {
+      console.error('Failed to update study room join request:', err);
+    } finally {
+      setUpdatingRequestId(null);
+    }
+  };
+
+  const discussions = useMemo(
+    () => allDiscussions.filter((d) => isInBatch(d.batchId, activeBatchId)),
+    [allDiscussions, activeBatchId]
+  );
+
+  const replies = useMemo(
+    () => allReplies.filter((r) => isInBatch(r.batchId, activeBatchId)),
+    [allReplies, activeBatchId]
+  );
+
+  // Keep selectedDiscussionId synced with batch-filtered discussions
+  useEffect(() => {
+    if (discussions.length === 0) {
+      if (selectedDiscussionId !== null) setSelectedDiscussionId(null);
+      return;
+    }
+    if (!selectedDiscussionId || !discussions.some((d) => d.id === selectedDiscussionId)) {
+      setSelectedDiscussionId(discussions[0].id);
+      setAiSummary(null);
+    }
+  }, [discussions, selectedDiscussionId]);
+
+  const currentRoom = useMemo(() => {
+    const found = DISCUSSION_ROOMS.find((r) => r.id === activeRoomId) || DISCUSSION_ROOMS[0];
+    if (found.id === 'general') {
+      return {
+        ...found,
+        description: `${activeBatchName} batch announcements, past-paper sharing, and collaborative study`,
+      };
+    }
+    return found;
+  }, [activeRoomId, activeBatchName]);
 
   const activeRoomMessages = useMemo(
     () => roomMessages.filter((m) => (m.roomId || 'general') === activeRoomId),
@@ -360,6 +444,8 @@ export const DiscussionsPage: React.FC<DiscussionsPageProps> = ({ onOpenAuthModa
         id,
         roomId: activeRoomId,
         roomName: currentRoom.name,
+        batchId: writeBatchId,
+        batchName: writeBatchName,
         authorId: userProfile.userId,
         authorName: userProfile.fullName,
         authorRole: activeRole,
@@ -382,7 +468,7 @@ export const DiscussionsPage: React.FC<DiscussionsPageProps> = ({ onOpenAuthModa
   };
 
   const handleDeleteRoomMessage = async (msgId: string) => {
-    setRoomMessages((prev) => prev.filter((m) => m.id !== msgId));
+    setAllRoomMessages((prev) => prev.filter((m) => m.id !== msgId));
     setConfirmDeleteRoomMsgId(null);
     setRoomFileError(null);
     try {
@@ -427,6 +513,8 @@ export const DiscussionsPage: React.FC<DiscussionsPageProps> = ({ onOpenAuthModa
         authorName: userProfile.fullName,
         authorRole: activeRole,
         category: newCategory,
+        batchId: writeBatchId,
+        batchName: writeBatchName,
         classId: 'general',
         subjectId: 'sub-cmath',
         tags: newTags.split(',').map((t) => t.trim()).filter(Boolean),
@@ -442,6 +530,8 @@ export const DiscussionsPage: React.FC<DiscussionsPageProps> = ({ onOpenAuthModa
         message: `${topic.authorName} started a discussion: "${topic.title}".`,
         type: 'discussion',
         link: 'discussions',
+        batchId: writeBatchId,
+        batchName: writeBatchName,
       }).catch(() => {});
 
       setSelectedDiscussionId(id);
@@ -480,12 +570,16 @@ export const DiscussionsPage: React.FC<DiscussionsPageProps> = ({ onOpenAuthModa
       }
 
       const repId = `rep-${Date.now()}`;
+      const targetReplyBatchId = selectedDiscussion.batchId || writeBatchId;
+      const targetReplyBatchName = selectedDiscussion.batchName || getBatchName(targetReplyBatchId);
       const newRep: DiscussionReply = {
         id: repId,
         discussionId: selectedDiscussion.id,
         authorId: userProfile.userId,
         authorName: userProfile.fullName,
         authorRole: activeRole,
+        batchId: targetReplyBatchId,
+        batchName: targetReplyBatchName,
         content: replyContent.trim() || 'Attached a file:',
         ...attachmentFields,
         createdAt: new Date().toISOString(),
@@ -506,6 +600,8 @@ export const DiscussionsPage: React.FC<DiscussionsPageProps> = ({ onOpenAuthModa
         message: `${newRep.authorName} shared: "${newRep.content.slice(0, 80)}"`,
         type: 'discussion',
         link: 'discussions',
+        batchId: targetReplyBatchId,
+        batchName: targetReplyBatchName,
       }).catch(() => {});
     } catch (e) {
       console.error('Failed to post reply:', e);
@@ -515,7 +611,7 @@ export const DiscussionsPage: React.FC<DiscussionsPageProps> = ({ onOpenAuthModa
   };
 
   const handleDeleteReply = async (replyId: string, discussionId: string) => {
-    setReplies((prev) => prev.filter((r) => r.id !== replyId));
+    setAllReplies((prev) => prev.filter((r) => r.id !== replyId));
     setConfirmDeleteReplyId(null);
     try {
       await deleteDoc(doc(db, 'discussionReplies', replyId));
@@ -530,8 +626,8 @@ export const DiscussionsPage: React.FC<DiscussionsPageProps> = ({ onOpenAuthModa
   };
 
   const handleDeleteTopic = async (topicId: string) => {
-    setDiscussions((prev) => prev.filter((d) => d.id !== topicId));
-    setReplies((prev) => prev.filter((r) => r.discussionId !== topicId));
+    setAllDiscussions((prev) => prev.filter((d) => d.id !== topicId));
+    setAllReplies((prev) => prev.filter((r) => r.discussionId !== topicId));
     setConfirmDeleteTopicId(null);
     if (selectedDiscussionId === topicId) {
       setSelectedDiscussionId(null);
@@ -707,16 +803,39 @@ export const DiscussionsPage: React.FC<DiscussionsPageProps> = ({ onOpenAuthModa
               <MessagesSquare className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="font-serif text-xl sm:text-2xl font-bold tracking-tight text-slate-900 dark:text-slate-100">
-                Zahira Study Discussion Room
-              </h2>
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="font-serif text-xl sm:text-2xl font-bold tracking-tight text-slate-900 dark:text-slate-100">
+                  Zahira Study Discussion Room
+                </h2>
+                <span className="rounded-full bg-blue-900 text-amber-300 px-3 py-0.5 text-[11px] font-bold">
+                  Batch: {activeBatchName}
+                </span>
+              </div>
               <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-                Real-time group chat, device file uploads (PDFs, notes, images & slides), and Q&A discussion threads
+                Isolated real-time group chat, device file uploads (PDFs, notes, images & slides), and Q&amp;A threads for {activeBatchName}
               </p>
             </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
+            {!isBatchLocked && (
+              <select
+                value={activeBatchId}
+                onChange={(e) => setActiveBatchId(e.target.value)}
+                className="min-h-[40px] rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-3 py-2 text-xs font-bold text-slate-800 dark:text-slate-100 focus:outline-none"
+                aria-label="Filter discussion room by batch"
+              >
+                <option value={ALL_BATCHES_ID}>
+                  All Batches ({batches.length})
+                </option>
+                {batches.map((b) => (
+                  <option key={b.id} value={b.id}>
+                    Batch: {b.name}
+                  </option>
+                ))}
+              </select>
+            )}
+
             <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800 p-1 rounded-xl">
               <button
                 type="button"
@@ -851,6 +970,76 @@ export const DiscussionsPage: React.FC<DiscussionsPageProps> = ({ onOpenAuthModa
                 Upload PDFs, images (PNG/JPG/WebP), Word docs, PowerPoint slides, spreadsheets, ZIP archives, or text files up to 10 MB per upload.
               </p>
             </div>
+
+            {activeRoomJoinRequests.length > 0 && (
+              <div className="rounded-2xl border border-violet-200 dark:border-violet-900/60 bg-violet-50/60 dark:bg-violet-950/20 p-3.5 text-xs space-y-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-bold text-violet-900 dark:text-violet-200 flex items-center gap-1.5">
+                    <Users className="w-3.5 h-3.5 text-violet-600 dark:text-violet-400" />
+                    <span>Room Join Requests</span>
+                  </span>
+                  <span className="rounded-full bg-violet-100 dark:bg-violet-900/60 text-violet-800 dark:text-violet-200 px-2 py-0.5 text-[10px] font-bold">
+                    {activeRoomJoinRequests.length}
+                  </span>
+                </div>
+                <div className="space-y-2 max-h-60 overflow-y-auto pr-0.5">
+                  {activeRoomJoinRequests.slice(0, 6).map((req) => (
+                    <div
+                      key={req.id}
+                      className="rounded-xl border border-violet-200/70 dark:border-violet-800/50 bg-white dark:bg-slate-900 p-2.5 space-y-1.5"
+                    >
+                      <div className="flex items-center justify-between gap-1.5">
+                        <span className="font-bold text-slate-900 dark:text-slate-100 truncate text-[11px]">
+                          {req.studentName}
+                        </span>
+                        <span
+                          className={`rounded px-1.5 py-0.5 text-[9px] font-bold uppercase shrink-0 ${
+                            req.status === 'approved'
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : req.status === 'declined'
+                              ? 'bg-rose-100 text-rose-800'
+                              : 'bg-amber-100 text-amber-800'
+                          }`}
+                        >
+                          {req.status}
+                        </span>
+                      </div>
+                      <p className="text-[10px] text-slate-500 dark:text-slate-400 truncate flex items-center gap-1">
+                        <Calendar className="w-3 h-3 shrink-0" />
+                        <span>{req.eventTitle} ({req.eventDate})</span>
+                      </p>
+                      {req.note && (
+                        <p className="text-[10px] text-slate-600 dark:text-slate-300 italic line-clamp-2">
+                          "{req.note}"
+                        </p>
+                      )}
+                      {(activeRole === 'admin' || activeRole === 'teacher') && req.status === 'pending' && (
+                        <div className="flex items-center gap-1.5 pt-1">
+                          <button
+                            type="button"
+                            disabled={updatingRequestId === req.id}
+                            onClick={() => handleUpdateStudyRequestStatus(req.id, 'approved')}
+                            className="flex-1 inline-flex items-center justify-center gap-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white py-1 text-[10px] font-bold disabled:opacity-50"
+                          >
+                            <Check className="w-3 h-3" />
+                            <span>Approve</span>
+                          </button>
+                          <button
+                            type="button"
+                            disabled={updatingRequestId === req.id}
+                            onClick={() => handleUpdateStudyRequestStatus(req.id, 'declined')}
+                            className="flex-1 inline-flex items-center justify-center gap-1 rounded-lg border border-rose-200 text-rose-700 hover:bg-rose-50 py-1 text-[10px] font-bold disabled:opacity-50"
+                          >
+                            <X className="w-3 h-3" />
+                            <span>Decline</span>
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Main Real-Time Chat Area */}
