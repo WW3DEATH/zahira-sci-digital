@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   CalendarCheck2,
   Calendar,
@@ -22,33 +22,44 @@ import {
   Eye,
   GraduationCap,
   Power,
+  Layers,
+  Download,
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import { collection, doc, onSnapshot, setDoc, deleteDoc } from 'firebase/firestore';
 import { db, sanitizeFirestoreDoc, handleFirestoreError, OperationType } from '../firebase';
 import { useAuth } from '../context/AuthContext';
+import { ALL_BATCHES_ID, useBatch, DEFAULT_BATCH_ID, isInBatch, resolveItemBatchId } from '../context/BatchContext';
 import { AttendanceRecord, AttendanceStatus, AttendanceDayControl, SchoolClass, RosterStudent, ScheduledClass, StudentStream } from '../types';
 import { QRAttendanceModal } from '../components/attendance/QRAttendanceModal';
 import { PDFPreviewModal, PDFPreviewData } from '../components/common/PDFPreviewModal';
 import { isFakeSeedRosterStudent } from '../services/dataService';
 import {
+  buildAttendanceDayControlId,
   buildAttendanceRecordId,
+  getValidAttendanceRecordsMap,
   isAttendanceDateEnabled,
   isAttendanceRecordActive,
+  resolveDayControlForDate,
 } from '../utils/attendanceUtils';
 
 export const AttendancePage: React.FC = () => {
   const { activeRole, userProfile } = useAuth();
+  const { batches, activeBatchId, activeBatch, setActiveBatchId, isBatchLocked, getBatchName, resolveWriteBatchId } = useBatch();
+  const activeBatchName = activeBatch?.name || getBatchName(activeBatchId);
+  const writeBatchId = resolveWriteBatchId(activeBatchId);
+  const writeBatchName = getBatchName(writeBatchId);
   const [selectedClassId, setSelectedClassId] = useState('');
   const [selectedDate, setSelectedDate] = useState(() => new Date().toISOString().split('T')[0]);
+  const [exportMonth, setExportMonth] = useState(() => new Date().toISOString().slice(0, 7));
   const [selectedSessionId, setSelectedSessionId] = useState<string>('daily');
-  const [attendanceRecords, setAttendanceRecords] = useState<AttendanceRecord[]>([]);
+  const [allAttendanceRecords, setAllAttendanceRecords] = useState<AttendanceRecord[]>([]);
   const [dayControlsMap, setDayControlsMap] = useState<Record<string, AttendanceDayControl>>({});
   const [togglingDay, setTogglingDay] = useState(false);
-  const [classes, setClasses] = useState<SchoolClass[]>([]);
-  const [students, setStudents] = useState<RosterStudent[]>([]);
-  const [scheduledClasses, setScheduledClasses] = useState<ScheduledClass[]>([]);
-  const [dismissedDefaultsByDate, setDismissedDefaultsByDate] = useState<Record<string, string[]>>({});
+  const [allClasses, setAllClasses] = useState<SchoolClass[]>([]);
+  const [allStudents, setAllStudents] = useState<RosterStudent[]>([]);
+  const [allScheduledClasses, setAllScheduledClasses] = useState<ScheduledClass[]>([]);
+  const [dismissedDefaultsMap, setDismissedDefaultsMap] = useState<Record<string, string[]>>({});
   const [loading, setLoading] = useState(true);
   const [savedSuccess, setSavedSuccess] = useState(false);
   const [statusNotice, setStatusNotice] = useState<string | null>(null);
@@ -88,17 +99,26 @@ export const AttendancePage: React.FC = () => {
     const unsub = onSnapshot(collection(db, 'classes'), (snap) => {
       const list: SchoolClass[] = [];
       snap.forEach((d) => list.push(d.data() as SchoolClass));
-      setClasses(list);
-      if (list.length > 0) {
-        if (!list.some((c) => c.id === selectedClassId)) {
-          setSelectedClassId(list[0].id);
-        }
-      } else {
-        setSelectedClassId('');
-      }
+      setAllClasses(list);
     });
     return () => unsub();
-  }, [selectedClassId]);
+  }, []);
+
+  // Batch-scoped classes & keep selectedClassId valid for activeBatchId
+  const classes = useMemo(
+    () => allClasses.filter((c) => isInBatch(c.batchId, activeBatchId)),
+    [allClasses, activeBatchId]
+  );
+
+  useEffect(() => {
+    if (classes.length > 0) {
+      if (!classes.some((c) => c.id === selectedClassId)) {
+        setSelectedClassId(classes[0].id);
+      }
+    } else if (selectedClassId !== '') {
+      setSelectedClassId('');
+    }
+  }, [classes, selectedClassId]);
 
   // Real-time listener for scheduled classes occurring in calendar & attendance
   useEffect(() => {
@@ -106,22 +126,28 @@ export const AttendancePage: React.FC = () => {
       const list: ScheduledClass[] = [];
       snap.forEach((d) => list.push(d.data() as ScheduledClass));
       list.sort((a, b) => (a.timeSlot || '').localeCompare(b.timeSlot || ''));
-      setScheduledClasses(list);
+      setAllScheduledClasses(list);
     });
     return () => unsub();
   }, []);
 
-  // Real-time listener for dismissed default sessions per date
+  const scheduledClasses = useMemo(
+    () => allScheduledClasses.filter((sc) => isInBatch(sc.batchId, activeBatchId)),
+    [allScheduledClasses, activeBatchId]
+  );
+
+  // Real-time listener for dismissed default sessions per date & batch
   useEffect(() => {
     const unsub = onSnapshot(collection(db, 'scheduledClassOverrides'), (snap) => {
       const map: Record<string, string[]> = {};
       snap.forEach((d) => {
-        const data = d.data() as { date?: string; dismissedDefaultIds?: string[] };
+        const data = d.data() as { date?: string; batchId?: string; dismissedDefaultIds?: string[] };
         if (data?.date && Array.isArray(data.dismissedDefaultIds)) {
-          map[data.date] = data.dismissedDefaultIds;
+          const key = `${resolveItemBatchId(data.batchId)}__${data.date}`;
+          map[key] = data.dismissedDefaultIds;
         }
       });
-      setDismissedDefaultsByDate(map);
+      setDismissedDefaultsMap(map);
     });
     return () => unsub();
   }, []);
@@ -142,22 +168,7 @@ export const AttendancePage: React.FC = () => {
         });
 
         list.sort((a, b) => (a.indexNumber || '').localeCompare(b.indexNumber || ''));
-        setStudents(list);
-
-        // Sync register cleanly with active real students only
-        setRegister((prev) => {
-          const validIds = new Set(list.map((s) => s.id));
-          const updated: Record<string, AttendanceStatus> = {};
-          Object.entries(prev).forEach(([key, val]) => {
-            if (validIds.has(key)) updated[key] = val;
-          });
-          list.forEach((s) => {
-            if (!updated[s.id]) {
-              updated[s.id] = 'present';
-            }
-          });
-          return updated;
-        });
+        setAllStudents(list);
         setLoading(false);
       },
       (error) => {
@@ -167,6 +178,28 @@ export const AttendancePage: React.FC = () => {
     );
     return () => unsub();
   }, []);
+
+  const students = useMemo(
+    () => allStudents.filter((s) => isInBatch(s.batchId, activeBatchId)),
+    [allStudents, activeBatchId]
+  );
+
+  // Keep register keys synced to active batch's roster students
+  useEffect(() => {
+    setRegister((prev) => {
+      const validIds = new Set(students.map((s) => s.id));
+      const updated: Record<string, AttendanceStatus> = {};
+      Object.entries(prev).forEach(([key, val]) => {
+        if (validIds.has(key)) updated[key] = val;
+      });
+      students.forEach((s) => {
+        if (!updated[s.id]) {
+          updated[s.id] = 'present';
+        }
+      });
+      return updated;
+    });
+  }, [students]);
 
   // Real-time listener for per-date Attendance ON/OFF controls
   useEffect(() => {
@@ -178,7 +211,7 @@ export const AttendancePage: React.FC = () => {
           const data = d.data() as AttendanceDayControl;
           const dateKey = data.date || d.id;
           if (dateKey) {
-            map[dateKey] = { ...data, id: d.id, date: dateKey };
+            map[d.id] = { ...data, id: d.id, date: dateKey };
           }
         });
         setDayControlsMap(map);
@@ -198,19 +231,32 @@ export const AttendancePage: React.FC = () => {
         const rec = d.data() as AttendanceRecord;
         list.push({ ...rec, id: rec.id || d.id });
       });
-      setAttendanceRecords(list);
+      setAllAttendanceRecords(list);
     });
     return () => unsub();
   }, []);
 
-  // Sync register whenever selectedClassId, selectedDate, selectedSessionId, attendanceRecords, or students change
+  const attendanceRecords = useMemo(
+    () => allAttendanceRecords.filter((r) => isInBatch(r.batchId, activeBatchId)),
+    [allAttendanceRecords, activeBatchId]
+  );
+
+  // Sync register whenever selectedClassId, selectedDate, selectedSessionId, activeBatchId, attendanceRecords, or students change
   useEffect(() => {
-    const targetRecordId = buildAttendanceRecordId(selectedDate, selectedClassId || 'general', selectedSessionId);
+    const targetRecordId = buildAttendanceRecordId(
+      selectedDate,
+      selectedClassId || 'general',
+      selectedSessionId,
+      activeBatchId
+    );
     const existing =
       attendanceRecords.find((r) => r.id === targetRecordId) ||
       (selectedSessionId === 'daily'
         ? attendanceRecords.find(
-            (r) => r.classId === selectedClassId && r.date === selectedDate && (!r.sessionId || r.sessionId === 'daily')
+            (r) =>
+              r.classId === (selectedClassId || 'general') &&
+              r.date === selectedDate &&
+              (!r.sessionId || r.sessionId === 'daily')
           )
         : undefined);
 
@@ -226,31 +272,43 @@ export const AttendancePage: React.FC = () => {
         fresh[s.id] = 'present';
       });
       setRegister(fresh);
+    } else {
+      setRegister({});
     }
-  }, [selectedClassId, selectedDate, selectedSessionId, attendanceRecords, students]);
+  }, [selectedClassId, selectedDate, selectedSessionId, activeBatchId, attendanceRecords, students]);
+
+  // Keep the 1-month PDF selector synced when changing session date to a different month
+  useEffect(() => {
+    if (selectedDate && selectedDate.length >= 7) {
+      setExportMonth(selectedDate.slice(0, 7));
+    }
+  }, [selectedDate]);
 
   // Attendance can ONLY be marked/toggled by teacher or admin
   const isTeacherOrAdmin = activeRole === 'teacher' || activeRole === 'admin';
-  const isDayAttendanceEnabled = isAttendanceDateEnabled(selectedDate, dayControlsMap);
-  const currentDayControl = dayControlsMap[selectedDate];
+  const isDayAttendanceEnabled = isAttendanceDateEnabled(selectedDate, dayControlsMap, writeBatchId);
+  const currentDayControl = resolveDayControlForDate(selectedDate, dayControlsMap, writeBatchId);
 
   const handleSetDayAttendance = async (nextEnabled: boolean) => {
     if (!isTeacherOrAdmin || togglingDay) return;
     setTogglingDay(true);
     try {
+      const controlDocId = buildAttendanceDayControlId(selectedDate, writeBatchId);
       const payload: AttendanceDayControl = {
-        id: selectedDate,
+        id: controlDocId,
+        batchId: writeBatchId,
+        batchName: writeBatchName,
         date: selectedDate,
         enabled: nextEnabled,
         updatedBy: userProfile?.userId || 'faculty',
         updatedByName: userProfile?.fullName || 'Faculty Lead',
         updatedAt: new Date().toISOString(),
       };
-      await setDoc(doc(db, 'attendanceDaySettings', selectedDate), sanitizeFirestoreDoc(payload));
+      await setDoc(doc(db, 'attendanceDaySettings', controlDocId), sanitizeFirestoreDoc(payload));
       setStatusNotice(
         nextEnabled
-          ? `Attendance marking turned ON for ${selectedDate}. Teachers can now mark attendance across multiple classes today, and saved records sync with dashboards.`
-          : `Attendance marking turned OFF for ${selectedDate}. No attendance is needed today and this date will not sync with Student & Teacher attendance graphs.`
+          ? `Attendance marking turned ON for ${selectedDate} (${writeBatchName}). Teachers can now mark attendance and saved records sync with dashboards.`
+          : `Attendance marking turned OFF for ${selectedDate} (${writeBatchName}). No attendance is needed today and this date will not sync with Student & Teacher attendance graphs.`
       );
       setTimeout(() => setStatusNotice(null), 4500);
     } catch (err) {
@@ -285,9 +343,16 @@ export const AttendancePage: React.FC = () => {
           : undefined;
 
       const effectiveClassId = selectedClassId || 'general';
-      const recordId = buildAttendanceRecordId(selectedDate, effectiveClassId, selectedSessionId);
+      const recordId = buildAttendanceRecordId(
+        selectedDate,
+        effectiveClassId,
+        selectedSessionId,
+        writeBatchId
+      );
       const record: AttendanceRecord = sanitizeFirestoreDoc({
         id: recordId,
+        batchId: writeBatchId,
+        batchName: writeBatchName,
         classId: effectiveClassId,
         date: selectedDate,
         sessionId: selectedSessionId !== 'daily' ? selectedSessionId : undefined,
@@ -313,7 +378,7 @@ export const AttendancePage: React.FC = () => {
       setStatusNotice(
         `Saved attendance for ${
           activeSessionObj ? `${activeSessionObj.subject} (${activeSessionObj.timeSlot})` : 'Daily Roll-Call'
-        } on ${selectedDate}.`
+        } (${writeBatchName}) on ${selectedDate}.`
       );
       setTimeout(() => {
         setSavedSuccess(false);
@@ -336,6 +401,8 @@ export const AttendancePage: React.FC = () => {
       fullName: name,
       indexNumber: index,
       stream: newStudentStream,
+      batchId: writeBatchId,
+      batchName: writeBatchName,
       classId: selectedClassId || 'general',
       createdAt: new Date().toISOString(),
     };
@@ -395,6 +462,8 @@ export const AttendancePage: React.FC = () => {
           fullName: name,
           indexNumber: index,
           stream: parsedStream,
+          batchId: writeBatchId,
+          batchName: writeBatchName,
           classId: selectedClassId || 'general',
           createdAt: new Date().toISOString(),
         };
@@ -465,8 +534,10 @@ export const AttendancePage: React.FC = () => {
     return [
       {
         id: `default-${dateStr}-maths`,
+        batchId: writeBatchId,
+        batchName: writeBatchName,
         classId: selectedClassId || 'general',
-        className: '2k28 Science EM',
+        className: writeBatchName,
         date: dateStr,
         timeSlot: '08:00 - 09:30',
         periodName: 'Period 1',
@@ -479,8 +550,10 @@ export const AttendancePage: React.FC = () => {
       },
       {
         id: `default-${dateStr}-physics`,
+        batchId: writeBatchId,
+        batchName: writeBatchName,
         classId: selectedClassId || 'general',
-        className: '2k28 Science EM',
+        className: writeBatchName,
         date: dateStr,
         timeSlot: '09:45 - 11:15',
         periodName: 'Period 2',
@@ -493,8 +566,10 @@ export const AttendancePage: React.FC = () => {
       },
       {
         id: `default-${dateStr}-chemistry`,
+        batchId: writeBatchId,
+        batchName: writeBatchName,
         classId: selectedClassId || 'general',
-        className: '2k28 Science EM',
+        className: writeBatchName,
         date: dateStr,
         timeSlot: '11:30 - 13:00',
         periodName: 'Period 3',
@@ -511,7 +586,7 @@ export const AttendancePage: React.FC = () => {
   // Get scheduled classes occurring on selected date (merging custom Firestore records + non-dismissed defaults)
   const getClassesForDate = (dateStr: string): ScheduledClass[] => {
     const directMatches = scheduledClasses.filter((sc) => sc.date === dateStr);
-    const dismissedIds = dismissedDefaultsByDate[dateStr] || [];
+    const dismissedIds = dismissedDefaultsMap[`${writeBatchId}__${dateStr}`] || [];
     const legacySessionOverride = directMatches.some((sc) => sc.id.startsWith('session-'));
     const activeDefaults = legacySessionOverride
       ? []
@@ -528,7 +603,7 @@ export const AttendancePage: React.FC = () => {
     if (!daySessions.some((s) => s.id === selectedSessionId)) {
       setSelectedSessionId('daily');
     }
-  }, [selectedDate, selectedSessionId, scheduledClasses, dismissedDefaultsByDate]);
+  }, [selectedDate, selectedSessionId, scheduledClasses, dismissedDefaultsMap, activeBatchId]);
 
   // Add new academic session on selectedDate (Teachers & Admins only)
   const handleCreateAcademicSession = async (e: React.FormEvent) => {
@@ -542,8 +617,10 @@ export const AttendancePage: React.FC = () => {
       const classSessionId = `class-session-${Date.now()}`;
       const newSession: ScheduledClass = {
         id: classSessionId,
+        batchId: writeBatchId,
+        batchName: writeBatchName,
         classId: selectedClassId || 'general',
-        className: '2k28 Science EM',
+        className: writeBatchName,
         date: selectedDate,
         timeSlot: trimmedTimeSlot,
         periodName: trimmedPeriod,
@@ -567,6 +644,8 @@ export const AttendancePage: React.FC = () => {
           startDate: selectedDate,
           time: trimmedTimeSlot.split(/[-–]/)[0]?.trim() || trimmedTimeSlot,
           type: 'academic',
+          batchId: writeBatchId,
+          batchName: writeBatchName,
           classId: selectedClassId || 'general',
           location: newSession.room,
           createdBy: userProfile?.userId || 'faculty',
@@ -578,7 +657,7 @@ export const AttendancePage: React.FC = () => {
       setShowAddSessionModal(false);
       setNewSessionTopic('');
       setSelectedSessionId(classSessionId);
-      setStatusNotice(`Added academic session "${newSession.subject}" (${newSession.periodName} • ${newSession.timeSlot}) on ${selectedDate}. You can now mark attendance for it separately.`);
+      setStatusNotice(`Added academic session "${newSession.subject}" (${newSession.periodName} • ${newSession.timeSlot}) on ${selectedDate} for ${writeBatchName}.`);
       setTimeout(() => setStatusNotice(null), 4000);
     } catch (err) {
       console.error('Failed to add academic session:', err);
@@ -595,23 +674,27 @@ export const AttendancePage: React.FC = () => {
 
     try {
       if (target.id.startsWith('default-')) {
-        const currentDismissed = dismissedDefaultsByDate[selectedDate] || [];
+        const overrideKey = `${writeBatchId}__${selectedDate}`;
+        const overrideDocId = writeBatchId === DEFAULT_BATCH_ID ? selectedDate : overrideKey;
+        const currentDismissed = dismissedDefaultsMap[overrideKey] || [];
         const updatedDismissed = Array.from(new Set([...currentDismissed, target.id]));
-        setDismissedDefaultsByDate((prev) => ({
+        setDismissedDefaultsMap((prev) => ({
           ...prev,
-          [selectedDate]: updatedDismissed,
+          [overrideKey]: updatedDismissed,
         }));
         await setDoc(
-          doc(db, 'scheduledClassOverrides', selectedDate),
-          {
+          doc(db, 'scheduledClassOverrides', overrideDocId),
+          sanitizeFirestoreDoc({
             date: selectedDate,
+            batchId: writeBatchId,
+            batchName: writeBatchName,
             dismissedDefaultIds: updatedDismissed,
             updatedAt: new Date().toISOString(),
-          },
+          }),
           { merge: true }
         );
       } else {
-        setScheduledClasses((prev) => prev.filter((sc) => sc.id !== target.id));
+        setAllScheduledClasses((prev) => prev.filter((sc) => sc.id !== target.id));
         await deleteDoc(doc(db, 'scheduledClasses', target.id));
         await deleteDoc(doc(db, 'schoolEvents', `ev-class-${target.id}`)).catch(() => {});
       }
@@ -628,7 +711,7 @@ export const AttendancePage: React.FC = () => {
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(18);
     doc.setTextColor(15, 23, 42);
-    doc.text('ZAHIRA COLLEGE MAWANELLA • 2K28 SCIENCE EM', 20, 22);
+    doc.text(`ZAHIRA COLLEGE MAWANELLA • ${activeBatchName.toUpperCase()}`, 20, 22);
 
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(10);
@@ -642,7 +725,7 @@ export const AttendancePage: React.FC = () => {
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(11);
     doc.setTextColor(15, 23, 42);
-    doc.text(`Class: 2k28 Science EM`, 20, 46);
+    doc.text(`Batch: ${activeBatchName}`, 20, 46);
     doc.text(`Roll-Call Date: ${selectedDate}`, 20, 52);
     doc.text(`Supervisor: ZNC Science Project management`, 115, 46);
     doc.text(`Total Enrolled: ${students.length}`, 115, 52);
@@ -713,7 +796,7 @@ export const AttendancePage: React.FC = () => {
       const blobUrl = URL.createObjectURL(blob);
       setPreviewData({
         title: `Official Daily Attendance Register: ${selectedDate}`,
-        subtitle: 'Zahira College Mawanella • 2k28 Science English Medium',
+        subtitle: `Zahira College Mawanella • ${activeBatchName}`,
         category: 'Attendance Register',
         filename: `Zahira_College_Mawanella_Attendance_${selectedDate}.pdf`,
         blobUrl,
@@ -729,11 +812,12 @@ export const AttendancePage: React.FC = () => {
   const handleExportExcel = () => {
     try {
       const activeClass = classes.find((c) => c.id === selectedClassId);
-      const className = activeClass ? activeClass.name : '2k28 Science EM';
+      const className = activeClass ? activeClass.name : activeBatchName;
 
       let csv = '\uFEFF'; // UTF-8 BOM for Microsoft Excel compatibility
       csv += 'ZAHIRA COLLEGE MAWANELLA • OFFICIAL STUDENT ATTENDANCE REGISTER\n';
-      csv += `Academic Cohort:,"${className} (G.C.E. Advanced Level 2028)"\n`;
+      csv += `Academic Batch:,"${activeBatchName}"\n`;
+      csv += `Academic Cohort:,"${className}"\n`;
       csv += `Roll-Call Session Date:,"${selectedDate}"\n`;
       csv += `Supervisor:,"ZNC Science Project management"\n`;
       csv += `Total Enrolled Scholars:,${totalStudents}\n`;
@@ -745,7 +829,12 @@ export const AttendancePage: React.FC = () => {
 
       csv += 'Index / Scholar ID,Scholar Full Name,Email / Reference,Academic Stream,Certified Status,Session Date,Supervisor,Verification Method\n';
 
-      const currentRecordId = buildAttendanceRecordId(selectedDate, selectedClassId || 'general', selectedSessionId);
+      const currentRecordId = buildAttendanceRecordId(
+        selectedDate,
+        selectedClassId || 'general',
+        selectedSessionId,
+        activeBatchId
+      );
       const currentRecord = attendanceRecords.find((r) => r.id === currentRecordId);
 
       students.forEach((st) => {
@@ -759,7 +848,7 @@ export const AttendancePage: React.FC = () => {
         const escape = (val: string) => `"${(val || '').replace(/"/g, '""')}"`;
 
         const streamLabel =
-          st.stream === 'bio' ? 'Bio Stream' : st.stream === 'physical' ? 'Physical Stream' : '2k28 Science EM';
+          st.stream === 'bio' ? 'Bio Stream' : st.stream === 'physical' ? 'Physical Stream' : activeBatchName;
 
         csv += `${escape(indexOrId)},${escape(st.fullName)},${escape(st.indexNumber)},${escape(
           streamLabel
@@ -772,7 +861,7 @@ export const AttendancePage: React.FC = () => {
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.setAttribute('download', `Zahira_College_Attendance_${selectedDate}_${selectedClassId}.csv`);
+      link.setAttribute('download', `Zahira_College_Attendance_${selectedDate}_${selectedClassId || activeBatchId}.csv`);
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -790,9 +879,9 @@ export const AttendancePage: React.FC = () => {
       const monthDateObj = new Date(`${currentYearMonth}-01T00:00:00`);
       const monthName = monthDateObj.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
 
-      // Filter attendance records belonging to this month and class
+      // Filter attendance records belonging to this month and class (within active batch)
       const monthRecords = attendanceRecords.filter((r) => {
-        const matchesClass = !r.classId || r.classId === selectedClassId;
+        const matchesClass = !r.classId || !selectedClassId || r.classId === selectedClassId || r.classId === 'general';
         const matchesMonth = r.date ? r.date.startsWith(currentYearMonth) : true;
         return matchesClass && matchesMonth;
       });
@@ -803,7 +892,7 @@ export const AttendancePage: React.FC = () => {
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(16);
       doc.setTextColor(15, 23, 42);
-      doc.text('ZAHIRA COLLEGE MAWANELLA • 2K28 SCIENCE EM', 20, 20);
+      doc.text(`ZAHIRA COLLEGE MAWANELLA • ${activeBatchName.toUpperCase()}`, 20, 20);
 
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(9);
@@ -828,7 +917,7 @@ export const AttendancePage: React.FC = () => {
       doc.setFontSize(9.5);
       doc.setTextColor(15, 23, 42);
       doc.text(`Evaluation Period: ${monthName}`, 20, 56);
-      doc.text(`Target Class: 2k28 Science EM`, 20, 62);
+      doc.text(`Target Batch: ${activeBatchName}`, 20, 62);
       doc.text(`Sessions Evaluated: ${totalRecordedSessions}`, 115, 56);
       doc.text(`Supervisor: ZNC Science Project management`, 115, 62);
 
@@ -936,16 +1025,422 @@ export const AttendancePage: React.FC = () => {
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(7.5);
       doc.setTextColor(148, 163, 184);
-      doc.text(
-        'CONFIDENTIAL: Prepared exclusively by ZNC Science Project management for Internal Staff Records.',
-        20,
-        y + 18
-      );
+      doc.text('CONFIDENTIAL: Prepared exclusively by Zahira College Mawanella Science Project EM for Internal Staff Records.', 20, y + 18);
 
       // Notice: No watermark added anywhere in the document!
       doc.save(`Zahira_College_Monthly_Attendance_Summary_InternalStaff_${currentYearMonth}.pdf`);
     } catch (e) {
       console.error('Monthly PDF generation error:', e);
+    }
+  };
+
+  // Generate Single-PDF Complete 1-Month Daily Matrix Attendance Register (Landscape A4)
+  const generateFullMonthAttendanceDoc = (targetYearMonth: string): jsPDF => {
+    const safeYearMonth = /^\d{4}-\d{2}$/.test(targetYearMonth)
+      ? targetYearMonth
+      : selectedDate.slice(0, 7);
+    const [yrStr, moStr] = safeYearMonth.split('-');
+    const yearNum = Number(yrStr);
+    const monthNum = Number(moStr);
+    const daysInMonth = new Date(yearNum, monthNum, 0).getDate();
+    const monthLabel = new Date(yearNum, monthNum - 1, 1).toLocaleDateString('en-US', {
+      month: 'long',
+      year: 'numeric',
+    });
+
+    const activeClass = classes.find((c) => c.id === selectedClassId);
+    const cohortLabel = activeClass ? `${activeClass.name} (${activeClass.grade})` : activeBatchName;
+
+    // Filter strictly active (ON day) records in the target month & batch
+    const monthActiveRecords = attendanceRecords.filter((rec) => {
+      if (!rec.date || !rec.date.startsWith(`${safeYearMonth}-`)) return false;
+      const matchesClass =
+        !rec.classId || !selectedClassId || rec.classId === selectedClassId || rec.classId === 'general';
+      if (!matchesClass) return false;
+      return isAttendanceRecordActive(rec, dayControlsMap, undefined, activeBatchId);
+    });
+
+    const recordsByDate = new Map<string, AttendanceRecord[]>();
+    monthActiveRecords.forEach((rec) => {
+      const list = recordsByDate.get(rec.date) || [];
+      list.push(rec);
+      recordsByDate.set(rec.date, list);
+    });
+
+    const dayEnabledFlags: boolean[] = [];
+    let activeDaysWithLogs = 0;
+    for (let day = 1; day <= daysInMonth; day++) {
+      const dateStr = `${safeYearMonth}-${String(day).padStart(2, '0')}`;
+      const enabled = isAttendanceDateEnabled(dateStr, dayControlsMap, activeBatchId);
+      dayEnabledFlags.push(enabled);
+      if (enabled && (recordsByDate.get(dateStr)?.length || 0) > 0) {
+        activeDaysWithLogs++;
+      }
+    }
+
+    const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+    const pageWidth = 297;
+    const marginX = 10;
+    const usableWidth = pageWidth - marginX * 2; // 277mm
+
+    const colNumW = 7;
+    const colIndexW = 20;
+    const colNameW = 46;
+    const colStreamW = 13;
+    const colSumPW = 9;
+    const colSumLW = 9;
+    const colSumAW = 9;
+    const colRateW = 14;
+    const fixedWidth = colNumW + colIndexW + colNameW + colStreamW + colSumPW + colSumLW + colSumAW + colRateW; // 127mm
+    const daysTotalWidth = usableWidth - fixedWidth; // 150mm
+    const dayColW = daysTotalWidth / daysInMonth;
+
+    const drawHeader = (isContinuation: boolean) => {
+      doc.setFillColor(15, 23, 42);
+      doc.rect(marginX, 10, usableWidth, isContinuation ? 13 : 20, 'F');
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(isContinuation ? 11 : 14);
+      doc.setTextColor(255, 255, 255);
+      doc.text(
+        `ZAHIRA COLLEGE MAWANELLA SCIENCE PROJECT EM • 1-MONTH ATTENDANCE REGISTER`,
+        marginX + 4,
+        isContinuation ? 18 : 17.5
+      );
+
+      if (!isContinuation) {
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(8.5);
+        doc.setTextColor(203, 213, 225);
+        doc.text(
+          `Month: ${monthLabel}   |   Batch: ${activeBatchName}   |   Cohort: ${cohortLabel}   |   Enrolled Scholars: ${students.length}`,
+          marginX + 4,
+          24.5
+        );
+
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(7.5);
+        doc.setTextColor(71, 85, 105);
+        doc.text(
+          `Active Days Logged: ${activeDaysWithLogs} day(s)   •   Saved Sessions: ${monthActiveRecords.length}   •   Generated: ${new Date().toLocaleString()}`,
+          marginX,
+          35.5
+        );
+
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(30, 41, 59);
+        doc.text(
+          'Legend:  P = Present   L = Late   A = Absent   E = Excused   M = Mixed Sessions   - = No Session   X = Day OFF',
+          marginX,
+          40.5
+        );
+      }
+    };
+
+    const drawTableHeader = (yPos: number): number => {
+      const hdrH = 7.5;
+      doc.setFillColor(226, 232, 240);
+      doc.rect(marginX, yPos, usableWidth, hdrH, 'F');
+      doc.setDrawColor(148, 163, 184);
+      doc.rect(marginX, yPos, usableWidth, hdrH);
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(7);
+      doc.setTextColor(30, 41, 59);
+
+      let x = marginX;
+      doc.text('#', x + 2, yPos + 5);
+      x += colNumW;
+      doc.line(x, yPos, x, yPos + hdrH);
+
+      doc.text('INDEX', x + 2, yPos + 5);
+      x += colIndexW;
+      doc.line(x, yPos, x, yPos + hdrH);
+
+      doc.text('STUDENT NAME', x + 2, yPos + 5);
+      x += colNameW;
+      doc.line(x, yPos, x, yPos + hdrH);
+
+      doc.text('STRM', x + 2, yPos + 5);
+      x += colStreamW;
+      doc.line(x, yPos, x, yPos + hdrH);
+
+      doc.setFontSize(6.5);
+      for (let d = 1; d <= daysInMonth; d++) {
+        if (!dayEnabledFlags[d - 1]) {
+          doc.setFillColor(241, 245, 249);
+          doc.rect(x, yPos, dayColW, hdrH, 'F');
+        }
+        doc.line(x, yPos, x, yPos + hdrH);
+        doc.setTextColor(dayEnabledFlags[d - 1] ? 30 : 148, dayEnabledFlags[d - 1] ? 41 : 163, dayEnabledFlags[d - 1] ? 59 : 184);
+        doc.text(String(d), x + dayColW / 2, yPos + 5, { align: 'center' });
+        x += dayColW;
+      }
+
+      doc.setFontSize(7);
+      doc.setTextColor(22, 101, 52);
+      doc.line(x, yPos, x, yPos + hdrH);
+      doc.text('P', x + colSumPW / 2, yPos + 5, { align: 'center' });
+      x += colSumPW;
+
+      doc.setTextColor(180, 83, 9);
+      doc.line(x, yPos, x, yPos + hdrH);
+      doc.text('L', x + colSumLW / 2, yPos + 5, { align: 'center' });
+      x += colSumLW;
+
+      doc.setTextColor(185, 28, 28);
+      doc.line(x, yPos, x, yPos + hdrH);
+      doc.text('A', x + colSumAW / 2, yPos + 5, { align: 'center' });
+      x += colSumAW;
+
+      doc.setTextColor(15, 23, 42);
+      doc.line(x, yPos, x, yPos + hdrH);
+      doc.text('RATE', x + colRateW / 2, yPos + 5, { align: 'center' });
+
+      return yPos + hdrH;
+    };
+
+    drawHeader(false);
+    let y = drawTableHeader(44);
+    const rowH = 5.8;
+
+    let cohortTotalPresent = 0;
+    let cohortTotalLate = 0;
+    let cohortTotalAbsent = 0;
+    let cohortTotalMarked = 0;
+
+    if (students.length === 0) {
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(9);
+      doc.setTextColor(100, 116, 139);
+      doc.text('No students registered in this batch roster yet.', marginX + 4, y + 8);
+      y += 14;
+    } else {
+      students.forEach((st, idx) => {
+        if (y + rowH > 188) {
+          doc.addPage('a4', 'landscape');
+          drawHeader(true);
+          y = drawTableHeader(26);
+        }
+
+        if (idx % 2 === 1) {
+          doc.setFillColor(248, 250, 252);
+          doc.rect(marginX, y, usableWidth, rowH, 'F');
+        }
+        doc.setDrawColor(226, 232, 240);
+        doc.rect(marginX, y, usableWidth, rowH);
+
+        let x = marginX;
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(6.8);
+        doc.setTextColor(100, 116, 139);
+        doc.text(String(idx + 1), x + 2, y + 4);
+        x += colNumW;
+        doc.line(x, y, x, y + rowH);
+
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(30, 58, 138);
+        doc.text((st.indexNumber || '—').slice(0, 12), x + 1.5, y + 4);
+        x += colIndexW;
+        doc.line(x, y, x, y + rowH);
+
+        doc.setFont('helvetica', 'bold');
+        doc.setTextColor(15, 23, 42);
+        const rawName = st.fullName || 'Student';
+        const displayName = rawName.length > 26 ? `${rawName.slice(0, 25)}…` : rawName;
+        doc.text(displayName, x + 1.5, y + 4);
+        x += colNameW;
+        doc.line(x, y, x, y + rowH);
+
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(6.5);
+        doc.setTextColor(71, 85, 105);
+        const streamShort = st.stream === 'bio' ? 'Bio' : st.stream === 'physical' ? 'Phys' : '—';
+        doc.text(streamShort, x + 2, y + 4);
+        x += colStreamW;
+        doc.line(x, y, x, y + rowH);
+
+        let pCount = 0;
+        let lCount = 0;
+        let aCount = 0;
+        let eCount = 0;
+
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(6.5);
+
+        for (let day = 1; day <= daysInMonth; day++) {
+          const dateStr = `${safeYearMonth}-${String(day).padStart(2, '0')}`;
+          const enabled = dayEnabledFlags[day - 1];
+          const recs = enabled ? recordsByDate.get(dateStr) || [] : [];
+
+          let code = '-';
+          let color: [number, number, number] = [148, 163, 184];
+
+          if (!enabled) {
+            code = 'X';
+            color = [148, 163, 184];
+            doc.setFillColor(241, 245, 249);
+            doc.rect(x, y, dayColW, rowH, 'F');
+          } else if (recs.length > 0) {
+            const dayStatuses: AttendanceStatus[] = [];
+            recs.forEach((rec) => {
+              const validMap = getValidAttendanceRecordsMap(rec);
+              const found = validMap[st.id];
+              if (found) dayStatuses.push(found);
+            });
+
+            if (dayStatuses.length > 0) {
+              dayStatuses.forEach((s) => {
+                if (s === 'present') pCount++;
+                else if (s === 'late') lCount++;
+                else if (s === 'absent') aCount++;
+                else if (s === 'excused') eCount++;
+              });
+
+              const unique = Array.from(new Set(dayStatuses));
+              if (unique.length === 1) {
+                if (unique[0] === 'present') {
+                  code = 'P';
+                  color = [22, 101, 52];
+                } else if (unique[0] === 'late') {
+                  code = 'L';
+                  color = [180, 83, 9];
+                } else if (unique[0] === 'absent') {
+                  code = 'A';
+                  color = [185, 28, 28];
+                } else {
+                  code = 'E';
+                  color = [29, 78, 216];
+                }
+              } else {
+                code = 'M';
+                color = [109, 40, 217];
+              }
+            }
+          }
+
+          doc.setDrawColor(226, 232, 240);
+          doc.line(x, y, x, y + rowH);
+          doc.setTextColor(color[0], color[1], color[2]);
+          doc.text(code, x + dayColW / 2, y + 4, { align: 'center' });
+          x += dayColW;
+        }
+
+        const totalMarked = pCount + lCount + aCount + eCount;
+        const rate =
+          totalMarked > 0
+            ? Math.round(((pCount + eCount + lCount * 0.5) / totalMarked) * 100)
+            : null;
+
+        cohortTotalPresent += pCount + eCount;
+        cohortTotalLate += lCount;
+        cohortTotalAbsent += aCount;
+        cohortTotalMarked += totalMarked;
+
+        doc.setFontSize(7);
+        doc.setDrawColor(226, 232, 240);
+
+        doc.line(x, y, x, y + rowH);
+        doc.setTextColor(22, 101, 52);
+        doc.text(String(pCount), x + colSumPW / 2, y + 4, { align: 'center' });
+        x += colSumPW;
+
+        doc.line(x, y, x, y + rowH);
+        doc.setTextColor(180, 83, 9);
+        doc.text(String(lCount), x + colSumLW / 2, y + 4, { align: 'center' });
+        x += colSumLW;
+
+        doc.line(x, y, x, y + rowH);
+        doc.setTextColor(185, 28, 28);
+        doc.text(String(aCount), x + colSumAW / 2, y + 4, { align: 'center' });
+        x += colSumAW;
+
+        doc.line(x, y, x, y + rowH);
+        if (rate === null) {
+          doc.setTextColor(148, 163, 184);
+          doc.text('—', x + colRateW / 2, y + 4, { align: 'center' });
+        } else {
+          if (rate >= 85) doc.setTextColor(22, 101, 52);
+          else if (rate >= 75) doc.setTextColor(29, 78, 216);
+          else doc.setTextColor(185, 28, 28);
+          doc.text(`${rate}%`, x + colRateW / 2, y + 4, { align: 'center' });
+        }
+
+        y += rowH;
+      });
+    }
+
+    // Monthly Cohort Summary Footer Strip
+    if (y + 14 > 195) {
+      doc.addPage('a4', 'landscape');
+      drawHeader(true);
+      y = 30;
+    }
+
+    const overallRate =
+      cohortTotalMarked > 0
+        ? `${Math.round(((cohortTotalPresent + cohortTotalLate * 0.5) / cohortTotalMarked) * 100)}%`
+        : 'No Sessions Recorded';
+
+    doc.setFillColor(241, 245, 249);
+    doc.roundedRect(marginX, y + 3, usableWidth, 9, 1.5, 1.5, 'F');
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(8);
+    doc.setTextColor(15, 23, 42);
+    doc.text(
+      `MONTHLY SUMMARY (${monthLabel.toUpperCase()}):   Present/Excused Entries: ${cohortTotalPresent}   |   Late: ${cohortTotalLate}   |   Absent: ${cohortTotalAbsent}   |   Cohort Attendance Rate: ${overallRate}`,
+      marginX + 4,
+      y + 9
+    );
+
+    const totalPages = doc.getNumberOfPages();
+    for (let page = 1; page <= totalPages; page++) {
+      doc.setPage(page);
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(7.5);
+      doc.setTextColor(100, 116, 139);
+      doc.text(
+        `Certified by Zahira College Mawanella Science Project EM • Single-Month Complete Attendance PDF`,
+        marginX,
+        203
+      );
+      doc.text(`Page ${page} of ${totalPages}`, pageWidth - marginX, 203, { align: 'right' });
+    }
+
+    return doc;
+  };
+
+  // Download Single-PDF 1-Month Attendance Register
+  const handleExportFullMonthPDF = () => {
+    try {
+      const targetMonth = exportMonth || selectedDate.slice(0, 7);
+      const doc = generateFullMonthAttendanceDoc(targetMonth);
+      doc.save(`Zahira_College_Monthly_Attendance_Register_${targetMonth}_${activeBatchId}.pdf`);
+      setStatusNotice(`Exported complete 1-month attendance register PDF for ${targetMonth} (${activeBatchName}).`);
+      setTimeout(() => setStatusNotice(null), 4000);
+    } catch (e) {
+      console.error('Full-month PDF export error:', e);
+    }
+  };
+
+  // Preview Single-PDF 1-Month Attendance Register inside PDFPreviewModal
+  const handlePreviewFullMonthPDF = () => {
+    try {
+      const targetMonth = exportMonth || selectedDate.slice(0, 7);
+      const doc = generateFullMonthAttendanceDoc(targetMonth);
+      const blob = doc.output('blob');
+      const blobUrl = URL.createObjectURL(blob);
+      setPreviewData({
+        title: `Complete 1-Month Attendance Register (${targetMonth})`,
+        subtitle: `Zahira College Mawanella Science Project EM • ${activeBatchName}`,
+        category: 'Monthly Attendance PDF',
+        filename: `Zahira_College_Monthly_Attendance_Register_${targetMonth}_${activeBatchId}.pdf`,
+        blobUrl,
+        blob,
+      });
+      setIsPreviewOpen(true);
+    } catch (e) {
+      console.error('Full-month PDF preview error:', e);
     }
   };
 
@@ -967,7 +1462,7 @@ export const AttendancePage: React.FC = () => {
   const candidateIds = Array.from(new Set([userProfile?.userId, ...studentMatchingRosterIds].filter(Boolean) as string[]));
   const studentRecordedSessions = attendanceRecords.filter(
     (rec) =>
-      isAttendanceRecordActive(rec, dayControlsMap) &&
+      isAttendanceRecordActive(rec, dayControlsMap, undefined, activeBatchId) &&
       candidateIds.some((cid) => rec.records && rec.records[cid] !== undefined)
   );
   const studentPresentSessions = studentRecordedSessions.filter((rec) =>
@@ -985,7 +1480,12 @@ export const AttendancePage: React.FC = () => {
   const classesToday = getClassesForDate(selectedDate);
   const activeSessionObj =
     selectedSessionId !== 'daily' ? classesToday.find((c) => c.id === selectedSessionId) : undefined;
-  const activeRecordId = buildAttendanceRecordId(selectedDate, selectedClassId || 'general', selectedSessionId);
+  const activeRecordId = buildAttendanceRecordId(
+    selectedDate,
+    selectedClassId || 'general',
+    selectedSessionId,
+    activeBatchId
+  );
   const savedSessionsCountToday = attendanceRecords.filter(
     (r) => r.date === selectedDate && Object.keys(r.records || {}).length > 0
   ).length;
@@ -1003,19 +1503,42 @@ export const AttendancePage: React.FC = () => {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <div className="flex flex-wrap items-center gap-2">
-            <h2 className="font-serif text-2xl font-bold tracking-tight text-slate-900">
+            <h2 className="font-serif text-2xl font-bold tracking-tight text-slate-900 dark:text-white">
               Official Attendance Register
             </h2>
             <span className="rounded-full bg-blue-100 text-blue-700 px-3 py-0.5 text-[11px] font-bold border border-blue-200">
-              Zahira College Mawanella
+              {activeBatchName}
             </span>
           </div>
           <p className="text-xs text-slate-500 mt-1">
-            2k28 Science English Medium • Supervisor: <strong className="text-slate-700">ZNC Science Project management</strong>
+            Zahira College Mawanella • Batch-isolated register for <strong className="text-slate-700 dark:text-slate-200">{activeBatchName}</strong>
           </p>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          {!isBatchLocked ? (
+            <div className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-1.5 shadow-2xs">
+              <Layers className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400 shrink-0" />
+              <select
+                value={activeBatchId}
+                onChange={(e) => setActiveBatchId(e.target.value)}
+                aria-label="Filter attendance by academic batch"
+                className="bg-transparent text-xs font-bold text-slate-800 dark:text-slate-100 focus:outline-none"
+              >
+                {batches.map((b) => (
+                  <option key={b.id} value={b.id}>
+                    {b.name}
+                  </option>
+                ))}
+                <option value={ALL_BATCHES_ID}>All Batches ({batches.length})</option>
+              </select>
+            </div>
+          ) : (
+            <div className="inline-flex items-center gap-1.5 rounded-xl border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/30 px-3 py-1.5 text-xs font-bold text-blue-800 dark:text-blue-200">
+              <Layers className="w-3.5 h-3.5" />
+              <span>Batch: {activeBatchName}</span>
+            </div>
+          )}
           {/* Export & Preview Options for School Record-Keeping */}
           <button
             onClick={handlePreviewDailyPDF}
@@ -1033,6 +1556,15 @@ export const AttendancePage: React.FC = () => {
           >
             <FileText className="w-3.5 h-3.5 text-blue-700" />
             <span>Export PDF</span>
+          </button>
+
+          <button
+            onClick={handleExportFullMonthPDF}
+            className="inline-flex items-center gap-1.5 rounded-xl border border-purple-200 bg-purple-50 hover:bg-purple-100 px-3.5 py-2 text-xs font-bold text-purple-900 transition-colors shadow-2xs"
+            title="Download full 1-month daily attendance matrix in a single landscape PDF"
+          >
+            <Download className="w-3.5 h-3.5 text-purple-700" />
+            <span>1-Month PDF Register</span>
           </button>
 
           <button
@@ -1104,7 +1636,7 @@ export const AttendancePage: React.FC = () => {
                   Parent / Guardian Attendance Monitoring Portal
                 </h3>
                 <p className="text-[11px] text-slate-500">
-                  {userProfile?.bio || 'Parent Portal • Zahira College 2k28 Science EM'}
+                  {userProfile?.bio || 'Parent Portal • Zahira College Mawanella Science Project EM'}
                 </p>
               </div>
             </div>
@@ -1161,7 +1693,7 @@ export const AttendancePage: React.FC = () => {
                   {userProfile?.fullName || 'Enrolled Student Scholar'}
                 </h3>
                 <p className="text-[11px] text-slate-500">
-                  Admission ID: {userProfile?.userId?.slice(0, 12)} • 2k28 Science EM Cohort
+                  Admission ID: {userProfile?.userId?.slice(0, 12)} • {activeBatchName} Cohort
                 </p>
               </div>
             </div>
@@ -1431,6 +1963,52 @@ export const AttendancePage: React.FC = () => {
             </div>
           </div>
         )}
+
+        {/* Single-PDF Complete 1-Month Attendance Export Strip (Right alongside Attendance Marking) */}
+        <div className="rounded-xl border border-indigo-200 dark:border-indigo-900/50 bg-indigo-50/50 dark:bg-indigo-950/20 px-3.5 py-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5">
+            <div className="p-1.5 rounded-lg bg-indigo-600 text-white shrink-0">
+              <FileText className="w-3.5 h-3.5" />
+            </div>
+            <div>
+              <p className="font-bold text-slate-900 dark:text-slate-100 text-xs">
+                Export Entire Month Attendance in a Single PDF
+              </p>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                Includes all enrolled scholars &amp; every day (1–31) of the chosen month for <strong className="text-slate-700 dark:text-slate-200">{activeBatchName}</strong>
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+              Month:
+            </label>
+            <input
+              type="month"
+              value={exportMonth}
+              onChange={(e) => setExportMonth(e.target.value)}
+              aria-label="Select month for single-PDF attendance export"
+              className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-2.5 py-1.5 text-xs font-bold text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/25"
+            />
+            <button
+              type="button"
+              onClick={handlePreviewFullMonthPDF}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-indigo-200 dark:border-indigo-700 bg-white dark:bg-slate-800 hover:bg-indigo-50 dark:hover:bg-slate-700 px-3 py-1.5 text-xs font-bold text-indigo-800 dark:text-indigo-200 transition-colors shadow-2xs"
+            >
+              <Eye className="w-3.5 h-3.5" />
+              <span>Preview Month PDF</span>
+            </button>
+            <button
+              type="button"
+              onClick={handleExportFullMonthPDF}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 px-3.5 py-1.5 text-xs font-bold text-white transition-colors shadow-xs"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>Export 1-Month PDF</span>
+            </button>
+          </div>
+        </div>
       </div>
 
       {/* Student QR Check-In Banner */}
@@ -1519,10 +2097,18 @@ export const AttendancePage: React.FC = () => {
         <div className="flex flex-wrap gap-2.5 pt-1">
           {/* General Daily Roll Call Card */}
           {(() => {
-            const dailyDocId = buildAttendanceRecordId(selectedDate, selectedClassId || 'general', 'daily');
+            const dailyDocId = buildAttendanceRecordId(
+              selectedDate,
+              selectedClassId || 'general',
+              'daily',
+              activeBatchId
+            );
             const isDailySaved = attendanceRecords.some(
               (r) =>
-                (r.id === dailyDocId || (r.date === selectedDate && r.classId === selectedClassId && !r.sessionId)) &&
+                (r.id === dailyDocId ||
+                  (r.date === selectedDate &&
+                    r.classId === (selectedClassId || 'general') &&
+                    !r.sessionId)) &&
                 Object.keys(r.records || {}).length > 0
             );
             const isSelected = selectedSessionId === 'daily';
@@ -1553,7 +2139,12 @@ export const AttendancePage: React.FC = () => {
           })()}
 
           {classesToday.map((cls) => {
-            const sessDocId = buildAttendanceRecordId(selectedDate, selectedClassId || 'general', cls.id);
+            const sessDocId = buildAttendanceRecordId(
+              selectedDate,
+              selectedClassId || 'general',
+              cls.id,
+              activeBatchId
+            );
             const isSessSaved = attendanceRecords.some(
               (r) => r.id === sessDocId && Object.keys(r.records || {}).length > 0
             );
@@ -1617,7 +2208,7 @@ export const AttendancePage: React.FC = () => {
                 Google Calendar • Schedule & Timetable (View Only)
               </h3>
               <p className="text-xs text-slate-500">
-                Official Zahira College 2k28 Science EM academic sessions, exams & holiday schedule
+                Official Zahira College Mawanella Science Project EM academic sessions, exams & holiday schedule
               </p>
             </div>
           </div>
@@ -1872,7 +2463,14 @@ export const AttendancePage: React.FC = () => {
                           ) : (
                             <div className="flex items-center gap-2 group">
                               <div>
-                                <p className="font-bold text-slate-900 dark:text-slate-100">{student.fullName}</p>
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  <p className="font-bold text-slate-900 dark:text-slate-100">{student.fullName}</p>
+                                  {activeBatchId === ALL_BATCHES_ID && (
+                                    <span className="rounded bg-blue-50 text-blue-700 border border-blue-200 px-1.5 py-0.5 text-[9px] font-bold">
+                                      {getBatchName(student.batchId)}
+                                    </span>
+                                  )}
+                                </div>
                                 <p className="text-[10px] text-slate-400">Index: {student.indexNumber} · {student.stream === 'bio' ? 'Bio Stream' : student.stream === 'physical' ? 'Physical Stream' : 'Stream Unassigned'}</p>
                               </div>
                               {isTeacherOrAdmin && (
@@ -2028,8 +2626,10 @@ export const AttendancePage: React.FC = () => {
       <QRAttendanceModal
         isOpen={showQrModal}
         onClose={() => setShowQrModal(false)}
+        batchId={writeBatchId}
+        batchName={writeBatchName}
         classId={selectedClassId}
-        className={classes.find((c) => c.id === selectedClassId)?.name || '2k28 Science EM'}
+        className={classes.find((c) => c.id === selectedClassId)?.name || writeBatchName}
         selectedDate={selectedDate}
         sessionId={selectedSessionId}
         sessionSubject={activeSessionObj?.subject}
