@@ -609,6 +609,57 @@
         "updatedAt": { "type": "string" }
       },
       "required": ["id", "batchId", "dayOfWeek", "periodLabel", "startTime", "endTime", "subject", "stream", "teacherName", "room", "createdBy"]
+    },
+    "admissionForm": {
+      "title": "Admission Form",
+      "description": "Official G.C.E. A/L Science Project admission PDF form uploaded by Teachers and Admin and synced to the public homepage",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "academicYear": { "type": "string" },
+        "batchName": { "type": "string" },
+        "deadline": { "type": "string" },
+        "instructions": { "type": "string" },
+        "fileName": { "type": "string" },
+        "fileUrl": { "type": "string" },
+        "fileSize": { "type": "string" },
+        "isActive": { "type": "boolean" },
+        "uploadedBy": { "type": "string" },
+        "uploadedByName": { "type": "string" },
+        "uploadedByRole": { "type": "string", "enum": ["admin", "teacher"] },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "title", "academicYear", "fileName", "fileUrl", "isActive", "uploadedBy"]
+    },
+    "yearlyResultReport": {
+      "title": "Yearly A/L Results Report",
+      "description": "Annual G.C.E. A/L Science Project PDF results and graph metrics managed by Teachers and Admin and displayed on the public homepage",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "examYear": { "type": "string" },
+        "title": { "type": "string" },
+        "summary": { "type": "string" },
+        "totalCandidates": { "type": "number" },
+        "universityQualifiedCount": { "type": "number" },
+        "universityPassRate": { "type": "number" },
+        "a3Count": { "type": "number" },
+        "physicalPassRate": { "type": "number" },
+        "bioPassRate": { "type": "number" },
+        "medicineCount": { "type": "number" },
+        "engineeringCount": { "type": "number" },
+        "pdfFileName": { "type": "string" },
+        "pdfFileUrl": { "type": "string" },
+        "pdfFileSize": { "type": "string" },
+        "updatedBy": { "type": "string" },
+        "updatedByName": { "type": "string" },
+        "updatedByRole": { "type": "string", "enum": ["admin", "teacher"] },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "examYear", "title", "totalCandidates", "universityQualifiedCount", "universityPassRate", "updatedBy"]
     }
   },
   "firestore": {
@@ -739,6 +790,14 @@
     "/timetableEntries/{entryId}": {
       "schema": { "$ref": "timetableEntry" },
       "description": "Batch-isolated weekly class timetable slots managed by Teachers and Admins"
+    },
+    "/admissionForms/{formId}": {
+      "schema": { "$ref": "admissionForm" },
+      "description": "Admission forms uploaded strictly by Teachers and Admins and synced to the public homepage"
+    },
+    "/yearlyResultsReports/{reportId}": {
+      "schema": { "$ref": "yearlyResultReport" },
+      "description": "Yearly G.C.E. A/L results PDF reports and graph statistics synced between Admin/Teacher panels and the public homepage"
     }
   }
 }
