@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { SiteConfigProvider } from './context/SiteConfigContext';
 import { ThemeProvider } from './context/ThemeContext';
@@ -35,6 +35,7 @@ import { AboutUsPage } from './pages/AboutUsPage';
 import { AuthModal } from './components/common/AuthModal';
 import { StudentAIChatWidget } from './components/common/StudentAIChatWidget';
 import { CursorEffect } from './components/common/CursorEffect';
+import { ZahiraHomePage } from './components/home/ZahiraHomePage';
 import {
   LayoutDashboard,
   Calendar,
@@ -49,21 +50,46 @@ import {
 const MainApp: React.FC = () => {
   const { activeRole, userProfile, updateCurrentUserBatch } = useAuth();
   const { batches } = useBatch();
+  const [showPublicHome, setShowPublicHome] = useState<boolean>(true);
   const [currentPage, setCurrentPage] = useState<string>('dashboard');
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(false);
   const [mobileNavOpen, setMobileNavOpen] = useState<boolean>(false);
   const [authModalOpen, setAuthModalOpen] = useState<boolean>(false);
+  const [authModalMode, setAuthModalMode] = useState<'signin' | 'signup'>('signin');
+  const [pendingTargetPage, setPendingTargetPage] = useState<string>('dashboard');
   const [tutorInitialTopic, setTutorInitialTopic] = useState<string>('');
   const [pendingBatchPick, setPendingBatchPick] = useState<string>('');
   const [savingBatchPick, setSavingBatchPick] = useState<boolean>(false);
   const [batchPickError, setBatchPickError] = useState<string | null>(null);
+  const signInTriggeredRef = useRef<boolean>(false);
 
-  // Close authentication modal as soon as user is authenticated
+  // Close authentication modal and send the user directly into the LMS once authenticated
   useEffect(() => {
+    if (authModalOpen) {
+      signInTriggeredRef.current = true;
+    }
     if (userProfile && authModalOpen) {
       setAuthModalOpen(false);
     }
-  }, [userProfile, authModalOpen]);
+    if (userProfile && signInTriggeredRef.current) {
+      signInTriggeredRef.current = false;
+      setCurrentPage(pendingTargetPage || 'dashboard');
+      setShowPublicHome(false);
+      window.scrollTo({ top: 0, behavior: 'auto' });
+    }
+  }, [userProfile, authModalOpen, pendingTargetPage]);
+
+  const handleHomeAuthAction = (mode: 'signin' | 'signup', targetPage = 'dashboard') => {
+    setPendingTargetPage(targetPage);
+    if (userProfile) {
+      setCurrentPage(targetPage);
+      setShowPublicHome(false);
+      window.scrollTo({ top: 0, behavior: 'auto' });
+      return;
+    }
+    setAuthModalMode(mode);
+    setAuthModalOpen(true);
+  };
 
   const needsStudentBatchSelection =
     !!userProfile && activeRole === 'student' && !userProfile.batchId && batches.length > 0;
@@ -213,6 +239,23 @@ const MainApp: React.FC = () => {
     }
   };
 
+  if (showPublicHome) {
+    return (
+      <>
+        <ZahiraHomePage
+          onSignIn={(targetPage) => handleHomeAuthAction('signin', targetPage)}
+          onSignUp={(targetPage) => handleHomeAuthAction('signup', targetPage)}
+        />
+        <AuthModal
+          isOpen={authModalOpen}
+          initialMode={authModalMode}
+          onClose={() => setAuthModalOpen(false)}
+        />
+        <CursorEffect />
+      </>
+    );
+  }
+
   return (
     <div className="flex flex-col h-dvh w-full overflow-hidden bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 font-sans selection:bg-blue-100 selection:text-blue-900 transition-colors duration-200">
       {/* 1. TOP HEADER */}
@@ -220,6 +263,7 @@ const MainApp: React.FC = () => {
         onOpenProfile={() => setCurrentPage('profile')}
         onOpenAuthModal={() => setAuthModalOpen(true)}
         onNavigate={setCurrentPage}
+        onReturnHome={() => setShowPublicHome(true)}
         onToggleMobileMenu={() => setMobileNavOpen(!mobileNavOpen)}
       />
 
@@ -335,6 +379,7 @@ const MainApp: React.FC = () => {
       {/* Authentication Modal */}
       <AuthModal
         isOpen={authModalOpen}
+        initialMode={authModalMode}
         onClose={() => setAuthModalOpen(false)}
       />
 
