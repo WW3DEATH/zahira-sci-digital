@@ -116,7 +116,7 @@ export async function syncGoogleCalendarToFirestore(
 
   return {
     syncedCount: count,
-    message: `Successfully synchronized ${count} events from Google Calendar to Zahira College 2k28 Science EM schedule.`,
+    message: `Successfully synchronized ${count} events from Google Calendar to Zahira College Mawanella Science Project EM schedule.`,
   };
 }
 
@@ -138,7 +138,7 @@ export async function createGoogleCalendarEvent(
 
   const body = {
     summary: event.title,
-    description: `${event.description || ''}\n\n[Zahira College 2k28 Science EM - Type: ${event.type?.toUpperCase()}]`,
+    description: `${event.description || ''}\n\n[Zahira College Mawanella Science Project EM - Type: ${event.type?.toUpperCase()}]`,
     location: event.location || 'Zahira College Mawanella',
     start: startObj,
     end: endObj,
