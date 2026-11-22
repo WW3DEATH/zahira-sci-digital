@@ -26,7 +26,7 @@ import { collection, doc, onSnapshot, setDoc, deleteDoc } from 'firebase/firesto
 import { db, sanitizeFirestoreDoc, handleFirestoreError, OperationType } from '../firebase';
 import { useAuth } from '../context/AuthContext';
 import { ALL_BATCHES_ID, useBatch, DEFAULT_BATCH_ID, isInBatch } from '../context/BatchContext';
-import { AcademicTest, TestMark, Subject, RosterStudent } from '../types';
+import { AcademicTerm, AcademicTest, TestMark, Subject, RosterStudent } from '../types';
 import { SEED_TESTS, SEED_SUBJECTS, isFakeSeedRosterStudent } from '../services/dataService';
 import { PDFPreviewModal, PDFPreviewData } from '../components/common/PDFPreviewModal';
 import { TermExamMarksSection } from '../components/assessments/TermExamMarksSection';
@@ -60,6 +60,7 @@ export const AssessmentsPage: React.FC = () => {
   const writeBatchName = getBatchName(writeBatchId);
   const isTeacherOrAdmin = activeRole === 'teacher' || activeRole === 'admin';
 
+  const [allAcademicTerms, setAllAcademicTerms] = useState<AcademicTerm[]>([]);
   const [allTests, setAllTests] = useState<AcademicTest[]>(SEED_TESTS);
   const [allTestMarks, setAllTestMarks] = useState<TestMark[]>([]);
   const [allSubjects, setAllSubjects] = useState<Subject[]>(SEED_SUBJECTS);
@@ -89,7 +90,7 @@ export const AssessmentsPage: React.FC = () => {
   const [newTestSubject, setNewTestSubject] = useState('Combined Mathematics');
   const [newTestMax, setNewTestMax] = useState(100);
   const [newTestDate, setNewTestDate] = useState(() => new Date().toISOString().split('T')[0]);
-  const [newTestTerm, setNewTestTerm] = useState('Term 1 (2026)');
+  const [newTestTerm, setNewTestTerm] = useState('');
 
   // Batch Mark Entry Workspace State (Topic/Exam + All Synced Bulk Students)
   const [batchMode, setBatchMode] = useState<'new' | 'existing'>('new');
@@ -97,7 +98,7 @@ export const AssessmentsPage: React.FC = () => {
   const [batchExamTitle, setBatchExamTitle] = useState('');
   const [batchSubject, setBatchSubject] = useState('Combined Mathematics');
   const [batchMaxMarks, setBatchMaxMarks] = useState<number>(100);
-  const [batchTerm, setBatchTerm] = useState('Term 1 (2026)');
+  const [batchTerm, setBatchTerm] = useState('');
   const [batchExamDate, setBatchExamDate] = useState(() => new Date().toISOString().split('T')[0]);
   const [batchSearch, setBatchSearch] = useState('');
   const [batchMarksMap, setBatchMarksMap] = useState<Record<string, string>>({});
@@ -107,6 +108,23 @@ export const AssessmentsPage: React.FC = () => {
 
   // Selected Student for Report Card (strictly from bulk-added attendanceRoster for teachers/admins)
   const [selectedReportStudentId, setSelectedReportStudentId] = useState('');
+
+  // Real-time academicTerms listener (only Teacher/Admin-created terms)
+  useEffect(() => {
+    const unsub = onSnapshot(
+      collection(db, 'academicTerms'),
+      (snap) => {
+        const list: AcademicTerm[] = [];
+        snap.forEach((d) => list.push({ ...(d.data() as AcademicTerm), id: d.id }));
+        list.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+        setAllAcademicTerms(list);
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.LIST, 'academicTerms');
+      }
+    );
+    return () => unsub();
+  }, []);
 
   // Real-time tests listener
   useEffect(() => {
@@ -195,6 +213,10 @@ export const AssessmentsPage: React.FC = () => {
   }, [isTeacherOrAdmin]);
 
   // Batch-divided slices
+  const academicTerms = useMemo(
+    () => allAcademicTerms.filter((t) => isInBatch(t.batchId, activeBatchId)),
+    [allAcademicTerms, activeBatchId]
+  );
   const tests = useMemo(
     () => allTests.filter((t) => isInBatch(t.batchId, activeBatchId)),
     [allTests, activeBatchId]
@@ -362,6 +384,11 @@ export const AssessmentsPage: React.FC = () => {
       return;
     }
 
+    if (batchMode === 'new' && !batchTerm.trim()) {
+      setBatchError('Please enter an Academic Term (e.g. First Term Test 2026) before saving.');
+      return;
+    }
+
     if (batchMode === 'existing' && !batchSelectedTestId) {
       setBatchError('Please select an existing examination or switch to Create New Exam / Topic.');
       return;
@@ -405,7 +432,7 @@ export const AssessmentsPage: React.FC = () => {
           teacherId: userProfile?.userId || 'faculty',
           examDate: batchExamDate || new Date().toISOString().split('T')[0],
           maxMarks: targetMaxMarks,
-          term: batchTerm.trim() || 'Term 1 (2026)',
+          term: batchTerm.trim(),
           createdAt: new Date().toISOString(),
         };
         await setDoc(doc(db, 'tests', targetTestId), sanitizeFirestoreDoc(newTestDoc));
@@ -479,7 +506,7 @@ export const AssessmentsPage: React.FC = () => {
   };
 
   const handleCreateTest = async () => {
-    if (!newTestTitle.trim() || !isTeacherOrAdmin) return;
+    if (!newTestTitle.trim() || !newTestTerm.trim() || !isTeacherOrAdmin) return;
     try {
       const id = `test-${Date.now()}`;
       const newT: AcademicTest = {
@@ -492,13 +519,14 @@ export const AssessmentsPage: React.FC = () => {
         teacherId: userProfile?.userId || 'faculty',
         examDate: newTestDate,
         maxMarks: newTestMax,
-        term: newTestTerm,
+        term: newTestTerm.trim(),
         createdAt: new Date().toISOString(),
       };
 
       await setDoc(doc(db, 'tests', id), sanitizeFirestoreDoc(newT));
       setShowCreateTestModal(false);
       setNewTestTitle('');
+      setNewTestTerm('');
       setStatusToast(`Examination "${newT.title}" scheduled successfully.`);
       setTimeout(() => setStatusToast(null), 4000);
     } catch (e) {
@@ -639,7 +667,7 @@ export const AssessmentsPage: React.FC = () => {
 
     pdf.setFont('helvetica', 'normal');
     pdf.setTextColor(51, 65, 85);
-    pdf.text('Term 1 (2026-2028)', 160, 50);
+    pdf.text(academicTerms[0]?.name || 'Continuous Assessment', 160, 50);
     if (hasUploadedMarks) {
       pdf.setTextColor(22, 101, 52);
       pdf.text(`${averagePercent}%`, 160, 57);
@@ -697,7 +725,7 @@ export const AssessmentsPage: React.FC = () => {
 
         const testObj = tests.find((t) => t.id === mk.testId);
         const testTitle = testObj?.title || mk.subjectId || `Examination Paper 0${idx + 1}`;
-        const termTitle = testObj?.term || 'Term 1 (2026)';
+        const termTitle = testObj?.term || '—';
         const pct = mk.maxMarks > 0 ? Math.round((mk.marksObtained / mk.maxMarks) * 100) : 0;
         const grade = getLetterGrade(pct);
 
@@ -1189,11 +1217,17 @@ export const AssessmentsPage: React.FC = () => {
                   </label>
                   <input
                     type="text"
+                    list="assessments-academic-terms"
                     value={batchTerm}
                     onChange={(e) => setBatchTerm(e.target.value)}
-                    placeholder="Term 1 (2026)"
+                    placeholder="Enter term name (e.g. First Term Test 2026)"
                     className="w-full rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-800 p-2.5 text-stone-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500"
                   />
+                  <datalist id="assessments-academic-terms">
+                    {academicTerms.map((termItem) => (
+                      <option key={termItem.id} value={termItem.name} />
+                    ))}
+                  </datalist>
                 </div>
               </div>
             )}
@@ -1577,7 +1611,7 @@ export const AssessmentsPage: React.FC = () => {
                                 {testObj?.subjectId || m.subjectId || 'Science'}
                               </td>
                               <td className="py-3.5 px-4 text-stone-500 dark:text-slate-400">
-                                {testObj?.term || 'Term 1'}
+                                {testObj?.term || '—'}
                               </td>
                               <td className="py-3.5 px-4 font-bold text-blue-600 dark:text-blue-400 tabular-nums">
                                 {m.marksObtained}
@@ -1647,7 +1681,7 @@ export const AssessmentsPage: React.FC = () => {
                 </div>
                 <div className="flex items-center gap-3">
                   <span className="font-semibold text-stone-800 dark:text-slate-100">
-                    {hasUploadedMarks ? 'Term 1 Official Release' : 'Awaiting Examination Release'}
+                    {hasUploadedMarks ? 'Official Examination Release' : 'Awaiting Examination Release'}
                   </span>
                   <button
                     onClick={handleExportPDF}
@@ -1825,13 +1859,14 @@ export const AssessmentsPage: React.FC = () => {
 
               <div>
                 <label className="font-semibold text-stone-600 dark:text-slate-300 uppercase tracking-wider block mb-1 text-[11px]">
-                  Term
+                  Academic Term
                 </label>
                 <input
                   type="text"
+                  list="assessments-academic-terms"
                   value={newTestTerm}
                   onChange={(e) => setNewTestTerm(e.target.value)}
-                  placeholder="Term 1 (2026)"
+                  placeholder="Enter academic term (e.g. First Term Test 2026)"
                   className="w-full rounded-lg border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-800 p-2.5 text-stone-800 dark:text-white"
                 />
               </div>
@@ -1846,7 +1881,8 @@ export const AssessmentsPage: React.FC = () => {
               </button>
               <button
                 onClick={handleCreateTest}
-                className="rounded-lg bg-blue-600 hover:bg-blue-700 px-5 py-2 text-xs font-bold text-white shadow-xs"
+                disabled={!newTestTitle.trim() || !newTestTerm.trim()}
+                className="rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-50 px-5 py-2 text-xs font-bold text-white shadow-xs"
               >
                 Save Exam
               </button>
