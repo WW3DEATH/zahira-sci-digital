@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Users,
   Award,
@@ -18,6 +18,7 @@ import { jsPDF } from 'jspdf';
 import { collection, onSnapshot } from 'firebase/firestore';
 import { db } from '../../firebase';
 import { useAuth } from '../../context/AuthContext';
+import { isInBatch, useBatch } from '../../context/BatchContext';
 import {
   UserProfile,
   TestMark,
@@ -43,13 +44,15 @@ export const ParentDashboard: React.FC<ParentDashboardProps> = ({
   onOpenReportCard,
 }) => {
   const { userProfile } = useAuth();
+  const { activeBatchId, activeBatch, getBatchName } = useBatch();
+  const activeBatchName = activeBatch?.name || getBatchName(activeBatchId);
   const [downloading, setDownloading] = useState(false);
-  const [students, setStudents] = useState<UserProfile[]>([]);
+  const [allStudents, setAllStudents] = useState<UserProfile[]>([]);
   const [selectedStudentId, setSelectedStudentId] = useState('');
-  const [testMarks, setTestMarks] = useState<TestMark[]>([]);
-  const [attendanceRecords, setAttendanceRecords] = useState<AttendanceRecord[]>([]);
+  const [allTestMarks, setAllTestMarks] = useState<TestMark[]>([]);
+  const [allAttendanceRecords, setAllAttendanceRecords] = useState<AttendanceRecord[]>([]);
   const [dayControlsMap, setDayControlsMap] = useState<Record<string, AttendanceDayControl>>({});
-  const [rosterStudents, setRosterStudents] = useState<RosterStudent[]>([]);
+  const [allRosterStudents, setAllRosterStudents] = useState<RosterStudent[]>([]);
 
   useEffect(() => {
     const unsubUsers = onSnapshot(collection(db, 'userProfiles'), (snap) => {
@@ -58,22 +61,19 @@ export const ParentDashboard: React.FC<ParentDashboardProps> = ({
         const u = d.data() as UserProfile;
         if (u.role === 'student') list.push(u);
       });
-      setStudents(list);
-      if (list.length > 0 && !selectedStudentId) {
-        setSelectedStudentId(list[0].userId);
-      }
+      setAllStudents(list);
     });
 
     const unsubMarks = onSnapshot(collection(db, 'testMarks'), (snap) => {
       const list: TestMark[] = [];
       snap.forEach((d) => list.push(d.data() as TestMark));
-      setTestMarks(list);
+      setAllTestMarks(list);
     });
 
     const unsubAttendance = onSnapshot(collection(db, 'attendance'), (snap) => {
       const list: AttendanceRecord[] = [];
       snap.forEach((d) => list.push({ ...(d.data() as AttendanceRecord), id: d.id }));
-      setAttendanceRecords(list);
+      setAllAttendanceRecords(list);
     });
 
     const unsubDaySettings = onSnapshot(collection(db, 'attendanceDaySettings'), (snap) => {
@@ -81,7 +81,7 @@ export const ParentDashboard: React.FC<ParentDashboardProps> = ({
       snap.forEach((d) => {
         const data = d.data() as AttendanceDayControl;
         const dateKey = data.date || d.id;
-        if (dateKey) map[dateKey] = { ...data, id: d.id, date: dateKey };
+        map[d.id] = { ...data, id: d.id, date: dateKey };
       });
       setDayControlsMap(map);
     });
@@ -89,7 +89,7 @@ export const ParentDashboard: React.FC<ParentDashboardProps> = ({
     const unsubRoster = onSnapshot(collection(db, 'attendanceRoster'), (snap) => {
       const list: RosterStudent[] = [];
       snap.forEach((d) => list.push({ ...(d.data() as RosterStudent), id: d.id }));
-      setRosterStudents(list);
+      setAllRosterStudents(list);
     });
 
     return () => {
@@ -99,7 +99,36 @@ export const ParentDashboard: React.FC<ParentDashboardProps> = ({
       unsubDaySettings();
       unsubRoster();
     };
-  }, [selectedStudentId]);
+  }, []);
+
+  // Batch-filtered slices
+  const students = useMemo(
+    () => allStudents.filter((s) => isInBatch(s.batchId, activeBatchId)),
+    [allStudents, activeBatchId]
+  );
+  const testMarks = useMemo(
+    () => allTestMarks.filter((m) => isInBatch(m.batchId, activeBatchId)),
+    [allTestMarks, activeBatchId]
+  );
+  const attendanceRecords = useMemo(
+    () => allAttendanceRecords.filter((rec) => isInBatch(rec.batchId, activeBatchId)),
+    [allAttendanceRecords, activeBatchId]
+  );
+  const rosterStudents = useMemo(
+    () => allRosterStudents.filter((r) => isInBatch(r.batchId, activeBatchId)),
+    [allRosterStudents, activeBatchId]
+  );
+
+  // Keep selectedStudentId valid within active batch
+  useEffect(() => {
+    if (students.length === 0) {
+      if (selectedStudentId) setSelectedStudentId('');
+      return;
+    }
+    if (!selectedStudentId || !students.some((s) => s.userId === selectedStudentId)) {
+      setSelectedStudentId(students[0].userId);
+    }
+  }, [students, selectedStudentId]);
 
   const currentStudent =
     students.find((s) => s.userId === selectedStudentId) || {
@@ -107,7 +136,7 @@ export const ParentDashboard: React.FC<ParentDashboardProps> = ({
       fullName: 'Enrolled Scholar',
       email: 'scholar@zahira.edu',
       role: 'student' as const,
-      bio: 'Zahira College 2k28 Science EM Scholar',
+      bio: `Zahira College ${activeBatchName} Scholar`,
       createdAt: '',
     };
 
@@ -119,7 +148,7 @@ export const ParentDashboard: React.FC<ParentDashboardProps> = ({
   const candidateIds = getMatchingStudentIds(currentStudent, rosterStudents);
   const activeStudentAttRecords = attendanceRecords.filter(
     (rec) =>
-      isAttendanceRecordActive(rec, dayControlsMap) &&
+      isAttendanceRecordActive(rec, dayControlsMap, undefined, activeBatchId) &&
       resolveStudentStatusInRecord(rec, candidateIds) !== undefined
   );
   const presentWeighted = activeStudentAttRecords.reduce((sum, rec) => {
@@ -150,12 +179,12 @@ export const ParentDashboard: React.FC<ParentDashboardProps> = ({
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(18);
     doc.setTextColor(15, 23, 42);
-    doc.text('ZAHIRA COLLEGE - 2K28 SCIENCE EM', 20, 22);
+    doc.text(`ZAHIRA COLLEGE - ${activeBatchName.toUpperCase()}`, 20, 22);
 
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(10);
     doc.setTextColor(100, 116, 139);
-    doc.text('OFFICIAL ACADEMIC PROGRESS REPORT • G.C.E. A/L BATCH 2028', 20, 28);
+    doc.text(`OFFICIAL ACADEMIC PROGRESS REPORT • ${activeBatchName.toUpperCase()}`, 20, 28);
     doc.text('Mawanella, Sri Lanka • Zahira College Mawanella Science Project management', 20, 33);
 
     doc.setDrawColor(203, 213, 225);
@@ -166,7 +195,7 @@ export const ParentDashboard: React.FC<ParentDashboardProps> = ({
     doc.setFontSize(11);
     doc.setTextColor(15, 23, 42);
     doc.text(`Scholar: ${currentStudent.fullName}`, 20, 46);
-    doc.text('Cohort: Zahira College 2k28 Science EM', 20, 52);
+    doc.text(`Cohort: Zahira College ${activeBatchName}`, 20, 52);
     doc.text('Academic Term: Term 1 (2026)', 120, 46);
     doc.text(`Overall Average: ${averagePercent}% (Grade A)`, 120, 52);
 
@@ -255,9 +284,9 @@ export const ParentDashboard: React.FC<ParentDashboardProps> = ({
       const blobUrl = URL.createObjectURL(blob);
       setPreviewData({
         title: `Official Academic Report: ${currentStudent.fullName}`,
-        subtitle: 'Zahira College 2k28 Science EM • Term 1 Performance Digest',
+        subtitle: `Zahira College ${activeBatchName} • Term 1 Performance Digest`,
         category: 'Official Term Report',
-        filename: `Academic_Report_Card_${currentStudent.fullName.replace(/\s+/g, '_')}_2k28.pdf`,
+        filename: `Academic_Report_Card_${currentStudent.fullName.replace(/\s+/g, '_')}_${activeBatchName.replace(/\s+/g, '_')}.pdf`,
         blobUrl,
         blob,
       });
@@ -282,7 +311,7 @@ export const ParentDashboard: React.FC<ParentDashboardProps> = ({
               Academic Digest for {currentStudent.fullName}
             </h2>
             <p className="text-stone-300 text-sm mt-1 max-w-xl">
-              Linked scholar in Zahira College 2k28 Science EM. Review official grades, term report cards, attendance records, and faculty communication.
+              Linked scholar in Zahira College <strong className="text-amber-300">{activeBatchName}</strong>. Review official grades, term report cards, attendance records, and faculty communication.
             </p>
           </div>
 
