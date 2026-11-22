@@ -204,6 +204,26 @@
       },
       "required": ["id", "fullName", "indexNumber"]
     },
+    "academicTerm": {
+      "title": "Academic Term",
+      "description": "Batch-scoped academic term details created and managed strictly by Teachers and Admins (never preloaded)",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "academicYear": { "type": "string" },
+        "startDate": { "type": "string" },
+        "endDate": { "type": "string" },
+        "description": { "type": "string" },
+        "batchId": { "type": "string" },
+        "batchName": { "type": "string" },
+        "createdBy": { "type": "string" },
+        "createdByName": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "name", "batchId", "createdBy", "createdAt"]
+    },
     "termExamReport": {
       "title": "Term Exam Report Sheet",
       "description": "Per-student, per-term exam mark sheet containing batch, subjects, marks, total, average, and stream position for official report cards",
@@ -639,6 +659,10 @@
     "/attendanceRoster/{studentId}": {
       "schema": { "$ref": "attendanceRosterStudent" },
       "description": "Roll-call student roster synced across Attendance and Marks & Assessments with Bio/Physical stream assignment"
+    },
+    "/academicTerms/{termId}": {
+      "schema": { "$ref": "academicTerm" },
+      "description": "Academic terms and term schedule details created strictly by Teachers and Admins"
     },
     "/termExamReports/{reportId}": {
       "schema": { "$ref": "termExamReport" },
