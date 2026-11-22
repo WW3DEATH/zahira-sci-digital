@@ -132,7 +132,7 @@ $$\\text{C}_6\\text{H}_{12}\\text{O}_6 + 6\\text{O}_2 \\longrightarrow 6\\text{C
   }
 
   // General Science EM Fallback
-  return `### Zahira College 2k28 Science EM · Study Guide
+  return `### Zahira College Mawanella Science Project EM · Study Guide
 
 - **Subject:** ${subject || 'Science EM'}
 - **Topic:** ${topic || raw}
@@ -169,7 +169,7 @@ export function generateClientStudentAssistantFallback(
   }
 
   if (q.includes('timetable') || q.includes('schedule') || q.includes('class') || q.includes('period')) {
-    return `### Zahira College 2k28 Science EM Weekly Schedule
+    return `### Zahira College Mawanella Science Project EM Weekly Schedule
 - **Monday:** 08:00 Combined Mathematics | 09:45 Physics | 11:30 Chemistry
 - **Tuesday:** 08:00 Chemistry | 09:45 Applied Mathematics | 11:30 ICT / English
 - **Wednesday:** 08:00 Physics (Waves & Optics) | 09:45 Calculus Lab | 11:30 Science Practical
@@ -194,7 +194,7 @@ export function generateClientTeacherAssistantFallback(
   topic: string
 ): string {
   return `### ${taskType.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())}: ${topic || subject}
-**Cohort:** ${gradeLevel || 'Zahira College 2k28 Science EM'} · **Subject:** ${subject || 'Science EM'}
+**Cohort:** ${gradeLevel || 'Zahira College Mawanella Science Project EM'} · **Subject:** ${subject || 'Science EM'}
 
 #### 1. Learning Objectives
 - Define core syllabus concepts and SI units for **${topic || subject}**.
