@@ -17,17 +17,21 @@ import {
 import { collection, doc, onSnapshot, setDoc, deleteDoc } from 'firebase/firestore';
 import { db, sanitizeFirestoreDoc } from '../firebase';
 import { useAuth } from '../context/AuthContext';
+import { useBatch, DEFAULT_BATCH_ID, isInBatch, resolveItemBatchId } from '../context/BatchContext';
 import { UserProfile, UserRole } from '../types';
 import { REAL_ADMIN_PROFILE } from '../services/dataService';
 
 export const UsersAdminPage: React.FC = () => {
   const { activeRole, userProfile } = useAuth();
+  const { batches, getBatchName } = useBatch();
   const [users, setUsers] = useState<UserProfile[]>([]);
   const [loading, setLoading] = useState(true);
   const [roleFilter, setRoleFilter] = useState<string>('all');
+  const [batchFilter, setBatchFilter] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedUserIds, setSelectedUserIds] = useState<string[]>([]);
   const [bulkRole, setBulkRole] = useState<UserRole>('student');
+  const [bulkBatchId, setBulkBatchId] = useState<string>(DEFAULT_BATCH_ID);
   const [bulkUpdating, setBulkUpdating] = useState(false);
   const [feedback, setFeedback] = useState<string | null>(null);
 
@@ -36,6 +40,7 @@ export const UsersAdminPage: React.FC = () => {
   const [newEmail, setNewEmail] = useState('');
   const [newName, setNewName] = useState('');
   const [newRole, setNewRole] = useState<UserRole>('student');
+  const [newBatchId, setNewBatchId] = useState<string>(DEFAULT_BATCH_ID);
 
   useEffect(() => {
     const unsub = onSnapshot(
@@ -89,22 +94,62 @@ export const UsersAdminPage: React.FC = () => {
     }
   };
 
+  const handleBatchChange = async (user: UserProfile, targetBatchId: string) => {
+    const targetBatchName = getBatchName(targetBatchId);
+    try {
+      await setDoc(
+        doc(db, 'userProfiles', user.userId),
+        sanitizeFirestoreDoc({ batchId: targetBatchId, batchName: targetBatchName, updatedAt: new Date().toISOString() }),
+        { merge: true }
+      );
+      if (user.role === 'student') {
+        await setDoc(
+          doc(db, 'students', user.userId),
+          sanitizeFirestoreDoc({ batchId: targetBatchId, batchName: targetBatchName }),
+          { merge: true }
+        ).catch(() => {});
+      }
+      setFeedback(`Assigned "${user.fullName}" to batch ${targetBatchName}`);
+      setTimeout(() => setFeedback(null), 3000);
+    } catch (e) {
+      console.error('Failed to update user batch:', e);
+    }
+  };
+
   const handleAddUser = async () => {
     if (!newEmail.trim() || !newName.trim()) return;
     try {
       const id = `user-${Date.now()}`;
+      const chosenBatchId = newBatchId || DEFAULT_BATCH_ID;
+      const chosenBatchName = getBatchName(chosenBatchId);
       const newUser: UserProfile = {
         userId: id,
         email: newEmail.trim().toLowerCase(),
         fullName: newName.trim(),
         role: newRole,
+        batchId: chosenBatchId,
+        batchName: chosenBatchName,
         avatarUrl: '',
-        bio: `${newRole.toUpperCase()} • Zahira College 2k28 Science EM`,
+        bio: `${newRole.toUpperCase()} • Zahira College ${chosenBatchName}`,
         assignedClassIds: [],
         createdAt: new Date().toISOString(),
       };
 
       await setDoc(doc(db, 'userProfiles', id), sanitizeFirestoreDoc(newUser));
+      if (newRole === 'student') {
+        await setDoc(
+          doc(db, 'students', id),
+          sanitizeFirestoreDoc({
+            userId: id,
+            fullName: newUser.fullName,
+            email: newUser.email,
+            batchId: chosenBatchId,
+            batchName: chosenBatchName,
+            enrolledAt: new Date().toISOString(),
+          }),
+          { merge: true }
+        ).catch(() => {});
+      }
       setShowAddModal(false);
       setNewEmail('');
       setNewName('');
@@ -115,10 +160,11 @@ export const UsersAdminPage: React.FC = () => {
 
   const filtered = users.filter((u) => {
     const matchesRole = roleFilter === 'all' || u.role === roleFilter;
+    const matchesBatch = batchFilter === 'all' || isInBatch(u.batchId, batchFilter);
     const matchesSearch =
       (u.fullName || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
       (u.email || '').toLowerCase().includes(searchQuery.toLowerCase());
-    return matchesRole && matchesSearch;
+    return matchesRole && matchesBatch && matchesSearch;
   });
 
   return (
@@ -129,7 +175,7 @@ export const UsersAdminPage: React.FC = () => {
             User Accounts & Role Administration
           </h2>
           <p className="text-xs text-stone-500 mt-1">
-            Zahira College 2k28 Science EM directory, role-based access control (RBAC), and member accounts
+            Zahira College Mawanella Science Project EM directory, role-based access control (RBAC), and member accounts
           </p>
         </div>
 
@@ -160,15 +206,29 @@ export const UsersAdminPage: React.FC = () => {
           ))}
         </div>
 
-        <div className="relative w-full sm:w-64">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-stone-400" />
-          <input
-            type="text"
-            placeholder="Search users..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full rounded-lg border border-stone-200 bg-stone-50 py-1.5 pl-8 pr-3 text-xs text-stone-800 focus:bg-white focus:outline-none"
-          />
+        <div className="flex flex-wrap items-center gap-2">
+          <select
+            value={batchFilter}
+            onChange={(e) => setBatchFilter(e.target.value)}
+            aria-label="Filter users by batch"
+            className="rounded-lg border border-indigo-200 bg-indigo-50/70 px-3 py-1.5 text-xs font-bold text-indigo-900 focus:outline-none"
+          >
+            <option value="all">All Batches ({batches.length})</option>
+            {batches.map((b) => (
+              <option key={b.id} value={b.id}>{b.name}</option>
+            ))}
+          </select>
+
+          <div className="relative w-full sm:w-56">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-stone-400" />
+            <input
+              type="text"
+              placeholder="Search users..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full rounded-lg border border-stone-200 bg-stone-50 py-1.5 pl-8 pr-3 text-xs text-stone-800 focus:bg-white focus:outline-none"
+            />
+          </div>
         </div>
       </div>
 
@@ -227,7 +287,44 @@ export const UsersAdminPage: React.FC = () => {
               disabled={bulkUpdating}
               className="rounded-lg bg-stone-900 hover:bg-stone-800 disabled:opacity-50 px-3 py-1 text-xs font-bold text-white transition-colors"
             >
-              {bulkUpdating ? 'Applying...' : 'Apply to Selected'}
+              {bulkUpdating ? 'Applying...' : 'Apply Role'}
+            </button>
+            <select
+              value={bulkBatchId}
+              onChange={(e) => setBulkBatchId(e.target.value)}
+              className="rounded-lg border border-indigo-200 bg-white px-2 py-1 text-xs font-semibold text-indigo-900 focus:outline-none"
+            >
+              {batches.map((b) => (
+                <option key={b.id} value={b.id}>{b.name}</option>
+              ))}
+            </select>
+            <button
+              onClick={async () => {
+                setBulkUpdating(true);
+                const bName = getBatchName(bulkBatchId);
+                try {
+                  await Promise.all(
+                    selectedUserIds.map((uid) =>
+                      setDoc(
+                        doc(db, 'userProfiles', uid),
+                        sanitizeFirestoreDoc({ batchId: bulkBatchId, batchName: bName }),
+                        { merge: true }
+                      )
+                    )
+                  );
+                  setFeedback(`Moved ${selectedUserIds.length} account(s) to batch ${bName}`);
+                  setSelectedUserIds([]);
+                } catch {
+                  setFeedback('Failed to assign batch.');
+                } finally {
+                  setBulkUpdating(false);
+                  setTimeout(() => setFeedback(null), 4000);
+                }
+              }}
+              disabled={bulkUpdating}
+              className="rounded-lg bg-indigo-700 hover:bg-indigo-800 disabled:opacity-50 px-3 py-1 text-xs font-bold text-white transition-colors"
+            >
+              Assign Batch
             </button>
             <button
               onClick={async () => {
@@ -295,6 +392,7 @@ export const UsersAdminPage: React.FC = () => {
                   </button>
                 </th>
                 <th className="py-3 px-4">User</th>
+                <th className="py-3 px-4">Batch</th>
                 <th className="py-3 px-4">Current Role</th>
                 <th className="py-3 px-4">Email</th>
                 <th className="py-3 px-4">Role Privileges</th>
@@ -337,6 +435,17 @@ export const UsersAdminPage: React.FC = () => {
                         </div>
                       </div>
                     </td>
+                  <td className="py-3.5 px-4">
+                    <select
+                      value={resolveItemBatchId(user.batchId)}
+                      onChange={(e) => handleBatchChange(user, e.target.value)}
+                      className="rounded-lg border border-indigo-200 bg-indigo-50/70 px-2 py-1 text-[11px] font-bold text-indigo-900 focus:outline-none"
+                    >
+                      {batches.map((b) => (
+                        <option key={b.id} value={b.id}>{b.name}</option>
+                      ))}
+                    </select>
+                  </td>
                   <td className="py-3.5 px-4">
                     <span
                       className={`rounded px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider ${
@@ -445,6 +554,21 @@ export const UsersAdminPage: React.FC = () => {
                   <option value="teacher">Faculty / Teacher</option>
                   <option value="parent">Parent / Guardian</option>
                   <option value="admin">Administrator</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="font-semibold text-stone-700 uppercase tracking-wider block mb-1 text-[11px]">
+                  Academic Batch
+                </label>
+                <select
+                  value={newBatchId}
+                  onChange={(e) => setNewBatchId(e.target.value)}
+                  className="w-full rounded-lg border border-indigo-200 bg-indigo-50/40 p-2 text-indigo-950 font-semibold"
+                >
+                  {batches.map((b) => (
+                    <option key={b.id} value={b.id}>{b.name}</option>
+                  ))}
                 </select>
               </div>
             </div>
