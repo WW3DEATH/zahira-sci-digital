@@ -1,8 +1,8 @@
 {
   "id": "/",
-  "name": "ZNC Science Project - Zahira College Mawanella",
-  "short_name": "ZNC Science",
-  "description": "Zahira College Mawanella 2k28 A/L Science EM Learning Management System",
+  "name": "Zahira College Mawanella Science Project EM",
+  "short_name": "Zahira Science EM",
+  "description": "Zahira College Mawanella Science Project EM Learning Management System",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
