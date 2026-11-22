@@ -22,13 +22,15 @@ import {
 import { collection, doc, onSnapshot, setDoc, getDoc } from 'firebase/firestore';
 import { db, sanitizeFirestoreDoc } from '../../firebase';
 import { useAuth } from '../../context/AuthContext';
+import { useBatch, resolveItemBatchId } from '../../context/BatchContext';
 import { AttendanceCheckInLog, AttendanceRecord, QRAttendanceSession } from '../../types';
-import { broadcastSystemNotification } from '../../services/notificationService';
 import { buildAttendanceRecordId } from '../../utils/attendanceUtils';
 
 interface QRAttendanceModalProps {
   isOpen: boolean;
   onClose: () => void;
+  batchId?: string;
+  batchName?: string;
   classId?: string;
   className?: string;
   selectedDate?: string;
@@ -41,6 +43,8 @@ interface QRAttendanceModalProps {
 export const QRAttendanceModal: React.FC<QRAttendanceModalProps> = ({
   isOpen,
   onClose,
+  batchId,
+  batchName,
   classId = 'general',
   className = '2k28 Science EM',
   selectedDate = new Date().toISOString().split('T')[0],
@@ -50,6 +54,9 @@ export const QRAttendanceModal: React.FC<QRAttendanceModalProps> = ({
   mode,
 }) => {
   const { userProfile, activeRole } = useAuth();
+  const { activeBatchId, getBatchName, resolveWriteBatchId } = useBatch();
+  const effectiveBatchId = resolveWriteBatchId(batchId || activeBatchId);
+  const effectiveBatchName = (batchId && batchId !== 'all' ? batchName : undefined) || getBatchName(effectiveBatchId);
   const isTeacherOrAdmin = activeRole === 'teacher' || activeRole === 'admin';
 
   // Teacher generator state
@@ -78,7 +85,7 @@ export const QRAttendanceModal: React.FC<QRAttendanceModalProps> = ({
     }
   }, [isOpen, sessionSubject, defaultRoom]);
 
-  const recordId = buildAttendanceRecordId(selectedDate, classId, sessionId);
+  const recordId = buildAttendanceRecordId(selectedDate, classId, sessionId, effectiveBatchId);
 
   // 1. Listen for real-time check-in logs for this record
   useEffect(() => {
@@ -110,7 +117,9 @@ export const QRAttendanceModal: React.FC<QRAttendanceModalProps> = ({
 
     const payload = JSON.stringify({
       school: 'Zahira College Mawanella',
-      cohort: '2k28 Science EM',
+      cohort: effectiveBatchName,
+      batchId: effectiveBatchId,
+      batchName: effectiveBatchName,
       classId,
       date: selectedDate,
       subject: selectedSubject,
@@ -135,6 +144,8 @@ export const QRAttendanceModal: React.FC<QRAttendanceModalProps> = ({
 
       const sessionObj: QRAttendanceSession = {
         sessionId: `sess-${Date.now()}`,
+        batchId: effectiveBatchId,
+        batchName: effectiveBatchName,
         classId,
         className,
         date: selectedDate,
@@ -154,6 +165,8 @@ export const QRAttendanceModal: React.FC<QRAttendanceModalProps> = ({
         doc(db, 'attendance', recordId),
         sanitizeFirestoreDoc({
           id: recordId,
+          batchId: effectiveBatchId,
+          batchName: effectiveBatchName,
           classId,
           date: selectedDate,
           sessionId: sessionId && sessionId !== 'daily' ? sessionId : undefined,
@@ -266,6 +279,29 @@ export const QRAttendanceModal: React.FC<QRAttendanceModalProps> = ({
       const currentRecords = existingRecord?.records || {};
       const currentLogs = existingRecord?.checkInLogs || [];
 
+      // Validate student's batch membership against QR session batch
+      const sessionBatchId =
+        parsedPayload?.batchId ||
+        existingRecord?.activeSession?.batchId ||
+        existingRecord?.batchId ||
+        effectiveBatchId;
+      if (
+        !isTeacherOrAdmin &&
+        resolveItemBatchId(sessionBatchId) !== resolveItemBatchId(userProfile?.batchId)
+      ) {
+        const expectedBatchName =
+          parsedPayload?.batchName ||
+          existingRecord?.activeSession?.batchName ||
+          getBatchName(sessionBatchId);
+        setScanStatus('error');
+        setScanMessage(
+          `Batch mismatch: This QR session belongs to "${expectedBatchName}", while your profile is registered under "${getBatchName(
+            userProfile?.batchId
+          )}".`
+        );
+        return;
+      }
+
       // Verify token matches active session if present
       const activeSess = existingRecord?.activeSession;
       if (activeSess && activeSess.secretToken) {
@@ -285,6 +321,8 @@ export const QRAttendanceModal: React.FC<QRAttendanceModalProps> = ({
       const newLog: AttendanceCheckInLog = {
         id: `log-${Date.now()}-${targetStudentId}`,
         recordId,
+        batchId: effectiveBatchId,
+        batchName: effectiveBatchName,
         classId,
         date: selectedDate,
         studentId: targetStudentId,
@@ -302,6 +340,8 @@ export const QRAttendanceModal: React.FC<QRAttendanceModalProps> = ({
         attRef,
         sanitizeFirestoreDoc({
           id: recordId,
+          batchId: effectiveBatchId,
+          batchName: effectiveBatchName,
           classId,
           date: selectedDate,
           sessionId: sessionId && sessionId !== 'daily' ? sessionId : undefined,
@@ -361,7 +401,7 @@ export const QRAttendanceModal: React.FC<QRAttendanceModalProps> = ({
                 {mode === 'generate' ? 'Classroom Session QR Code Generator' : 'Scan Classroom Attendance QR Code'}
               </h3>
               <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                Zahira College Mawanella • 2k28 Science EM (Hall 28)
+                Zahira College Mawanella • {effectiveBatchName}
               </p>
             </div>
           </div>
@@ -629,6 +669,8 @@ export const QRAttendanceModal: React.FC<QRAttendanceModalProps> = ({
                       handleProcessScannedPayload(
                         JSON.stringify({
                           school: 'Zahira College Mawanella',
+                          batchId: effectiveBatchId,
+                          batchName: effectiveBatchName,
                           classId,
                           date: selectedDate,
                           token: 'ZAH-SIM-2K28-TEST',
@@ -650,7 +692,7 @@ export const QRAttendanceModal: React.FC<QRAttendanceModalProps> = ({
         <div className="px-6 py-4 border-t border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/40 flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
           <div className="flex items-center gap-1.5">
             <Building className="w-3.5 h-3.5 text-blue-600" />
-            <span>Zahira College Science Complex • G.C.E. Advanced Level 2028</span>
+            <span>Zahira College Science Complex • {effectiveBatchName}</span>
           </div>
 
           <button
