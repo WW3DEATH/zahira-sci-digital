@@ -9,6 +9,8 @@ export interface BroadcastNotificationParams {
   link?: string;
   audience?: 'all' | 'students' | 'teachers' | 'admin' | 'user';
   userId?: string;
+  batchId?: string;
+  batchName?: string;
 }
 
 const APP_ICON_URL = '/assets/aistudio/image_27ea2622.png';
@@ -70,7 +72,7 @@ export async function triggerBrowserNotification(
     return false;
   }
 
-  const cleanBody = options?.body || 'Zahira College 2k28 Science EM academic alert.';
+  const cleanBody = options?.body || 'Zahira College Mawanella Science Project EM academic alert.';
   const notifOptions: NotificationOptions = {
     body: cleanBody,
     icon: APP_ICON_URL,
@@ -127,7 +129,7 @@ export async function requestNotificationPermission(): Promise<NotificationPermi
 }
 
 export async function sendTestBrowserNotification(): Promise<boolean> {
-  return triggerBrowserNotification('Zahira College 2k28 Science EM', {
+  return triggerBrowserNotification('Zahira College Mawanella Science Project EM', {
     body: 'Device and browser notifications are now active for school alerts and messages.',
     tag: `znc-test-${Date.now()}`,
     link: 'dashboard',
@@ -144,6 +146,8 @@ export async function broadcastSystemNotification(params: BroadcastNotificationP
     id: notifId,
     userId: params.userId || 'all',
     audience: params.audience || 'all',
+    batchId: params.batchId,
+    batchName: params.batchName,
     title: params.title,
     message: params.message,
     type: params.type,
@@ -205,14 +209,18 @@ export async function sendAdminAttendanceAlert(params: {
   attendanceRate: number;
   totalSessions: number;
   classId?: string;
+  batchId?: string;
+  batchName?: string;
 }): Promise<void> {
   const notifId = `notif-att-alert-${params.studentId}-${new Date().toISOString().split('T')[0]}`;
   const notification: AppNotification = {
     id: notifId,
     userId: 'all', // Targeted by audience
     audience: 'admin', // Strict Admin portal visibility
+    batchId: params.batchId,
+    batchName: params.batchName,
     title: `⚠️ Low Attendance Intervention Alert: ${params.studentName}`,
-    message: `Scholar ${params.studentName}${params.studentIndex ? ` (${params.studentIndex})` : ''} has dropped to ${params.attendanceRate}% attendance across ${params.totalSessions} sessions, below the 75% institutional threshold. Please review academic status.`,
+    message: `Scholar ${params.studentName}${params.studentIndex ? ` (${params.studentIndex})` : ''}${params.batchName ? ` [${params.batchName}]` : ''} has dropped to ${params.attendanceRate}% attendance across ${params.totalSessions} sessions, below the 75% institutional threshold. Please review academic status.`,
     type: 'attendance_alert',
     link: 'attendance',
     read: false,
