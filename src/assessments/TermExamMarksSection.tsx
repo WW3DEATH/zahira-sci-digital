@@ -18,12 +18,16 @@ import {
   FlaskConical,
   Atom,
   ChevronRight,
+  CalendarDays,
+  Pencil,
+  X,
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
-import { collection, doc, onSnapshot, setDoc } from 'firebase/firestore';
+import { collection, deleteDoc, doc, onSnapshot, setDoc } from 'firebase/firestore';
 import { db, sanitizeFirestoreDoc, handleFirestoreError, OperationType } from '../../firebase';
 import { ALL_BATCHES_ID, DEFAULT_BATCH_ID, DEFAULT_BATCH_NAME, isInBatch, resolveItemBatchId } from '../../context/BatchContext';
 import {
+  AcademicTerm,
   RosterStudent,
   StudentStream,
   TermExamReport,
@@ -43,12 +47,6 @@ interface TermExamMarksSectionProps {
   onPreviewPDF: (data: PDFPreviewData) => void;
   onToast: (message: string) => void;
 }
-
-const DEFAULT_TERMS = [
-  'Term 1 (2026)',
-  'Term 2 (2027)',
-  'Term 3 (2028)',
-];
 
 const BIO_DEFAULT_SUBJECTS = [
   'Biology',
@@ -112,12 +110,24 @@ export const TermExamMarksSection: React.FC<TermExamMarksSectionProps> = ({
   onPreviewPDF,
   onToast,
 }) => {
+  const [allAcademicTerms, setAllAcademicTerms] = useState<AcademicTerm[]>([]);
   const [allTermReports, setAllTermReports] = useState<TermExamReport[]>([]);
-  const [selectedTerm, setSelectedTerm] = useState<string>(DEFAULT_TERMS[0]);
+  const [selectedTerm, setSelectedTerm] = useState<string>('');
   const [customTermInput, setCustomTermInput] = useState<string>('');
   const [streamViewFilter, setStreamViewFilter] = useState<'all' | 'bio' | 'physical'>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedStudentId, setSelectedStudentId] = useState<string>('');
+
+  // Teacher & Admin Academic Term Details Modal State
+  const [showTermModal, setShowTermModal] = useState<boolean>(false);
+  const [editingTermId, setEditingTermId] = useState<string | null>(null);
+  const [termFormName, setTermFormName] = useState<string>('');
+  const [termFormYear, setTermFormYear] = useState<string>('');
+  const [termFormStart, setTermFormStart] = useState<string>('');
+  const [termFormEnd, setTermFormEnd] = useState<string>('');
+  const [termFormDesc, setTermFormDesc] = useState<string>('');
+  const [termFormError, setTermFormError] = useState<string | null>(null);
+  const [savingTerm, setSavingTerm] = useState<boolean>(false);
 
   // Editable sheet state for the currently selected student (Teacher & Admin only)
   const [draftSubjects, setDraftSubjects] = useState<TermExamSubjectMark[]>([]);
@@ -129,6 +139,33 @@ export const TermExamMarksSection: React.FC<TermExamMarksSectionProps> = ({
   const [savingSheet, setSavingSheet] = useState<boolean>(false);
   const [rankingStreams, setRankingStreams] = useState<boolean>(false);
   const [sheetError, setSheetError] = useState<string | null>(null);
+
+  // Guard: non-teacher/non-admin users can never open the Academic Term editor
+  useEffect(() => {
+    if (!isTeacherOrAdmin && showTermModal) {
+      setShowTermModal(false);
+    }
+  }, [isTeacherOrAdmin, showTermModal]);
+
+  // Real-time listener for Teacher/Admin-configured Academic Terms (never preloaded)
+  useEffect(() => {
+    const unsub = onSnapshot(
+      collection(db, 'academicTerms'),
+      (snap) => {
+        const list: AcademicTerm[] = [];
+        snap.forEach((d) => {
+          const data = d.data() as AcademicTerm;
+          list.push({ ...data, id: d.id });
+        });
+        list.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+        setAllAcademicTerms(list);
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.LIST, 'academicTerms');
+      }
+    );
+    return () => unsub();
+  }, []);
 
   // Real-time listener for Term Exam Reports
   useEffect(() => {
@@ -149,17 +186,33 @@ export const TermExamMarksSection: React.FC<TermExamMarksSectionProps> = ({
     return () => unsub();
   }, []);
 
+  const academicTerms = useMemo(
+    () => allAcademicTerms.filter((t) => isInBatch(t.batchId, activeBatchId)),
+    [allAcademicTerms, activeBatchId]
+  );
+
   const termReports = useMemo(
     () => allTermReports.filter((rep) => isInBatch(rep.batchId, activeBatchId)),
     [allTermReports, activeBatchId]
   );
 
-  const activeTerm = customTermInput.trim() || selectedTerm;
-  const activeTermSlug = slugifyTerm(activeTerm);
+  const activeTerm = isTeacherOrAdmin
+    ? customTermInput.trim() || selectedTerm
+    : selectedTerm;
+  const activeTermSlug = activeTerm.trim() ? slugifyTerm(activeTerm) : '';
+
+  const activeTermDetails = useMemo(
+    () =>
+      activeTermSlug
+        ? academicTerms.find((t) => slugifyTerm(t.name) === activeTermSlug) || null
+        : null,
+    [academicTerms, activeTermSlug]
+  );
 
   // Reports indexed by studentId for the selected term
   const reportsByStudentId = useMemo(() => {
     const map: Record<string, TermExamReport> = {};
+    if (!activeTermSlug) return map;
     termReports.forEach((rep) => {
       if (slugifyTerm(rep.term) === activeTermSlug) {
         map[rep.studentId] = rep;
@@ -168,14 +221,28 @@ export const TermExamMarksSection: React.FC<TermExamMarksSectionProps> = ({
     return map;
   }, [termReports, activeTermSlug]);
 
-  // All available term options (defaults + any custom terms stored in Firestore)
+  // Available terms strictly from Firestore academicTerms & saved reports (NO preloaded defaults)
   const availableTerms = useMemo(() => {
-    const set = new Set<string>(DEFAULT_TERMS);
+    const set = new Set<string>();
+    academicTerms.forEach((t) => {
+      if (t.name?.trim()) set.add(t.name.trim());
+    });
     termReports.forEach((r) => {
       if (r.term?.trim()) set.add(r.term.trim());
     });
     return Array.from(set);
-  }, [termReports]);
+  }, [academicTerms, termReports]);
+
+  // Keep selectedTerm synced only to terms actually created in Firestore
+  useEffect(() => {
+    if (availableTerms.length === 0) {
+      if (selectedTerm !== '') setSelectedTerm('');
+      return;
+    }
+    if (!selectedTerm || !availableTerms.includes(selectedTerm)) {
+      setSelectedTerm(availableTerms[0]);
+    }
+  }, [availableTerms, selectedTerm]);
 
   // For students/parents: resolve their matched TermExamReport(s) read-only
   const personalReportsForViewer = useMemo(() => {
@@ -471,9 +538,125 @@ export const TermExamMarksSection: React.FC<TermExamMarksSectionProps> = ({
     setDraftSubjects((prev) => prev.filter((s) => s.id !== subId));
   };
 
+  // Open Academic Term Details modal (Teacher & Admin only)
+  const handleOpenTermModal = (termToEdit?: AcademicTerm) => {
+    if (!isTeacherOrAdmin) return;
+    setTermFormError(null);
+    if (termToEdit) {
+      setEditingTermId(termToEdit.id);
+      setTermFormName(termToEdit.name);
+      setTermFormYear(termToEdit.academicYear || '');
+      setTermFormStart(termToEdit.startDate || '');
+      setTermFormEnd(termToEdit.endDate || '');
+      setTermFormDesc(termToEdit.description || '');
+    } else {
+      setEditingTermId(null);
+      setTermFormName('');
+      setTermFormYear('');
+      setTermFormStart('');
+      setTermFormEnd('');
+      setTermFormDesc('');
+    }
+    setShowTermModal(true);
+  };
+
+  const handleSaveAcademicTerm = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!isTeacherOrAdmin) return;
+    setTermFormError(null);
+
+    const trimmedName = termFormName.trim();
+    if (!trimmedName) {
+      setTermFormError('Please enter an Academic Term name.');
+      return;
+    }
+
+    if (termFormStart && termFormEnd && termFormEnd < termFormStart) {
+      setTermFormError('End date cannot be earlier than start date.');
+      return;
+    }
+
+    const targetBatchId = resolveItemBatchId(
+      activeBatchId !== ALL_BATCHES_ID ? activeBatchId : DEFAULT_BATCH_ID
+    );
+    const targetBatchName =
+      activeBatchId !== ALL_BATCHES_ID ? activeBatchName : DEFAULT_BATCH_NAME;
+
+    const duplicate = academicTerms.find(
+      (t) =>
+        t.id !== editingTermId &&
+        slugifyTerm(t.name) === slugifyTerm(trimmedName) &&
+        resolveItemBatchId(t.batchId) === targetBatchId
+    );
+    if (duplicate) {
+      setTermFormError(`An academic term named "${duplicate.name}" already exists in this batch.`);
+      return;
+    }
+
+    setSavingTerm(true);
+    try {
+      const termId =
+        editingTermId ||
+        `term_${targetBatchId}_${slugifyTerm(trimmedName)}_${Date.now().toString(36)}`;
+      const existing = editingTermId
+        ? allAcademicTerms.find((t) => t.id === editingTermId)
+        : undefined;
+      const nowIso = new Date().toISOString();
+
+      const payload: AcademicTerm = {
+        id: termId,
+        name: trimmedName,
+        academicYear: termFormYear.trim(),
+        startDate: termFormStart,
+        endDate: termFormEnd,
+        description: termFormDesc.trim(),
+        batchId: existing?.batchId || targetBatchId,
+        batchName: existing?.batchName || targetBatchName,
+        createdBy: existing?.createdBy || userProfile?.userId || 'faculty',
+        createdByName: existing?.createdByName || userProfile?.fullName || 'Faculty',
+        createdAt: existing?.createdAt || nowIso,
+        updatedAt: nowIso,
+      };
+
+      await setDoc(doc(db, 'academicTerms', termId), sanitizeFirestoreDoc(payload));
+      setSelectedTerm(trimmedName);
+      setCustomTermInput('');
+      setShowTermModal(false);
+      onToast(
+        editingTermId
+          ? `Updated academic term "${trimmedName}".`
+          : `Added academic term "${trimmedName}".`
+      );
+    } catch (err) {
+      setTermFormError('Could not save academic term details. Please try again.');
+      handleFirestoreError(err, OperationType.WRITE, 'academicTerms');
+    } finally {
+      setSavingTerm(false);
+    }
+  };
+
+  const handleDeleteAcademicTerm = async (termItem: AcademicTerm) => {
+    if (!isTeacherOrAdmin) return;
+    try {
+      await deleteDoc(doc(db, 'academicTerms', termItem.id));
+      if (selectedTerm === termItem.name) {
+        setSelectedTerm('');
+      }
+      onToast(`Removed academic term "${termItem.name}".`);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, 'academicTerms');
+    }
+  };
+
   const handleSaveStudentReport = async () => {
     if (!isTeacherOrAdmin || !selectedStudent) return;
     setSheetError(null);
+
+    const resolvedTerm = activeTerm.trim();
+    if (!resolvedTerm) {
+      setSheetError('Please add and select an Academic Term before saving marks.');
+      return;
+    }
 
     const cleanedSubjects = draftSubjects
       .map((s) => ({
@@ -497,13 +680,15 @@ export const TermExamMarksSection: React.FC<TermExamMarksSectionProps> = ({
     );
     const targetBatchName =
       selectedStudent.batchName || (activeBatchId !== ALL_BATCHES_ID ? activeBatchName : DEFAULT_BATCH_NAME);
+    const termSlug = slugifyTerm(resolvedTerm);
     const docId =
       targetBatchId === DEFAULT_BATCH_ID
-        ? `${activeTermSlug}__${selectedStudent.id}`
-        : `${activeTermSlug}__${targetBatchId}__${selectedStudent.id}`;
+        ? `${termSlug}__${selectedStudent.id}`
+        : `${termSlug}__${targetBatchId}__${selectedStudent.id}`;
+    const nowIso = new Date().toISOString();
     const payload: TermExamReport = {
       id: docId,
-      term: activeTerm,
+      term: resolvedTerm,
       batchId: targetBatchId,
       batchName: targetBatchName,
       studentId: selectedStudent.id,
@@ -517,14 +702,34 @@ export const TermExamMarksSection: React.FC<TermExamMarksSectionProps> = ({
       position: draftPosition.trim(),
       teacherRemark: draftRemark.trim(),
       updatedBy: userProfile?.fullName || 'Faculty',
-      updatedAt: new Date().toISOString(),
+      updatedAt: nowIso,
     };
 
     setSavingSheet(true);
     try {
       await setDoc(doc(db, 'termExamReports', docId), sanitizeFirestoreDoc(payload));
+      // If teacher/admin entered a new custom term label, persist it to academicTerms so it stays selectable
+      const alreadyExistsInBatch = academicTerms.some(
+        (t) => slugifyTerm(t.name) === termSlug
+      );
+      if (!alreadyExistsInBatch) {
+        const termId = `term_${targetBatchId}_${termSlug}_${Date.now().toString(36)}`;
+        const newTermDoc: AcademicTerm = {
+          id: termId,
+          name: resolvedTerm,
+          batchId: targetBatchId,
+          batchName: targetBatchName,
+          createdBy: userProfile?.userId || 'faculty',
+          createdByName: userProfile?.fullName || 'Faculty',
+          createdAt: nowIso,
+          updatedAt: nowIso,
+        };
+        await setDoc(doc(db, 'academicTerms', termId), sanitizeFirestoreDoc(newTermDoc));
+        setSelectedTerm(resolvedTerm);
+        setCustomTermInput('');
+      }
       onToast(
-        `Saved ${activeTerm} marks & report sheet for ${selectedStudent.fullName} (${targetBatchName}).`
+        `Saved ${resolvedTerm} marks & report sheet for ${selectedStudent.fullName} (${targetBatchName}).`
       );
     } catch (err) {
       setSheetError('Could not save term report sheet. Please try again.');
@@ -537,6 +742,10 @@ export const TermExamMarksSection: React.FC<TermExamMarksSectionProps> = ({
   // Auto-calculate and persist Stream Positions separately for Bio Stream & Physical Stream
   const handleAutoRankAllStreams = async () => {
     if (!isTeacherOrAdmin) return;
+    if (!activeTerm.trim()) {
+      onToast('Please add and select an Academic Term first.');
+      return;
+    }
     const writes: Promise<void>[] = [];
     let updatedCount = 0;
 
@@ -895,7 +1104,7 @@ export const TermExamMarksSection: React.FC<TermExamMarksSectionProps> = ({
   };
 
   const getActiveReportPayloadForExport = () => {
-    if (!selectedStudent) return null;
+    if (!selectedStudent || !activeTerm.trim()) return null;
     return {
       studentName: selectedStudent.fullName,
       studentIndex: selectedStudent.indexNumber || '—',
@@ -912,7 +1121,10 @@ export const TermExamMarksSection: React.FC<TermExamMarksSectionProps> = ({
 
   const handlePreviewSelectedReportCard = (customPayload?: TermExamReport) => {
     const payload = customPayload || getActiveReportPayloadForExport();
-    if (!payload) return;
+    if (!payload) {
+      onToast('Please add and select an Academic Term before previewing the Report Card.');
+      return;
+    }
     const pdf = buildReportCardPDF(payload);
     const blob = pdf.output('blob');
     const blobUrl = URL.createObjectURL(blob);
@@ -930,7 +1142,10 @@ export const TermExamMarksSection: React.FC<TermExamMarksSectionProps> = ({
 
   const handleDownloadSelectedReportCard = (customPayload?: TermExamReport) => {
     const payload = customPayload || getActiveReportPayloadForExport();
-    if (!payload) return;
+    if (!payload) {
+      onToast('Please add and select an Academic Term before downloading the Report Card.');
+      return;
+    }
     const pdf = buildReportCardPDF(payload);
     const safeName = payload.studentName.replace(/\s+/g, '_');
     const safeTerm = payload.term.replace(/[^a-z0-9]+/gi, '_');
@@ -940,6 +1155,10 @@ export const TermExamMarksSection: React.FC<TermExamMarksSectionProps> = ({
 
   // Export separated Bio Stream & Physical Stream Term Marksheet PDF
   const handleDownloadStreamMarksheetPDF = () => {
+    if (!activeTerm.trim()) {
+      onToast('Please add and select an Academic Term first.');
+      return;
+    }
     const pdf = new jsPDF({ unit: 'mm', format: 'a4' });
     const pageW = pdf.internal.pageSize.getWidth();
 
@@ -1051,10 +1270,9 @@ export const TermExamMarksSection: React.FC<TermExamMarksSectionProps> = ({
 
   // Non-Teacher/Non-Admin View: strictly read-only personal Term Exam Report Cards
   if (!isTeacherOrAdmin) {
-    const activePersonalReport =
-      personalReportsForViewer.find((r) => slugifyTerm(r.term) === activeTermSlug) ||
-      personalReportsForViewer[0] ||
-      null;
+    const activePersonalReport = activeTermSlug
+      ? personalReportsForViewer.find((r) => slugifyTerm(r.term) === activeTermSlug) || null
+      : personalReportsForViewer[0] || null;
 
     return (
       <div className="space-y-5">
@@ -1071,21 +1289,43 @@ export const TermExamMarksSection: React.FC<TermExamMarksSectionProps> = ({
               </span>
             </div>
             <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-              Subject marks, averages, and stream positions are entered and verified by your Teacher or School Admin.
+              Academic terms, subject marks, averages, and stream positions are entered and verified by your Teacher or School Admin.
             </p>
+            {activeTermDetails && (
+              <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-blue-700 dark:text-blue-300">
+                <span className="inline-flex items-center gap-1 font-semibold">
+                  <CalendarDays className="w-3.5 h-3.5" />
+                  <span>{activeTermDetails.name}</span>
+                </span>
+                {activeTermDetails.academicYear && <span>· Year {activeTermDetails.academicYear}</span>}
+                {(activeTermDetails.startDate || activeTermDetails.endDate) && (
+                  <span className="tabular-nums">
+                    · {activeTermDetails.startDate || '—'} to {activeTermDetails.endDate || '—'}
+                  </span>
+                )}
+                {activeTermDetails.description && (
+                  <span className="text-slate-500 dark:text-slate-400">— {activeTermDetails.description}</span>
+                )}
+              </div>
+            )}
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
             <select
               value={selectedTerm}
               onChange={(e) => setSelectedTerm(e.target.value)}
-              className="rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-800 px-3 py-2 text-xs font-bold text-stone-800 dark:text-white"
+              disabled={availableTerms.length === 0}
+              className="rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-800 px-3 py-2 text-xs font-bold text-stone-800 dark:text-white disabled:opacity-60"
             >
-              {availableTerms.map((t) => (
-                <option key={t} value={t}>
-                  {t}
-                </option>
-              ))}
+              {availableTerms.length === 0 ? (
+                <option value="">No academic terms added yet</option>
+              ) : (
+                availableTerms.map((t) => (
+                  <option key={t} value={t}>
+                    {t}
+                  </option>
+                ))
+              )}
             </select>
 
             {activePersonalReport && (
@@ -1115,10 +1355,14 @@ export const TermExamMarksSection: React.FC<TermExamMarksSectionProps> = ({
           <div className="rounded-2xl border border-dashed border-stone-300 dark:border-slate-700 bg-white dark:bg-slate-900 p-10 text-center">
             <Award className="w-10 h-10 text-slate-300 dark:text-slate-600 mx-auto mb-2" />
             <h4 className="font-serif text-base font-bold text-slate-800 dark:text-slate-100">
-              No Term Exam Report Released for {activeTerm}
+              {activeTerm
+                ? `No Term Exam Report Released for ${activeTerm}`
+                : 'No Academic Terms Added Yet'}
             </h4>
             <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 max-w-md mx-auto">
-              Once your teacher or administrator records your term subjects, marks, and position, your official report card will appear here for PDF download.
+              {activeTerm
+                ? 'Once your teacher or administrator records your term subjects, marks, and position, your official report card will appear here for PDF download.'
+                : 'Only teachers and administrators can add academic term details. Once they create a term and release marks, it will appear here.'}
             </p>
           </div>
         ) : (
@@ -1306,8 +1550,18 @@ export const TermExamMarksSection: React.FC<TermExamMarksSectionProps> = ({
           <div className="flex flex-wrap items-center gap-2 shrink-0">
             <button
               type="button"
+              onClick={() => handleOpenTermModal()}
+              className="inline-flex items-center gap-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 px-3.5 py-2 text-xs font-bold text-white transition-all shadow-2xs"
+              title="Add or manage Academic Term details (Teachers & Admins only)"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>Add / Manage Terms</span>
+            </button>
+
+            <button
+              type="button"
               onClick={handleAutoRankAllStreams}
-              disabled={rankingStreams || rosterStudents.length === 0}
+              disabled={rankingStreams || rosterStudents.length === 0 || !activeTerm.trim()}
               className="inline-flex items-center gap-1.5 rounded-xl bg-amber-600 hover:bg-amber-700 disabled:opacity-50 px-3.5 py-2 text-xs font-bold text-white transition-all shadow-2xs"
               title="Calculate positions separately for Bio Stream and Physical Stream based on Total Marks"
             >
@@ -1318,7 +1572,7 @@ export const TermExamMarksSection: React.FC<TermExamMarksSectionProps> = ({
             <button
               type="button"
               onClick={handleDownloadStreamMarksheetPDF}
-              disabled={rosterStudents.length === 0}
+              disabled={rosterStudents.length === 0 || !activeTerm.trim()}
               className="inline-flex items-center gap-1.5 rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-800 hover:bg-stone-100 dark:hover:bg-slate-700 disabled:opacity-50 px-3.5 py-2 text-xs font-bold text-slate-800 dark:text-slate-200 transition-all"
             >
               <FileSpreadsheet className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
@@ -1329,9 +1583,22 @@ export const TermExamMarksSection: React.FC<TermExamMarksSectionProps> = ({
 
         <div className="grid grid-cols-1 md:grid-cols-12 gap-3 text-xs items-end">
           <div className="md:col-span-3">
-            <label className="block text-[11px] font-bold uppercase tracking-wider text-stone-600 dark:text-slate-300 mb-1">
-              Academic Term
-            </label>
+            <div className="flex items-center justify-between mb-1">
+              <label className="block text-[11px] font-bold uppercase tracking-wider text-stone-600 dark:text-slate-300">
+                Academic Term
+              </label>
+              {activeTermDetails && (
+                <button
+                  type="button"
+                  onClick={() => handleOpenTermModal(activeTermDetails)}
+                  className="inline-flex items-center gap-1 text-[10px] font-bold text-blue-600 dark:text-blue-400 hover:underline"
+                  title="Edit selected Academic Term details"
+                >
+                  <Pencil className="w-2.5 h-2.5" />
+                  <span>Edit Term</span>
+                </button>
+              )}
+            </div>
             <select
               value={selectedTerm}
               onChange={(e) => {
@@ -1340,17 +1607,21 @@ export const TermExamMarksSection: React.FC<TermExamMarksSectionProps> = ({
               }}
               className="w-full rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-800 px-3 py-2 font-bold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500/30"
             >
-              {availableTerms.map((t) => (
-                <option key={t} value={t}>
-                  {t}
-                </option>
-              ))}
+              {availableTerms.length === 0 ? (
+                <option value="">No terms added yet</option>
+              ) : (
+                availableTerms.map((t) => (
+                  <option key={t} value={t}>
+                    {t}
+                  </option>
+                ))
+              )}
             </select>
           </div>
 
           <div className="md:col-span-3">
             <label className="block text-[11px] font-bold uppercase tracking-wider text-stone-600 dark:text-slate-300 mb-1">
-              Or Custom Term Label
+              Or Enter New Term Label
             </label>
             <input
               type="text"
@@ -1418,6 +1689,51 @@ export const TermExamMarksSection: React.FC<TermExamMarksSectionProps> = ({
             </div>
           </div>
         </div>
+
+        {/* Active Term Metadata Bar or Empty Prompt */}
+        {!activeTerm.trim() ? (
+          <div className="rounded-xl border border-amber-200 dark:border-amber-800/70 bg-amber-50/80 dark:bg-amber-950/30 px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+            <div className="flex items-center gap-2 text-amber-900 dark:text-amber-200">
+              <CalendarDays className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
+              <span>
+                No academic terms are preloaded. Add an academic term with its details (name, year, start &amp; end dates) or enter a term label above to begin entering marks.
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => handleOpenTermModal()}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 px-3 py-1.5 text-[11px] font-bold text-white shrink-0"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>Add Academic Term</span>
+            </button>
+          </div>
+        ) : activeTermDetails ? (
+          <div className="rounded-xl border border-blue-100 dark:border-blue-900/50 bg-blue-50/50 dark:bg-blue-950/20 px-3.5 py-2 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-700 dark:text-slate-300">
+            <div className="flex flex-wrap items-center gap-2">
+              <CalendarDays className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+              <span className="font-bold text-blue-900 dark:text-blue-200">{activeTermDetails.name}</span>
+              {activeTermDetails.academicYear && (
+                <span>· Year {activeTermDetails.academicYear}</span>
+              )}
+              {(activeTermDetails.startDate || activeTermDetails.endDate) && (
+                <span className="tabular-nums">
+                  · {activeTermDetails.startDate || '—'} to {activeTermDetails.endDate || '—'}
+                </span>
+              )}
+              {activeTermDetails.description && (
+                <span className="text-slate-500 dark:text-slate-400">— {activeTermDetails.description}</span>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={() => handleOpenTermModal(activeTermDetails)}
+              className="font-bold text-blue-700 dark:text-blue-300 hover:underline"
+            >
+              Edit Term Details
+            </button>
+          </div>
+        ) : null}
       </div>
 
       {/* Main Split View: Left Separated Bio & Physical Student Directory | Right Student Report Sheet */}
@@ -1584,7 +1900,12 @@ export const TermExamMarksSection: React.FC<TermExamMarksSectionProps> = ({
                     <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500 dark:text-slate-400 tabular-nums">
                       <span>Index: <strong>{selectedStudent.indexNumber || '—'}</strong></span>
                       <span>·</span>
-                      <span>Term: <strong className="text-blue-700 dark:text-blue-300">{activeTerm}</strong></span>
+                      <span>
+                        Term:{' '}
+                        <strong className={activeTerm ? 'text-blue-700 dark:text-blue-300' : 'text-amber-600 dark:text-amber-400'}>
+                          {activeTerm || 'Not selected yet'}
+                        </strong>
+                      </span>
                     </div>
 
                     {/* Inline Stream Switcher synced to Attendance */}
@@ -1918,19 +2239,205 @@ export const TermExamMarksSection: React.FC<TermExamMarksSectionProps> = ({
                       )}
                     </div>
 
-                    <button
-                      type="button"
-                      onClick={handleSaveStudentReport}
-                      disabled={savingSheet}
-                      className="inline-flex items-center justify-center gap-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 px-5 py-2.5 text-xs font-bold text-white shadow-sm transition-all"
-                    >
-                      <Save className="w-4 h-4" />
-                      <span>{savingSheet ? 'Saving Report Sheet...' : 'Save Report Sheet'}</span>
-                    </button>
+                      <button
+                        type="button"
+                        onClick={handleSaveStudentReport}
+                        disabled={savingSheet || !activeTerm.trim()}
+                        className="inline-flex items-center justify-center gap-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 px-5 py-2.5 text-xs font-bold text-white shadow-sm transition-all"
+                      >
+                        <Save className="w-4 h-4" />
+                        <span>{savingSheet ? 'Saving Report Sheet...' : 'Save Report Sheet'}</span>
+                      </button>
+                    </div>
                   </div>
                 </div>
+              )}
+            </div>
+          </div>
+        )}
+
+      {/* Teacher & Admin Only: Academic Term Details Manager Modal */}
+      {isTeacherOrAdmin && showTermModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="w-full max-w-xl rounded-2xl border border-stone-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-2xl overflow-hidden">
+            <div className="px-6 py-4 border-b border-stone-100 dark:border-slate-800 flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <CalendarDays className="w-5 h-5 text-blue-600 dark:text-blue-400" />
+                <div>
+                  <h4 className="font-serif text-base font-bold text-slate-900 dark:text-white">
+                    {editingTermId ? 'Edit Academic Term Details' : 'Academic Term Details'}
+                  </h4>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                    Teachers &amp; Admins only — configure terms for {activeBatchName}
+                  </p>
+                </div>
               </div>
-            )}
+              <button
+                type="button"
+                onClick={() => setShowTermModal(false)}
+                className="rounded-lg p-1.5 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-stone-100 dark:hover:bg-slate-800"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveAcademicTerm} className="p-6 space-y-4 text-xs">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="sm:col-span-2">
+                  <label className="block text-[11px] font-bold uppercase tracking-wider text-stone-600 dark:text-slate-300 mb-1">
+                    Academic Term Name *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={termFormName}
+                    onChange={(e) => setTermFormName(e.target.value)}
+                    placeholder="e.g. First Term Examination 2026"
+                    className="w-full rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-800 px-3 py-2 text-slate-900 dark:text-white font-semibold placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/30"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-bold uppercase tracking-wider text-stone-600 dark:text-slate-300 mb-1">
+                    Academic Year
+                  </label>
+                  <input
+                    type="text"
+                    value={termFormYear}
+                    onChange={(e) => setTermFormYear(e.target.value)}
+                    placeholder="e.g. 2026"
+                    className="w-full rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-800 px-3 py-2 text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/30"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-[11px] font-bold uppercase tracking-wider text-stone-600 dark:text-slate-300 mb-1">
+                      Start Date
+                    </label>
+                    <input
+                      type="date"
+                      value={termFormStart}
+                      onChange={(e) => setTermFormStart(e.target.value)}
+                      className="w-full rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-800 px-2.5 py-2 text-slate-900 dark:text-white tabular-nums focus:outline-none focus:ring-2 focus:ring-blue-500/30"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-bold uppercase tracking-wider text-stone-600 dark:text-slate-300 mb-1">
+                      End Date
+                    </label>
+                    <input
+                      type="date"
+                      value={termFormEnd}
+                      onChange={(e) => setTermFormEnd(e.target.value)}
+                      className="w-full rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-800 px-2.5 py-2 text-slate-900 dark:text-white tabular-nums focus:outline-none focus:ring-2 focus:ring-blue-500/30"
+                    />
+                  </div>
+                </div>
+
+                <div className="sm:col-span-2">
+                  <label className="block text-[11px] font-bold uppercase tracking-wider text-stone-600 dark:text-slate-300 mb-1">
+                    Term Details / Notes
+                  </label>
+                  <input
+                    type="text"
+                    value={termFormDesc}
+                    onChange={(e) => setTermFormDesc(e.target.value)}
+                    placeholder="e.g. Covers Units 1–4 across Bio & Physical Streams"
+                    className="w-full rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-800 px-3 py-2 text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/30"
+                  />
+                </div>
+              </div>
+
+              {termFormError && (
+                <div className="rounded-xl border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/30 p-3 text-red-700 dark:text-red-300 flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 shrink-0" />
+                  <span>{termFormError}</span>
+                </div>
+              )}
+
+              <div className="flex items-center justify-end gap-2 pt-2">
+                {editingTermId && (
+                  <button
+                    type="button"
+                    onClick={() => handleOpenTermModal()}
+                    className="mr-auto rounded-xl border border-stone-200 dark:border-slate-700 px-3 py-2 font-semibold text-slate-600 dark:text-slate-300 hover:bg-stone-50 dark:hover:bg-slate-800"
+                  >
+                    + New Term Instead
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setShowTermModal(false)}
+                  className="rounded-xl border border-stone-200 dark:border-slate-700 px-4 py-2 font-semibold text-slate-600 dark:text-slate-300 hover:bg-stone-50 dark:hover:bg-slate-800"
+                >
+                  Close
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingTerm}
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-60 px-4 py-2 font-bold text-white shadow-xs"
+                >
+                  <Save className="w-3.5 h-3.5" />
+                  <span>{savingTerm ? 'Saving...' : editingTermId ? 'Update Term' : 'Save Academic Term'}</span>
+                </button>
+              </div>
+            </form>
+
+            {/* Saved Terms Directory */}
+            <div className="border-t border-stone-100 dark:border-slate-800 bg-stone-50/70 dark:bg-slate-800/40 px-6 py-4 space-y-2 max-h-56 overflow-y-auto">
+              <p className="text-[11px] font-bold uppercase tracking-wider text-stone-500 dark:text-slate-400">
+                Saved Academic Terms ({academicTerms.length})
+              </p>
+              {academicTerms.length === 0 ? (
+                <p className="text-xs text-slate-400 dark:text-slate-500 py-2">
+                  No academic terms saved yet. Create your first term above.
+                </p>
+              ) : (
+                <div className="space-y-1.5">
+                  {academicTerms.map((termItem) => (
+                    <div
+                      key={termItem.id}
+                      className="rounded-xl border border-stone-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-2 flex items-center justify-between gap-2 text-xs"
+                    >
+                      <div className="min-w-0">
+                        <p className="font-bold text-slate-900 dark:text-white truncate">
+                          {termItem.name}
+                        </p>
+                        <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate tabular-nums">
+                          {[
+                            termItem.academicYear && `Year ${termItem.academicYear}`,
+                            (termItem.startDate || termItem.endDate) &&
+                              `${termItem.startDate || '—'} to ${termItem.endDate || '—'}`,
+                            termItem.description,
+                          ]
+                            .filter(Boolean)
+                            .join(' · ') || 'No extra details'}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => handleOpenTermModal(termItem)}
+                          className="rounded-lg p-1.5 text-slate-500 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950/30"
+                          title="Edit term"
+                        >
+                          <Pencil className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteAcademicTerm(termItem)}
+                          className="rounded-lg p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30"
+                          title="Delete term"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}
