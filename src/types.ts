@@ -742,3 +742,43 @@ export interface TimetableEntry {
   updatedAt: string;
 }
 
+export interface AdmissionFormRecord {
+  id: string;
+  title: string;
+  academicYear: string;
+  batchName?: string;
+  deadline?: string;
+  instructions?: string;
+  fileName: string;
+  fileUrl: string;
+  fileSize?: string;
+  isActive: boolean;
+  uploadedBy: string;
+  uploadedByName: string;
+  uploadedByRole: 'admin' | 'teacher';
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface YearlyResultReport {
+  id: string;
+  examYear: string;
+  title: string;
+  summary?: string;
+  totalCandidates: number;
+  universityQualifiedCount: number;
+  universityPassRate: number;
+  a3Count: number;
+  physicalPassRate: number;
+  bioPassRate: number;
+  medicineCount?: number;
+  engineeringCount?: number;
+  pdfFileName?: string;
+  pdfFileUrl?: string;
+  pdfFileSize?: string;
+  updatedBy: string;
+  updatedByName: string;
+  updatedByRole: 'admin' | 'teacher';
+  createdAt: string;
+  updatedAt: string;
+}
