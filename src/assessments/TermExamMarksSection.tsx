@@ -197,7 +197,7 @@ export const TermExamMarksSection: React.FC<TermExamMarksSectionProps> = ({
   );
 
   const activeTerm = isTeacherOrAdmin
-    ? customTermInput.trim() || selectedTerm
+    ? customTermInput.trim()
     : selectedTerm;
   const activeTermSlug = activeTerm.trim() ? slugifyTerm(activeTerm) : '';
 
@@ -233,8 +233,9 @@ export const TermExamMarksSection: React.FC<TermExamMarksSectionProps> = ({
     return Array.from(set);
   }, [academicTerms, termReports]);
 
-  // Keep selectedTerm synced only to terms actually created in Firestore
+  // Keep selectedTerm synced ONLY for Student/Parent read-only dropdown; keep Teacher/Admin term box empty
   useEffect(() => {
+    if (isTeacherOrAdmin) return;
     if (availableTerms.length === 0) {
       if (selectedTerm !== '') setSelectedTerm('');
       return;
@@ -242,7 +243,7 @@ export const TermExamMarksSection: React.FC<TermExamMarksSectionProps> = ({
     if (!selectedTerm || !availableTerms.includes(selectedTerm)) {
       setSelectedTerm(availableTerms[0]);
     }
-  }, [availableTerms, selectedTerm]);
+  }, [isTeacherOrAdmin, availableTerms, selectedTerm]);
 
   // For students/parents: resolve their matched TermExamReport(s) read-only
   const personalReportsForViewer = useMemo(() => {
@@ -620,7 +621,7 @@ export const TermExamMarksSection: React.FC<TermExamMarksSectionProps> = ({
 
       await setDoc(doc(db, 'academicTerms', termId), sanitizeFirestoreDoc(payload));
       setSelectedTerm(trimmedName);
-      setCustomTermInput('');
+      setCustomTermInput(trimmedName);
       setShowTermModal(false);
       onToast(
         editingTermId
@@ -725,8 +726,6 @@ export const TermExamMarksSection: React.FC<TermExamMarksSectionProps> = ({
           updatedAt: nowIso,
         };
         await setDoc(doc(db, 'academicTerms', termId), sanitizeFirestoreDoc(newTermDoc));
-        setSelectedTerm(resolvedTerm);
-        setCustomTermInput('');
       }
       onToast(
         `Saved ${resolvedTerm} marks & report sheet for ${selectedStudent.fullName} (${targetBatchName}).`
@@ -1582,7 +1581,7 @@ export const TermExamMarksSection: React.FC<TermExamMarksSectionProps> = ({
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-12 gap-3 text-xs items-end">
-          <div className="md:col-span-3">
+          <div className="md:col-span-5">
             <div className="flex items-center justify-between mb-1">
               <label className="block text-[11px] font-bold uppercase tracking-wider text-stone-600 dark:text-slate-300">
                 Academic Term
@@ -1599,40 +1598,34 @@ export const TermExamMarksSection: React.FC<TermExamMarksSectionProps> = ({
                 </button>
               )}
             </div>
-            <select
-              value={selectedTerm}
-              onChange={(e) => {
-                setSelectedTerm(e.target.value);
-                setCustomTermInput('');
-              }}
-              className="w-full rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-800 px-3 py-2 font-bold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500/30"
-            >
-              {availableTerms.length === 0 ? (
-                <option value="">No terms added yet</option>
-              ) : (
-                availableTerms.map((t) => (
-                  <option key={t} value={t}>
-                    {t}
-                  </option>
-                ))
+            <div className="relative">
+              <input
+                type="text"
+                list="teacher-saved-academic-terms"
+                value={customTermInput}
+                onChange={(e) => setCustomTermInput(e.target.value)}
+                placeholder="Type any academic term (e.g. First Term Test 2026)"
+                className="w-full rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-800 px-3 py-2 font-semibold text-slate-900 dark:text-white placeholder:font-normal placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/30"
+              />
+              {customTermInput && (
+                <button
+                  type="button"
+                  onClick={() => setCustomTermInput('')}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+                  title="Clear term"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
               )}
-            </select>
+            </div>
+            <datalist id="teacher-saved-academic-terms">
+              {availableTerms.map((t) => (
+                <option key={t} value={t} />
+              ))}
+            </datalist>
           </div>
 
-          <div className="md:col-span-3">
-            <label className="block text-[11px] font-bold uppercase tracking-wider text-stone-600 dark:text-slate-300 mb-1">
-              Or Enter New Term Label
-            </label>
-            <input
-              type="text"
-              value={customTermInput}
-              onChange={(e) => setCustomTermInput(e.target.value)}
-              placeholder="e.g. First Term Test 2026"
-              className="w-full rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-800 px-3 py-2 text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/30"
-            />
-          </div>
-
-          <div className="md:col-span-3">
+          <div className="md:col-span-4">
             <label className="block text-[11px] font-bold uppercase tracking-wider text-stone-600 dark:text-slate-300 mb-1">
               Search Student
             </label>
@@ -1696,7 +1689,9 @@ export const TermExamMarksSection: React.FC<TermExamMarksSectionProps> = ({
             <div className="flex items-center gap-2 text-amber-900 dark:text-amber-200">
               <CalendarDays className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
               <span>
-                No academic terms are preloaded. Add an academic term with its details (name, year, start &amp; end dates) or enter a term label above to begin entering marks.
+                {availableTerms.length > 0
+                  ? 'Type any Academic Term in the empty field above (or choose a previously saved term from its suggestions) to enter or view marks.'
+                  : 'Enter any Academic Term in the field above, or click Add Academic Term to save full term details (name, year, start & end dates).'}
               </span>
             </div>
             <button
