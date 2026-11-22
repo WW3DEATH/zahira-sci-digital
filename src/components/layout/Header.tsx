@@ -12,6 +12,7 @@ import {
   Menu,
   Layers,
   Lock,
+  Home,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useTheme } from '../../context/ThemeContext';
@@ -29,6 +30,7 @@ interface HeaderProps {
   onOpenProfile?: () => void;
   onOpenAuthModal?: () => void;
   onNavigate?: (page: string) => void;
+  onReturnHome?: () => void;
   onToggleMobileMenu?: () => void;
 }
 
@@ -37,6 +39,7 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenProfile,
   onOpenAuthModal,
   onNavigate,
+  onReturnHome,
   onToggleMobileMenu,
 }) => {
   const {
@@ -199,6 +202,19 @@ export const Header: React.FC<HeaderProps> = ({
           >
             <CalendarCheck2 className="w-4 h-4 text-white" />
             <span className="hidden md:inline">Calendar & Attendance</span>
+          </button>
+        )}
+
+        {/* Return to Public Project Homepage */}
+        {onReturnHome && (
+          <button
+            type="button"
+            onClick={onReturnHome}
+            className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 px-2.5 sm:px-3 py-1.5 min-h-[36px] text-xs font-semibold text-slate-700 dark:text-slate-200 transition-colors shrink-0"
+            title="View Zahira Science Project Home Page"
+          >
+            <Home className="w-3.5 h-3.5 text-blue-700 dark:text-blue-400" />
+            <span className="hidden md:inline">Project Home</span>
           </button>
         )}
 
