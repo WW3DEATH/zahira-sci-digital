@@ -40,6 +40,7 @@ import {
   ExternalLink,
   Hash,
   MessageSquareText,
+  Globe,
 } from 'lucide-react';
 import {
   collection,
@@ -73,9 +74,11 @@ import {
   DiscussionRoomMessage,
 } from '../types';
 import { REAL_ADMIN_PROFILE } from '../services/dataService';
+import { HomepageSyncManager } from '../components/admin/HomepageSyncManager';
 
 type AdminTab =
   | 'branding'
+  | 'homepage_sync'
   | 'batches'
   | 'subjects'
   | 'classes'
@@ -907,6 +910,7 @@ export const AdminMasterControlPage: React.FC<AdminMasterControlPageProps> = ({
             >
               {[
                 { id: 'branding', label: 'Website Identity', icon: School },
+                { id: 'homepage_sync', label: 'Homepage Sync', icon: Globe },
                 { id: 'batches', label: `Batches (${batches.length})`, icon: Layers },
                 { id: 'subjects', label: `Subjects (${subjects.length})`, icon: BookOpen },
                 { id: 'classes', label: `Classes (${classes.length})`, icon: GraduationCap },
@@ -3459,6 +3463,8 @@ export const AdminMasterControlPage: React.FC<AdminMasterControlPageProps> = ({
           )}
         </div>
       )}
+
+      {activeTab === 'homepage_sync' && <HomepageSyncManager />}
     </div>
   );
 };
