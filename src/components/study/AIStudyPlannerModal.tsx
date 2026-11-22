@@ -681,7 +681,7 @@ export const AIStudyPlannerModal: React.FC<AIStudyPlannerModalProps> = ({
         <div className="px-6 py-4 border-t border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/40 flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
           <div className="flex items-center gap-1.5">
             <BookOpen className="w-4 h-4 text-blue-600" />
-            <span>Zahira College 2k28 Science EM • Powered by Gemini 3.8 Flash & Google DeepMind Science Skills</span>
+            <span>Zahira College Mawanella Science Project EM • Powered by Gemini 3.8 Flash & Google DeepMind Science Skills</span>
           </div>
 
           <button
