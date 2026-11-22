@@ -361,7 +361,7 @@ export const ScienceLabsPage: React.FC = () => {
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(7.5);
     doc.setTextColor(148, 163, 184);
-    doc.text('Official Syllabus Competency Verification • Zahira College 2k28 Science EM', 20, y);
+    doc.text('Official Syllabus Competency Verification • Zahira College Mawanella Science Project EM', 20, y);
 
     return doc;
   };
