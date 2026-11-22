@@ -7,9 +7,14 @@ import { OFFICIAL_STUDENT_SUBJECTS } from '../../types';
 interface AuthModalProps {
   isOpen: boolean;
   onClose: () => void;
+  initialMode?: 'signin' | 'signup';
 }
 
-export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
+export const AuthModal: React.FC<AuthModalProps> = ({
+  isOpen,
+  onClose,
+  initialMode = 'signin',
+}) => {
   const {
     userProfile,
     signInWithGoogle,
@@ -19,7 +24,14 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
     signUpWithEmail,
   } = useAuth();
   const { batches } = useBatch();
-  const [isSignUp, setIsSignUp] = useState(false);
+  const [isSignUp, setIsSignUp] = useState(initialMode === 'signup');
+
+  React.useEffect(() => {
+    if (isOpen) {
+      setIsSignUp(initialMode === 'signup');
+      setError('');
+    }
+  }, [isOpen, initialMode]);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
