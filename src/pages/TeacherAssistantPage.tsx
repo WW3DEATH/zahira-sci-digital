@@ -24,7 +24,7 @@ export const TeacherAssistantPage: React.FC = () => {
   const { userProfile, activeRole } = useAuth();
   const [taskType, setTaskType] = useState<string>('lesson_plan');
   const [subject, setSubject] = useState('Combined Mathematics');
-  const [gradeLevel, setGradeLevel] = useState('Zahira College 2k28 Science EM');
+  const [gradeLevel, setGradeLevel] = useState('Zahira College Mawanella Science Project EM');
   const [topic, setTopic] = useState('Differential Calculus: First Principles & Composite Limits');
   const [additionalNotes, setAdditionalNotes] = useState('Include 1 worked past-paper problem and an exit ticket question.');
 
