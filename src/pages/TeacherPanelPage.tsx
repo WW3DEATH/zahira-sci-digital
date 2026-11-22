@@ -21,6 +21,7 @@ import {
   Phone,
   Tag,
   Clock,
+  Globe,
 } from 'lucide-react';
 import { collection, doc, onSnapshot, setDoc, deleteDoc } from 'firebase/firestore';
 import { db, sanitizeFirestoreDoc } from '../firebase';
@@ -29,6 +30,7 @@ import { ALL_BATCHES_ID, useBatch, isInBatch } from '../context/BatchContext';
 import { SchoolClass, UserProfile, Announcement, UserRole } from '../types';
 import { SEED_CLASSES } from '../services/dataService';
 import { broadcastSystemNotification } from '../services/notificationService';
+import { HomepageSyncManager } from '../components/admin/HomepageSyncManager';
 
 interface TeacherPanelPageProps {
   onNavigate?: (page: string) => void;
@@ -37,7 +39,7 @@ interface TeacherPanelPageProps {
 export const TeacherPanelPage: React.FC<TeacherPanelPageProps> = ({ onNavigate }) => {
   const { userProfile, activeRole } = useAuth();
   const { batches, activeBatchId, activeBatch, resolveWriteBatchId, setActiveBatchId, getBatchName } = useBatch();
-  const [activeTab, setActiveTab] = useState<'classes' | 'users' | 'notices'>('classes');
+  const [activeTab, setActiveTab] = useState<'classes' | 'users' | 'notices' | 'homepage_sync'>('classes');
 
   // 1. Classes State
   const [classes, setClasses] = useState<SchoolClass[]>([]);
@@ -391,8 +393,22 @@ export const TeacherPanelPage: React.FC<TeacherPanelPageProps> = ({ onNavigate }
             <Bell className="w-4 h-4" />
             <span>Publish Notices ({batchNotices.length})</span>
           </button>
+
+          <button
+            onClick={() => setActiveTab('homepage_sync')}
+            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all ${
+              activeTab === 'homepage_sync'
+                ? 'bg-white text-blue-950 shadow-md'
+                : 'text-blue-200 hover:text-white hover:bg-white/10'
+            }`}
+          >
+            <Globe className="w-4 h-4" />
+            <span>Homepage Admissions &amp; Results</span>
+          </button>
         </div>
       </div>
+
+      {activeTab === 'homepage_sync' && <HomepageSyncManager />}
 
       {/* =========================================================================
           TAB 1: CLASS COHORTS MANAGEMENT (ADD & REMOVE)
