@@ -22,6 +22,7 @@ import {
 import { jsPDF } from 'jspdf';
 import { collection, doc, onSnapshot, setDoc } from 'firebase/firestore';
 import { db, sanitizeFirestoreDoc, handleFirestoreError, OperationType } from '../../firebase';
+import { ALL_BATCHES_ID, DEFAULT_BATCH_ID, DEFAULT_BATCH_NAME, isInBatch, resolveItemBatchId } from '../../context/BatchContext';
 import {
   RosterStudent,
   StudentStream,
@@ -32,6 +33,8 @@ import {
 import { PDFPreviewData } from '../common/PDFPreviewModal';
 
 interface TermExamMarksSectionProps {
+  activeBatchId: string;
+  activeBatchName: string;
   isTeacherOrAdmin: boolean;
   userProfile: UserProfile | null;
   rosterStudents: RosterStudent[];
@@ -99,6 +102,8 @@ const getStreamLabel = (stream?: StudentStream): string => {
 };
 
 export const TermExamMarksSection: React.FC<TermExamMarksSectionProps> = ({
+  activeBatchId,
+  activeBatchName,
   isTeacherOrAdmin,
   userProfile,
   rosterStudents,
@@ -107,7 +112,7 @@ export const TermExamMarksSection: React.FC<TermExamMarksSectionProps> = ({
   onPreviewPDF,
   onToast,
 }) => {
-  const [termReports, setTermReports] = useState<TermExamReport[]>([]);
+  const [allTermReports, setAllTermReports] = useState<TermExamReport[]>([]);
   const [selectedTerm, setSelectedTerm] = useState<string>(DEFAULT_TERMS[0]);
   const [customTermInput, setCustomTermInput] = useState<string>('');
   const [streamViewFilter, setStreamViewFilter] = useState<'all' | 'bio' | 'physical'>('all');
@@ -135,7 +140,7 @@ export const TermExamMarksSection: React.FC<TermExamMarksSectionProps> = ({
           const data = d.data() as TermExamReport;
           list.push({ ...data, id: d.id });
         });
-        setTermReports(list);
+        setAllTermReports(list);
       },
       (error) => {
         handleFirestoreError(error, OperationType.LIST, 'termExamReports');
@@ -143,6 +148,11 @@ export const TermExamMarksSection: React.FC<TermExamMarksSectionProps> = ({
     );
     return () => unsub();
   }, []);
+
+  const termReports = useMemo(
+    () => allTermReports.filter((rep) => isInBatch(rep.batchId, activeBatchId)),
+    [allTermReports, activeBatchId]
+  );
 
   const activeTerm = customTermInput.trim() || selectedTerm;
   const activeTermSlug = slugifyTerm(activeTerm);
@@ -320,10 +330,20 @@ export const TermExamMarksSection: React.FC<TermExamMarksSectionProps> = ({
   // Update a student's stream directly on attendanceRoster so Attendance & Term Marks stay 100% synced
   const handleAssignStream = async (student: RosterStudent, stream: StudentStream) => {
     if (!isTeacherOrAdmin) return;
+    const studentBatchId = resolveItemBatchId(
+      student.batchId || (activeBatchId !== ALL_BATCHES_ID ? activeBatchId : DEFAULT_BATCH_ID)
+    );
+    const studentBatchName =
+      student.batchName || (activeBatchId !== ALL_BATCHES_ID ? activeBatchName : DEFAULT_BATCH_NAME);
     try {
       await setDoc(
         doc(db, 'attendanceRoster', student.id),
-        sanitizeFirestoreDoc({ ...student, stream })
+        sanitizeFirestoreDoc({
+          ...student,
+          batchId: studentBatchId,
+          batchName: studentBatchName,
+          stream,
+        })
       );
       // Also update existing term report stream metadata if present
       const existingRep = reportsByStudentId[student.id];
@@ -332,6 +352,8 @@ export const TermExamMarksSection: React.FC<TermExamMarksSectionProps> = ({
           doc(db, 'termExamReports', existingRep.id),
           sanitizeFirestoreDoc({
             ...existingRep,
+            batchId: studentBatchId,
+            batchName: studentBatchName,
             stream,
             updatedAt: new Date().toISOString(),
           })
@@ -470,10 +492,20 @@ export const TermExamMarksSection: React.FC<TermExamMarksSectionProps> = ({
     const average =
       totalMaxMarks > 0 ? Math.round((totalMarks / totalMaxMarks) * 1000) / 10 : 0;
 
-    const docId = `${activeTermSlug}__${selectedStudent.id}`;
+    const targetBatchId = resolveItemBatchId(
+      selectedStudent.batchId || (activeBatchId !== ALL_BATCHES_ID ? activeBatchId : DEFAULT_BATCH_ID)
+    );
+    const targetBatchName =
+      selectedStudent.batchName || (activeBatchId !== ALL_BATCHES_ID ? activeBatchName : DEFAULT_BATCH_NAME);
+    const docId =
+      targetBatchId === DEFAULT_BATCH_ID
+        ? `${activeTermSlug}__${selectedStudent.id}`
+        : `${activeTermSlug}__${targetBatchId}__${selectedStudent.id}`;
     const payload: TermExamReport = {
       id: docId,
       term: activeTerm,
+      batchId: targetBatchId,
+      batchName: targetBatchName,
       studentId: selectedStudent.id,
       studentName: selectedStudent.fullName,
       studentIndex: selectedStudent.indexNumber || '—',
@@ -492,7 +524,7 @@ export const TermExamMarksSection: React.FC<TermExamMarksSectionProps> = ({
     try {
       await setDoc(doc(db, 'termExamReports', docId), sanitizeFirestoreDoc(payload));
       onToast(
-        `Saved ${activeTerm} marks & report sheet for ${selectedStudent.fullName}.`
+        `Saved ${activeTerm} marks & report sheet for ${selectedStudent.fullName} (${targetBatchName}).`
       );
     } catch (err) {
       setSheetError('Could not save term report sheet. Please try again.');
@@ -537,11 +569,18 @@ export const TermExamMarksSection: React.FC<TermExamMarksSectionProps> = ({
           }
           const positionStr = formatOrdinal(rank);
           updatedCount += 1;
+          const studentBatchId = resolveItemBatchId(
+            student.batchId || report.batchId || (activeBatchId !== ALL_BATCHES_ID ? activeBatchId : DEFAULT_BATCH_ID)
+          );
+          const studentBatchName =
+            student.batchName || report.batchName || (activeBatchId !== ALL_BATCHES_ID ? activeBatchName : DEFAULT_BATCH_NAME);
           writes.push(
             setDoc(
               doc(db, 'termExamReports', report.id),
               sanitizeFirestoreDoc({
                 ...report,
+                batchId: studentBatchId,
+                batchName: studentBatchName,
                 stream: student.stream,
                 position: positionStr,
                 updatedBy: userProfile?.fullName || 'Faculty',
@@ -606,7 +645,7 @@ export const TermExamMarksSection: React.FC<TermExamMarksSectionProps> = ({
     pdf.setFont('helvetica', 'bold');
     pdf.setFontSize(9.5);
     pdf.setTextColor(251, 191, 36);
-    pdf.text('G.C.E. ADVANCED LEVEL SCIENCE SECTION (2K28 EM) • TERM REPORT CARD', pageW / 2, 30, {
+    pdf.text(`G.C.E. ADVANCED LEVEL SCIENCE SECTION (${activeBatchName.toUpperCase()}) • TERM REPORT CARD`, pageW / 2, 30, {
       align: 'center',
     });
 
@@ -646,7 +685,7 @@ export const TermExamMarksSection: React.FC<TermExamMarksSectionProps> = ({
         ? 'Biological Science Stream'
         : reportData.stream === 'physical'
           ? 'Physical Science Stream'
-          : 'Science Stream (2k28 EM)';
+          : `Science Stream (${activeBatchName})`;
 
     pdf.setFont('helvetica', 'bold');
     pdf.setFontSize(8.5);
@@ -849,7 +888,7 @@ export const TermExamMarksSection: React.FC<TermExamMarksSectionProps> = ({
     pdf.setFontSize(7);
     pdf.setTextColor(100, 116, 139);
     pdf.text('Zahira College Mawanella', 44, sigY + 9, { align: 'center' });
-    pdf.text('2k28 Science EM Registry', 105, sigY + 9, { align: 'center' });
+    pdf.text(`${activeBatchName} Registry`, 105, sigY + 9, { align: 'center' });
     pdf.text('Official School Seal', 166, sigY + 9, { align: 'center' });
 
     return pdf;
@@ -907,7 +946,7 @@ export const TermExamMarksSection: React.FC<TermExamMarksSectionProps> = ({
     pdf.setFont('helvetica', 'bold');
     pdf.setFontSize(14);
     pdf.setTextColor(15, 23, 42);
-    pdf.text('ZAHIRA COLLEGE MAWANELLA • 2K28 SCIENCE EM', 16, 18);
+    pdf.text(`ZAHIRA COLLEGE MAWANELLA • ${activeBatchName.toUpperCase()}`, 16, 18);
 
     pdf.setFontSize(10);
     pdf.setTextColor(30, 64, 175);
