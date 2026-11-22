@@ -181,6 +181,21 @@ export interface TermExamSubjectMark {
   maxMarks: number;
 }
 
+export interface AcademicTerm {
+  id: string;
+  name: string;
+  academicYear?: string;
+  startDate?: string;
+  endDate?: string;
+  description?: string;
+  batchId: string;
+  batchName: string;
+  createdBy: string;
+  createdByName?: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
 export interface TermExamReport {
   id: string; // `${termSlug}__${studentId}`
   term: string;
