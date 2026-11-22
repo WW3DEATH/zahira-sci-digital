@@ -220,7 +220,7 @@ export const SEED_SCHOOL_EVENTS: SchoolEvent[] = [
 
 export const SEED_SETTING: SchoolSetting = {
   id: 'main-settings',
-  schoolName: 'Zahira College Science Project Management',
+  schoolName: 'Zahira College Mawanella Science Project EM',
   cohortName: 'Advanced Level Science',
   academicYear: '2026-2028',
   terms: ['Term 1 (2026)', 'Term 2 (2027)', 'Term 3 (2028)'],
@@ -229,7 +229,7 @@ export const SEED_SETTING: SchoolSetting = {
   address: 'Zahira College, Mawanella, Kegalle District, Sri Lanka',
   room: 'Science Complex - Hall 28',
   motto: 'Excellence in Science, Knowledge, and Discipline',
-  marqueeNotice: 'Welcome to Zahira College Science Project Management • Term 1 Lecture Schedule Active • Lab Practicals in Session',
+  marqueeNotice: 'Welcome to Zahira College Mawanella Science Project EM • Term 1 Lecture Schedule Active • Lab Practicals in Session',
   showMarquee: true,
   logoUrl: '',
   primaryColor: '#1e3a8a', // Royal Navy Blue
@@ -385,11 +385,32 @@ export async function seedInitialDatabaseIfEmpty() {
       }
     }
 
-    if (settingsSnap.exists() && settingsSnap.data()?.schoolName === 'Zahira College 2k28 Science EM') {
-      return; // Core metadata already up to date
+    if (settingsSnap.exists()) {
+      const currentSchoolName = settingsSnap.data()?.schoolName;
+      if (
+        currentSchoolName === 'Zahira College 2k28 Science EM' ||
+        currentSchoolName === 'Zahira College Science Project Management'
+      ) {
+        await setDoc(
+          doc(db, 'schoolSettings', SEED_SETTING.id),
+          {
+            schoolName: SEED_SETTING.schoolName,
+            marqueeNotice: SEED_SETTING.marqueeNotice,
+          },
+          { merge: true }
+        );
+      }
+      if (
+        currentSchoolName === SEED_SETTING.schoolName ||
+        (currentSchoolName &&
+          currentSchoolName !== 'Zahira College 2k28 Science EM' &&
+          currentSchoolName !== 'Zahira College Science Project Management')
+      ) {
+        return; // Core metadata already up to date
+      }
     }
 
-    console.log('Synchronizing Zahira College 2k28 Science EM Firestore records...');
+    console.log('Synchronizing Zahira College Mawanella Science Project EM Firestore records...');
 
     // Subjects
     for (const s of SEED_SUBJECTS) {
