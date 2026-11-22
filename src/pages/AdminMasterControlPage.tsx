@@ -55,8 +55,10 @@ import {
 import { db, sanitizeFirestoreDoc } from '../firebase';
 import { useAuth } from '../context/AuthContext';
 import { useSiteConfig } from '../context/SiteConfigContext';
+import { useBatch, isInBatch, DEFAULT_BATCH_ID, resolveItemBatchId } from '../context/BatchContext';
 import {
   SchoolSetting,
+  SchoolBatch,
   Subject,
   SchoolClass,
   UserProfile,
@@ -74,6 +76,7 @@ import { REAL_ADMIN_PROFILE } from '../services/dataService';
 
 type AdminTab =
   | 'branding'
+  | 'batches'
   | 'subjects'
   | 'classes'
   | 'users'
@@ -94,8 +97,26 @@ export const AdminMasterControlPage: React.FC<AdminMasterControlPageProps> = ({
 }) => {
   const { userProfile } = useAuth();
   const { siteConfig, updateSiteConfig } = useSiteConfig();
+  const {
+    batches,
+    activeBatchId,
+    setActiveBatchId,
+    getBatchName,
+    addBatch,
+    updateBatch,
+    deleteBatch,
+  } = useBatch();
   const [activeTab, setActiveTab] = useState<AdminTab>(initialTab);
   const [savedNotice, setSavedNotice] = useState<string | null>(null);
+  const [adminBatchFilter, setAdminBatchFilter] = useState<string>('all');
+
+  // Batch Management State
+  const [newBatchName, setNewBatchName] = useState('');
+  const [newBatchYear, setNewBatchYear] = useState('');
+  const [newBatchDesc, setNewBatchDesc] = useState('');
+  const [newBatchDefault, setNewBatchDefault] = useState(false);
+  const [editingBatch, setEditingBatch] = useState<SchoolBatch | null>(null);
+  const [confirmDeleteBatchId, setConfirmDeleteBatchId] = useState<string | null>(null);
 
   const tabsContainerRef = React.useRef<HTMLDivElement>(null);
 
@@ -163,6 +184,7 @@ export const AdminMasterControlPage: React.FC<AdminMasterControlPageProps> = ({
   const [appointEmail, setAppointEmail] = useState('');
   const [appointRole, setAppointRole] = useState<UserRole>('student');
   const [appointDetail, setAppointDetail] = useState('');
+  const [appointBatchId, setAppointBatchId] = useState<string>(DEFAULT_BATCH_ID);
 
   useEffect(() => {
     setBrandingForm(siteConfig);
@@ -471,23 +493,77 @@ export const AdminMasterControlPage: React.FC<AdminMasterControlPageProps> = ({
     }
   };
 
+  // Batch CRUD Handlers
+  const handleCreateBatch = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newBatchName.trim()) return;
+    try {
+      const created = await addBatch({
+        name: newBatchName.trim(),
+        academicYear: newBatchYear.trim(),
+        description: newBatchDesc.trim(),
+        isDefault: newBatchDefault,
+      });
+      setNewBatchName('');
+      setNewBatchYear('');
+      setNewBatchDesc('');
+      setNewBatchDefault(false);
+      triggerNotice(`Batch "${created.name}" created and synced live!`);
+    } catch (err: any) {
+      triggerNotice(err?.message || 'Failed to create batch.');
+    }
+  };
+
+  const handleSaveEditedBatch = async () => {
+    if (!editingBatch || !editingBatch.name.trim()) return;
+    try {
+      await updateBatch(editingBatch.id, {
+        name: editingBatch.name.trim(),
+        academicYear: editingBatch.academicYear || '',
+        description: editingBatch.description || '',
+        isDefault: !!editingBatch.isDefault,
+      });
+      setEditingBatch(null);
+      triggerNotice(`Batch "${editingBatch.name}" updated!`);
+    } catch (err: any) {
+      triggerNotice(err?.message || 'Failed to update batch.');
+    }
+  };
+
+  const handleRemoveBatch = async (batch: SchoolBatch) => {
+    try {
+      await deleteBatch(batch.id);
+      setConfirmDeleteBatchId(null);
+      if (adminBatchFilter === batch.id) setAdminBatchFilter('all');
+      triggerNotice(`Batch "${batch.name}" removed from school system.`);
+    } catch (err: any) {
+      setConfirmDeleteBatchId(null);
+      triggerNotice(err?.message || 'Cannot remove batch.');
+    }
+  };
+
   // 2. Subject Actions
   const handleSaveSubject = async () => {
     if (!editingSubject?.name || !editingSubject?.code) return;
     const id = editingSubject.id || `sub-${Date.now()}`;
+    const chosenBatchId =
+      editingSubject.batchId ||
+      (adminBatchFilter !== 'all' ? adminBatchFilter : activeBatchId || DEFAULT_BATCH_ID);
     const payload: Subject = {
       id,
       name: editingSubject.name,
       code: editingSubject.code,
       description: editingSubject.description || '',
       color: editingSubject.color || '#1e3a8a',
+      batchId: chosenBatchId,
+      batchName: getBatchName(chosenBatchId),
       teacherIds: editingSubject.teacherIds || [],
       classIds: editingSubject.classIds || [],
       createdAt: editingSubject.createdAt || new Date().toISOString(),
     };
-    await setDoc(doc(db, 'subjects', id), payload, { merge: true });
+    await setDoc(doc(db, 'subjects', id), sanitizeFirestoreDoc(payload), { merge: true });
     setEditingSubject(null);
-    triggerNotice(`Subject "${payload.name}" saved!`);
+    triggerNotice(`Subject "${payload.name}" saved for ${payload.batchName}!`);
   };
 
   const handleDeleteSubject = async (id: string, name: string) => {
@@ -504,21 +580,26 @@ export const AdminMasterControlPage: React.FC<AdminMasterControlPageProps> = ({
   const handleSaveClass = async () => {
     if (!editingClass?.name) return;
     const id = editingClass.id || `class-${Date.now()}`;
+    const chosenBatchId =
+      editingClass.batchId ||
+      (adminBatchFilter !== 'all' ? adminBatchFilter : activeBatchId || DEFAULT_BATCH_ID);
     const payload: SchoolClass = {
       id,
       name: editingClass.name,
-      grade: editingClass.grade || 'A/L Batch 2028',
+      grade: editingClass.grade || getBatchName(chosenBatchId),
       academicYear: editingClass.academicYear || '2026-2028',
       description: editingClass.description || '',
       room: editingClass.room || 'Science Complex - Hall 28',
+      batchId: chosenBatchId,
+      batchName: getBatchName(chosenBatchId),
       teacherIds: editingClass.teacherIds || [],
       studentIds: editingClass.studentIds || [],
       subjectIds: editingClass.subjectIds || [],
       createdAt: editingClass.createdAt || new Date().toISOString(),
     };
-    await setDoc(doc(db, 'classes', id), payload, { merge: true });
+    await setDoc(doc(db, 'classes', id), sanitizeFirestoreDoc(payload), { merge: true });
     setEditingClass(null);
-    triggerNotice(`Class "${payload.name}" saved!`);
+    triggerNotice(`Class "${payload.name}" saved for ${payload.batchName}!`);
   };
 
   const handleDeleteClass = async (id: string, name: string) => {
@@ -534,14 +615,46 @@ export const AdminMasterControlPage: React.FC<AdminMasterControlPageProps> = ({
   // 4. User Actions
   const handleSaveUser = async () => {
     if (!editingUser?.userId || !editingUser?.email) return;
+    const resolvedBatchId = editingUser.batchId || DEFAULT_BATCH_ID;
+    const resolvedBatchName = getBatchName(resolvedBatchId);
     const payload = sanitizeFirestoreDoc({
       ...editingUser,
+      batchId: resolvedBatchId,
+      batchName: resolvedBatchName,
       avatarUrl: editingUser.avatarUrl || '',
       updatedAt: new Date().toISOString(),
     });
     await setDoc(doc(db, 'userProfiles', editingUser.userId), payload, { merge: true });
+    if (editingUser.role === 'student') {
+      await setDoc(
+        doc(db, 'students', editingUser.userId),
+        sanitizeFirestoreDoc({ batchId: resolvedBatchId, batchName: resolvedBatchName }),
+        { merge: true }
+      ).catch(() => {});
+    }
     setEditingUser(null);
-    triggerNotice(`User "${editingUser.fullName}" updated!`);
+    triggerNotice(`User "${editingUser.fullName}" updated (${resolvedBatchName})!`);
+  };
+
+  const handleQuickAssignBatch = async (u: UserProfile, newBatchId: string) => {
+    const newBatchName = getBatchName(newBatchId);
+    try {
+      await setDoc(
+        doc(db, 'userProfiles', u.userId),
+        sanitizeFirestoreDoc({ batchId: newBatchId, batchName: newBatchName, updatedAt: new Date().toISOString() }),
+        { merge: true }
+      );
+      if (u.role === 'student') {
+        await setDoc(
+          doc(db, 'students', u.userId),
+          sanitizeFirestoreDoc({ batchId: newBatchId, batchName: newBatchName }),
+          { merge: true }
+        ).catch(() => {});
+      }
+      triggerNotice(`Assigned "${u.fullName}" to batch ${newBatchName}!`);
+    } catch (err: any) {
+      triggerNotice(`Failed to assign batch: ${err.message}`);
+    }
   };
 
   const handleDeleteUser = async (userId: string, name: string) => {
@@ -577,14 +690,18 @@ export const AdminMasterControlPage: React.FC<AdminMasterControlPageProps> = ({
       return;
     }
     const newId = `user-${Date.now()}`;
+    const chosenBatchId = appointBatchId || activeBatchId || DEFAULT_BATCH_ID;
+    const chosenBatchName = getBatchName(chosenBatchId);
     const newProfile: UserProfile = {
       userId: newId,
       fullName: appointName.trim(),
       email: appointEmail.trim().toLowerCase(),
       role: appointRole,
-      bio: appointDetail.trim() || `${appointRole.toUpperCase()} • Zahira College 2k28 Science EM`,
+      batchId: chosenBatchId,
+      batchName: chosenBatchName,
+      bio: appointDetail.trim() || `${appointRole.toUpperCase()} • Zahira College ${chosenBatchName}`,
       subject: appointRole === 'teacher' ? (appointDetail.trim() || 'General Science') : undefined,
-      stream: appointRole === 'student' ? (appointDetail.trim() || '2k28 Science EM') : undefined,
+      stream: appointRole === 'student' ? (appointDetail.trim() || chosenBatchName) : undefined,
       avatarUrl: '',
       assignedClassIds: classes[0]?.id ? [classes[0].id] : [],
       createdAt: new Date().toISOString(),
@@ -592,12 +709,27 @@ export const AdminMasterControlPage: React.FC<AdminMasterControlPageProps> = ({
 
     try {
       await setDoc(doc(db, 'userProfiles', newId), sanitizeFirestoreDoc(newProfile));
+      if (appointRole === 'student') {
+        await setDoc(
+          doc(db, 'students', newId),
+          sanitizeFirestoreDoc({
+            userId: newId,
+            fullName: newProfile.fullName,
+            email: newProfile.email,
+            batchId: chosenBatchId,
+            batchName: chosenBatchName,
+            stream: newProfile.stream,
+            enrolledAt: new Date().toISOString(),
+          }),
+          { merge: true }
+        ).catch(() => {});
+      }
       setShowAppointModal(false);
       setAppointName('');
       setAppointEmail('');
       setAppointDetail('');
       setAppointRole('student');
-      triggerNotice(`User "${newProfile.fullName}" appointed as ${appointRole.toUpperCase()} successfully!`);
+      triggerNotice(`User "${newProfile.fullName}" appointed as ${appointRole.toUpperCase()} (${chosenBatchName})!`);
     } catch (err: any) {
       triggerNotice('Error appointing user role: ' + err.message);
     }
@@ -607,6 +739,9 @@ export const AdminMasterControlPage: React.FC<AdminMasterControlPageProps> = ({
   const handleSaveAnnouncement = async () => {
     if (!editingAnnouncement?.title || !editingAnnouncement?.content) return;
     const id = editingAnnouncement.id || `ann-${Date.now()}`;
+    const chosenBatchId =
+      editingAnnouncement.batchId ||
+      (adminBatchFilter !== 'all' ? adminBatchFilter : activeBatchId || DEFAULT_BATCH_ID);
     const payload: Announcement = {
       id,
       title: editingAnnouncement.title,
@@ -615,12 +750,14 @@ export const AdminMasterControlPage: React.FC<AdminMasterControlPageProps> = ({
       authorName: 'Faculty Directorate',
       authorRole: 'admin',
       audience: (editingAnnouncement.audience as any) || 'all',
+      batchId: chosenBatchId,
+      batchName: getBatchName(chosenBatchId),
       isPinned: !!editingAnnouncement.isPinned,
       createdAt: editingAnnouncement.createdAt || new Date().toISOString(),
     };
-    await setDoc(doc(db, 'announcements', id), payload, { merge: true });
+    await setDoc(doc(db, 'announcements', id), sanitizeFirestoreDoc(payload), { merge: true });
     setEditingAnnouncement(null);
-    triggerNotice('Announcement published live!');
+    triggerNotice(`Announcement published live to ${payload.batchName}!`);
   };
 
   const handleDeleteAnnouncement = async (id: string) => {
@@ -637,6 +774,9 @@ export const AdminMasterControlPage: React.FC<AdminMasterControlPageProps> = ({
   const handleSaveEvent = async () => {
     if (!editingEvent?.title || !editingEvent?.startDate) return;
     const id = editingEvent.id || `event-${Date.now()}`;
+    const chosenBatchId =
+      editingEvent.batchId ||
+      (adminBatchFilter !== 'all' ? adminBatchFilter : activeBatchId || DEFAULT_BATCH_ID);
     const payload: SchoolEvent = {
       id,
       title: editingEvent.title,
@@ -645,14 +785,16 @@ export const AdminMasterControlPage: React.FC<AdminMasterControlPageProps> = ({
       endDate: editingEvent.endDate || editingEvent.startDate,
       time: editingEvent.time || '08:00 AM',
       type: editingEvent.type || 'academic',
+      batchId: chosenBatchId,
+      batchName: getBatchName(chosenBatchId),
       location: editingEvent.location || 'Science Complex',
       createdBy: userProfile?.userId || 'faculty_directorate',
       createdByName: 'Faculty Directorate',
       createdAt: editingEvent.createdAt || new Date().toISOString(),
     };
-    await setDoc(doc(db, 'schoolEvents', id), payload, { merge: true });
+    await setDoc(doc(db, 'schoolEvents', id), sanitizeFirestoreDoc(payload), { merge: true });
     setEditingEvent(null);
-    triggerNotice(`Event "${payload.title}" saved to calendar!`);
+    triggerNotice(`Event "${payload.title}" saved to ${payload.batchName}!`);
   };
 
   const handleDeleteEvent = async (id: string, title: string) => {
@@ -671,16 +813,20 @@ export const AdminMasterControlPage: React.FC<AdminMasterControlPageProps> = ({
       (u.fullName || '').toLowerCase().includes(userSearch.toLowerCase()) ||
       (u.email || '').toLowerCase().includes(userSearch.toLowerCase());
     const matchRole = roleFilter === 'all' || u.role === roleFilter;
-    return matchSearch && matchRole;
+    const matchBatch = adminBatchFilter === 'all' || isInBatch(u.batchId, adminBatchFilter);
+    return matchSearch && matchRole && matchBatch;
   });
 
   // Filtered personal conversations for Admin oversight
   const filteredConversations = conversations.filter((c) => {
+    if (adminBatchFilter !== 'all' && !isInBatch(c.batchId, adminBatchFilter)) {
+      return false;
+    }
     const participantText = Object.values(c.participantNames || {}).join(' ').toLowerCase();
     const lastMsgText = (c.lastMessage || '').toLowerCase();
-    const query = chatSearch.toLowerCase();
+    const qText = chatSearch.toLowerCase();
     const matchesSearch =
-      !query || participantText.includes(query) || lastMsgText.includes(query) || c.id.toLowerCase().includes(query);
+      !qText || participantText.includes(qText) || lastMsgText.includes(qText) || c.id.toLowerCase().includes(qText);
 
     if (!matchesSearch) return false;
 
@@ -728,7 +874,7 @@ export const AdminMasterControlPage: React.FC<AdminMasterControlPageProps> = ({
               Website & School Administration Panel
             </h1>
             <p className="text-blue-100 text-xs md:text-sm mt-1 max-w-2xl">
-              Complete real-time control center for Zahira College 2k28 Science EM. Edit site branding, curriculum subjects, class cohorts, user permissions, announcements, calendar dates, and resources.
+              Complete real-time control center for Zahira College Mawanella Science Project EM. Edit site branding, curriculum subjects, class cohorts, user permissions, announcements, calendar dates, and resources.
             </p>
           </div>
 
@@ -761,6 +907,7 @@ export const AdminMasterControlPage: React.FC<AdminMasterControlPageProps> = ({
             >
               {[
                 { id: 'branding', label: 'Website Identity', icon: School },
+                { id: 'batches', label: `Batches (${batches.length})`, icon: Layers },
                 { id: 'subjects', label: `Subjects (${subjects.length})`, icon: BookOpen },
                 { id: 'classes', label: `Classes (${classes.length})`, icon: GraduationCap },
                 { id: 'users', label: `Users & Roles (${users.length})`, icon: Users },
@@ -802,14 +949,29 @@ export const AdminMasterControlPage: React.FC<AdminMasterControlPageProps> = ({
           </div>
 
           {/* Horizontal Scroll Helper & Status */}
-          <div className="flex items-center justify-between text-[11px] text-blue-200 mt-1 px-1">
+          <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-blue-200 mt-1 px-1">
             <span className="flex items-center gap-1.5 opacity-90">
               <span className="inline-block w-2 h-2 rounded-full bg-red-400 animate-pulse" />
-              <span>Scroll horizontally or use arrow buttons to access all 9 administration modules</span>
+              <span>Use Batch Filter to isolate or inspect any academic batch across modules</span>
             </span>
-            <span className="font-mono text-[10px] bg-blue-900/80 border border-blue-400/30 px-2.5 py-0.5 rounded-full text-blue-100">
-              Active: {activeTab.toUpperCase()}
-            </span>
+            <div className="flex items-center gap-2">
+              <select
+                value={adminBatchFilter}
+                onChange={(e) => setAdminBatchFilter(e.target.value)}
+                aria-label="Filter Admin Console by Batch"
+                className="rounded-lg bg-blue-900/90 border border-blue-400/40 px-2.5 py-1 text-[11px] font-bold text-white focus:outline-none"
+              >
+                <option value="all">All Batches ({batches.length})</option>
+                {batches.map((b) => (
+                  <option key={b.id} value={b.id}>
+                    Batch: {b.name}
+                  </option>
+                ))}
+              </select>
+              <span className="font-mono text-[10px] bg-blue-900/80 border border-blue-400/30 px-2.5 py-0.5 rounded-full text-blue-100">
+                Active: {activeTab.toUpperCase()}
+              </span>
+            </div>
           </div>
         </div>
       </div>
@@ -963,7 +1125,7 @@ export const AdminMasterControlPage: React.FC<AdminMasterControlPageProps> = ({
                 type="text"
                 value={brandingForm.marqueeNotice || ''}
                 onChange={(e) => setBrandingForm({ ...brandingForm, marqueeNotice: e.target.value })}
-                placeholder="e.g. Welcome to Zahira College 2k28 Science EM • Term 1 Lecture Schedule Active"
+                placeholder="e.g. Welcome to Zahira College Mawanella Science Project EM • Term 1 Lecture Schedule Active"
                 className="w-full rounded-xl border border-blue-200 bg-white p-2.5 text-slate-900 font-medium focus:border-blue-600 focus:outline-none"
               />
             </div>
@@ -978,6 +1140,285 @@ export const AdminMasterControlPage: React.FC<AdminMasterControlPageProps> = ({
               </button>
             </div>
           </form>
+        </div>
+      )}
+
+      {/* TAB: ACADEMIC BATCH MANAGEMENT (ADD / EDIT / REMOVE BATCHES) */}
+      {activeTab === 'batches' && (
+        <div className="rounded-2xl border border-blue-100 bg-white p-6 md:p-8 shadow-xs space-y-6">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-blue-50">
+            <div>
+              <h2 className="font-serif text-xl font-bold text-blue-950 flex items-center gap-2">
+                <Layers className="w-5 h-5 text-blue-700" />
+                <span>Academic Batch Management</span>
+              </h2>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Add or remove student batches (e.g., 2k28 Science EM, 2k29 Science EM). Every batch has strictly isolated materials, marks, attendance, chats, and discussion rooms.
+              </p>
+            </div>
+            <span className="rounded-full bg-blue-50 border border-blue-200 px-3 py-1 text-xs font-bold text-blue-900">
+              {batches.length} Active {batches.length === 1 ? 'Batch' : 'Batches'}
+            </span>
+          </div>
+
+          {/* Create New Batch Form */}
+          <form
+            onSubmit={handleCreateBatch}
+            className="rounded-2xl border border-blue-200 bg-blue-50/40 p-5 space-y-4 text-xs"
+          >
+            <h3 className="font-bold text-blue-950 uppercase tracking-wider text-[11px] flex items-center gap-1.5">
+              <Plus className="w-4 h-4 text-red-600" />
+              <span>Add New Academic Batch</span>
+            </h3>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <div>
+                <label className="font-bold text-slate-700 block mb-1">Batch Name *</label>
+                <input
+                  type="text"
+                  required
+                  value={newBatchName}
+                  onChange={(e) => setNewBatchName(e.target.value)}
+                  placeholder="e.g. 2k29 Science EM"
+                  className="w-full rounded-xl border border-slate-200 bg-white p-2.5 text-slate-900 font-semibold focus:border-blue-600 focus:outline-none"
+                />
+              </div>
+              <div>
+                <label className="font-bold text-slate-700 block mb-1">Academic Year / Period</label>
+                <input
+                  type="text"
+                  value={newBatchYear}
+                  onChange={(e) => setNewBatchYear(e.target.value)}
+                  placeholder="e.g. 2027-2029"
+                  className="w-full rounded-xl border border-slate-200 bg-white p-2.5 text-slate-900 focus:border-blue-600 focus:outline-none"
+                />
+              </div>
+              <div>
+                <label className="font-bold text-slate-700 block mb-1">Description (Optional)</label>
+                <input
+                  type="text"
+                  value={newBatchDesc}
+                  onChange={(e) => setNewBatchDesc(e.target.value)}
+                  placeholder="e.g. GCE A/L 2029 English Medium Cohort"
+                  className="w-full rounded-xl border border-slate-200 bg-white p-2.5 text-slate-900 focus:border-blue-600 focus:outline-none"
+                />
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+              <label className="flex items-center gap-2 font-semibold text-blue-950 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={newBatchDefault}
+                  onChange={(e) => setNewBatchDefault(e.target.checked)}
+                  className="rounded text-blue-700 h-4 w-4"
+                />
+                <span>Set as default portal batch</span>
+              </label>
+              <button
+                type="submit"
+                className="inline-flex items-center gap-1.5 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold px-5 py-2.5 text-xs shadow-sm transition-colors"
+              >
+                <Plus className="w-4 h-4" />
+                <span>Add Batch</span>
+              </button>
+            </div>
+          </form>
+
+          {/* Existing Batches Grid */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {batches.map((b) => {
+              const studentCount = users.filter(
+                (u) => u.role === 'student' && isInBatch(u.batchId, b.id)
+              ).length;
+              const classCount = classes.filter((c) => isInBatch(c.batchId, b.id)).length;
+              const materialCount = materials.filter((m) => isInBatch(m.batchId, b.id)).length;
+
+              return (
+                <div
+                  key={b.id}
+                  className={`rounded-2xl border p-5 shadow-xs flex flex-col justify-between transition-all ${
+                    activeBatchId === b.id
+                      ? 'border-blue-600 bg-blue-50/40 ring-1 ring-blue-500/20'
+                      : 'border-slate-200 bg-white hover:border-blue-300'
+                  }`}
+                >
+                  <div>
+                    <div className="flex items-start justify-between gap-2 mb-2">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        {b.isDefault && (
+                          <span className="px-2 py-0.5 rounded-md bg-amber-100 text-amber-900 font-bold text-[10px] uppercase">
+                            Default
+                          </span>
+                        )}
+                        {activeBatchId === b.id && (
+                          <span className="px-2 py-0.5 rounded-md bg-blue-900 text-white font-bold text-[10px] uppercase">
+                            Active Scope
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => setEditingBatch(b)}
+                          className="p-1.5 rounded-lg text-slate-400 hover:text-blue-700 hover:bg-blue-50"
+                          title="Edit batch"
+                        >
+                          <Edit2 className="w-3.5 h-3.5" />
+                        </button>
+                        {confirmDeleteBatchId === b.id ? (
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveBatch(b)}
+                              className="px-2 py-1 rounded bg-red-600 text-white text-[10px] font-bold hover:bg-red-700"
+                            >
+                              Remove
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setConfirmDeleteBatchId(null)}
+                              className="px-2 py-1 rounded bg-slate-100 text-slate-700 text-[10px] font-semibold"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            disabled={batches.length <= 1}
+                            onClick={() => setConfirmDeleteBatchId(b.id)}
+                            className="p-1.5 rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50 disabled:opacity-30 disabled:cursor-not-allowed"
+                            title={
+                              batches.length <= 1
+                                ? 'At least one batch must remain'
+                                : 'Remove batch'
+                            }
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    <h3 className="font-serif text-lg font-bold text-blue-950">{b.name}</h3>
+                    {b.academicYear && (
+                      <p className="text-[11px] font-semibold text-blue-700 mt-0.5">
+                        Academic Year: {b.academicYear}
+                      </p>
+                    )}
+                    <p className="text-xs text-slate-600 mt-1.5">
+                      {b.description || 'Isolated Academic Batch Cohort'}
+                    </p>
+                  </div>
+
+                  <div className="mt-4 pt-3 border-t border-slate-100 space-y-2.5">
+                    <div className="grid grid-cols-3 gap-2 text-center text-[11px]">
+                      <div className="rounded-lg bg-slate-50 p-1.5 border border-slate-100">
+                        <span className="font-bold text-blue-950 block">{studentCount}</span>
+                        <span className="text-[10px] text-slate-500">Students</span>
+                      </div>
+                      <div className="rounded-lg bg-slate-50 p-1.5 border border-slate-100">
+                        <span className="font-bold text-blue-950 block">{classCount}</span>
+                        <span className="text-[10px] text-slate-500">Classes</span>
+                      </div>
+                      <div className="rounded-lg bg-slate-50 p-1.5 border border-slate-100">
+                        <span className="font-bold text-blue-950 block">{materialCount}</span>
+                        <span className="text-[10px] text-slate-500">Notes</span>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActiveBatchId(b.id);
+                          setAdminBatchFilter(b.id);
+                          triggerNotice(`Switched workspace scope to ${b.name}`);
+                        }}
+                        className="flex-1 rounded-lg border border-blue-200 bg-white hover:bg-blue-50 text-blue-900 py-1.5 text-[11px] font-bold transition-colors"
+                      >
+                        Switch to Batch
+                      </button>
+                      {!b.isDefault && (
+                        <button
+                          type="button"
+                          onClick={() => updateBatch(b.id, { isDefault: true })}
+                          className="rounded-lg border border-amber-200 bg-amber-50 hover:bg-amber-100 text-amber-900 px-2.5 py-1.5 text-[11px] font-bold transition-colors"
+                        >
+                          Make Default
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {editingBatch && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-blue-950/60 p-4 backdrop-blur-xs">
+              <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl border border-blue-200">
+                <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+                  <h3 className="font-serif text-lg font-bold text-blue-950">Edit Academic Batch</h3>
+                  <button onClick={() => setEditingBatch(null)} className="text-slate-400 hover:text-slate-700">
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+                <div className="space-y-3 mt-4 text-xs">
+                  <div>
+                    <label className="font-bold text-blue-950 block mb-1">Batch Name</label>
+                    <input
+                      type="text"
+                      value={editingBatch.name}
+                      onChange={(e) => setEditingBatch({ ...editingBatch, name: e.target.value })}
+                      className="w-full rounded-xl border border-slate-200 p-2.5 font-semibold"
+                    />
+                  </div>
+                  <div>
+                    <label className="font-bold text-blue-950 block mb-1">Academic Year</label>
+                    <input
+                      type="text"
+                      value={editingBatch.academicYear || ''}
+                      onChange={(e) => setEditingBatch({ ...editingBatch, academicYear: e.target.value })}
+                      className="w-full rounded-xl border border-slate-200 p-2.5"
+                    />
+                  </div>
+                  <div>
+                    <label className="font-bold text-blue-950 block mb-1">Description</label>
+                    <textarea
+                      rows={3}
+                      value={editingBatch.description || ''}
+                      onChange={(e) => setEditingBatch({ ...editingBatch, description: e.target.value })}
+                      className="w-full rounded-xl border border-slate-200 p-2.5"
+                    />
+                  </div>
+                  <label className="flex items-center gap-2 font-bold text-blue-950 cursor-pointer pt-1">
+                    <input
+                      type="checkbox"
+                      checked={!!editingBatch.isDefault}
+                      onChange={(e) => setEditingBatch({ ...editingBatch, isDefault: e.target.checked })}
+                      className="rounded text-blue-700 h-4 w-4"
+                    />
+                    <span>Default institutional batch</span>
+                  </label>
+                </div>
+                <div className="mt-5 flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setEditingBatch(null)}
+                    className="px-4 py-2 rounded-xl text-slate-600 hover:bg-slate-100 text-xs font-semibold"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleSaveEditedBatch}
+                    className="px-5 py-2 rounded-xl bg-blue-900 text-white font-bold text-xs hover:bg-blue-950"
+                  >
+                    Save Batch
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -1010,7 +1451,9 @@ export const AdminMasterControlPage: React.FC<AdminMasterControlPageProps> = ({
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {subjects.map((sub) => (
+            {subjects
+              .filter((sub) => adminBatchFilter === 'all' || isInBatch(sub.batchId, adminBatchFilter))
+              .map((sub) => (
               <div
                 key={sub.id}
                 className="rounded-xl border border-slate-200 bg-white p-4 shadow-xs hover:border-blue-300 transition-all flex flex-col justify-between"
@@ -1047,7 +1490,7 @@ export const AdminMasterControlPage: React.FC<AdminMasterControlPageProps> = ({
                 </div>
 
                 <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-[11px] text-slate-400">
-                  <span>Class: 2k28 Science EM</span>
+                  <span>Batch: {sub.batchName || getBatchName(sub.batchId)}</span>
                   <span className="font-semibold text-blue-900">Active Syllabus</span>
                 </div>
               </div>
@@ -1165,16 +1608,23 @@ export const AdminMasterControlPage: React.FC<AdminMasterControlPageProps> = ({
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {classes.map((c) => (
+            {classes
+              .filter((c) => adminBatchFilter === 'all' || isInBatch(c.batchId, adminBatchFilter))
+              .map((c) => (
               <div
                 key={c.id}
                 className="rounded-xl border border-slate-200 bg-white p-5 shadow-xs flex flex-col justify-between"
               >
                 <div>
                   <div className="flex items-center justify-between mb-2">
-                    <span className="px-2.5 py-0.5 rounded-md bg-blue-100 text-blue-900 font-bold text-[10px] uppercase">
-                      {c.grade}
-                    </span>
+                    <div className="flex items-center gap-1.5">
+                      <span className="px-2.5 py-0.5 rounded-md bg-blue-100 text-blue-900 font-bold text-[10px] uppercase">
+                        {c.grade}
+                      </span>
+                      <span className="px-2 py-0.5 rounded-md bg-indigo-50 text-indigo-800 font-bold text-[10px]">
+                        {c.batchName || getBatchName(c.batchId)}
+                      </span>
+                    </div>
                     <div className="flex items-center gap-1">
                       <button
                         onClick={() => setEditingClass(c)}
@@ -1327,6 +1777,7 @@ export const AdminMasterControlPage: React.FC<AdminMasterControlPageProps> = ({
               <thead className="bg-slate-50 border-b border-slate-200 text-slate-600 font-bold uppercase text-[10px] tracking-wider">
                 <tr>
                   <th className="py-3 px-4">User</th>
+                  <th className="py-3 px-4">Batch</th>
                   <th className="py-3 px-4">Current Role</th>
                   <th className="py-3 px-4">Appoint Role</th>
                   <th className="py-3 px-4">Specialization</th>
@@ -1347,6 +1798,18 @@ export const AdminMasterControlPage: React.FC<AdminMasterControlPageProps> = ({
                           <p className="text-[10px] text-slate-400">{u.bio || 'Zahira Academic Member'}</p>
                         </div>
                       </div>
+                    </td>
+                    <td className="py-3 px-4">
+                      <select
+                        value={resolveItemBatchId(u.batchId)}
+                        onChange={(e) => handleQuickAssignBatch(u, e.target.value)}
+                        className="rounded-lg border border-indigo-200 bg-indigo-50/60 px-2 py-1 text-[11px] font-bold text-indigo-900 focus:outline-none"
+                        title="Reassign user batch"
+                      >
+                        {batches.map((b) => (
+                          <option key={b.id} value={b.id}>{b.name}</option>
+                        ))}
+                      </select>
                     </td>
                     <td className="py-3 px-4">
                       <span
@@ -1444,6 +1907,18 @@ export const AdminMasterControlPage: React.FC<AdminMasterControlPageProps> = ({
                       <option value="teacher">Teacher / Faculty</option>
                       <option value="admin">Administrator</option>
                       <option value="parent">Parent / Guardian</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="font-bold text-blue-950 block mb-1">Assigned Academic Batch</label>
+                    <select
+                      value={resolveItemBatchId(editingUser.batchId)}
+                      onChange={(e) => setEditingUser({ ...editingUser, batchId: e.target.value, batchName: getBatchName(e.target.value) })}
+                      className="w-full rounded-xl border border-indigo-200 bg-indigo-50/40 p-2.5 font-bold text-indigo-900"
+                    >
+                      {batches.map((b) => (
+                        <option key={b.id} value={b.id}>{b.name}</option>
+                      ))}
                     </select>
                   </div>
                   {editingUser.role === 'teacher' && (
@@ -1548,6 +2023,19 @@ export const AdminMasterControlPage: React.FC<AdminMasterControlPageProps> = ({
                       <option value="teacher">Teacher (Faculty) - Access to Roll-Call, Grading & Materials</option>
                       <option value="parent">Parent (Guardian) - Access to Scholar Progress & Attendance Reports</option>
                       <option value="admin">Administrator - Full Master Control & Oversight Access</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="font-bold text-blue-950 block mb-1">Assign Academic Batch</label>
+                    <select
+                      value={appointBatchId}
+                      onChange={(e) => setAppointBatchId(e.target.value)}
+                      className="w-full rounded-xl border border-indigo-200 p-2.5 font-bold text-indigo-900 bg-indigo-50/40 focus:border-blue-900 focus:outline-none"
+                    >
+                      {batches.map((b) => (
+                        <option key={b.id} value={b.id}>{b.name}</option>
+                      ))}
                     </select>
                   </div>
 
@@ -2040,7 +2528,7 @@ export const AdminMasterControlPage: React.FC<AdminMasterControlPageProps> = ({
                 Discussion Room Channels & Shared Files Oversight
               </h2>
               <p className="text-xs text-slate-500 mt-0.5">
-                Inspect all live subject-channel chats, uploaded study files, and Q&amp;A discussion threads across Zahira College 2k28 Science EM.
+                Inspect all live subject-channel chats, uploaded study files, and Q&amp;A discussion threads across Zahira College Mawanella Science Project EM.
               </p>
             </div>
 
@@ -2140,6 +2628,9 @@ export const AdminMasterControlPage: React.FC<AdminMasterControlPageProps> = ({
             (() => {
               const q = discSearch.trim().toLowerCase();
               const filteredRoomMsgs = roomMessages.filter((m) => {
+                if (adminBatchFilter !== 'all' && !isInBatch(m.batchId, adminBatchFilter)) {
+                  return false;
+                }
                 const matchRoom = discChannelFilter === 'all' || m.roomId === discChannelFilter;
                 const matchSearch =
                   !q ||
@@ -2250,10 +2741,11 @@ export const AdminMasterControlPage: React.FC<AdminMasterControlPageProps> = ({
               const q = discSearch.trim().toLowerCase();
               const filteredTopics = forumTopics.filter(
                 (t) =>
-                  !q ||
-                  t.title.toLowerCase().includes(q) ||
-                  t.content.toLowerCase().includes(q) ||
-                  t.authorName.toLowerCase().includes(q)
+                  (adminBatchFilter === 'all' || isInBatch(t.batchId, adminBatchFilter)) &&
+                  (!q ||
+                    t.title.toLowerCase().includes(q) ||
+                    t.content.toLowerCase().includes(q) ||
+                    t.authorName.toLowerCase().includes(q))
               );
 
               if (filteredTopics.length === 0) {
@@ -2414,18 +2906,23 @@ export const AdminMasterControlPage: React.FC<AdminMasterControlPageProps> = ({
           </div>
 
           <div className="space-y-3">
-            {announcements.map((a) => (
+            {announcements
+              .filter((a) => adminBatchFilter === 'all' || isInBatch(a.batchId, adminBatchFilter))
+              .map((a) => (
               <div
                 key={a.id}
                 className="rounded-xl border border-slate-200 bg-white p-4 shadow-xs flex items-start justify-between gap-4"
               >
                 <div>
-                  <div className="flex items-center gap-2 mb-1">
+                  <div className="flex flex-wrap items-center gap-2 mb-1">
                     {a.isPinned && (
                       <span className="px-2 py-0.5 rounded bg-red-100 text-red-800 text-[10px] font-bold uppercase">
                         Pinned Notice
                       </span>
                     )}
+                    <span className="px-2 py-0.5 rounded bg-indigo-50 text-indigo-800 text-[10px] font-bold">
+                      Batch: {a.batchName || getBatchName(a.batchId)}
+                    </span>
                     <span className="px-2 py-0.5 rounded bg-blue-100 text-blue-900 text-[10px] font-bold uppercase">
                       Audience: {a.audience}
                     </span>
@@ -2476,20 +2973,36 @@ export const AdminMasterControlPage: React.FC<AdminMasterControlPageProps> = ({
                       className="w-full rounded-xl border border-slate-200 p-2.5"
                     />
                   </div>
-                  <div>
-                    <label className="font-bold text-blue-950 block mb-1">Target Audience</label>
-                    <select
-                      value={editingAnnouncement.audience || 'all'}
-                      onChange={(e) =>
-                        setEditingAnnouncement({ ...editingAnnouncement, audience: e.target.value as any })
-                      }
-                      className="w-full rounded-xl border border-slate-200 p-2.5 font-bold"
-                    >
-                      <option value="all">Entire School Community (All)</option>
-                      <option value="students">Students Only</option>
-                      <option value="teachers">Faculty Only</option>
-                      <option value="parents">Parents Only</option>
-                    </select>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="font-bold text-blue-950 block mb-1">Target Audience</label>
+                      <select
+                        value={editingAnnouncement.audience || 'all'}
+                        onChange={(e) =>
+                          setEditingAnnouncement({ ...editingAnnouncement, audience: e.target.value as any })
+                        }
+                        className="w-full rounded-xl border border-slate-200 p-2.5 font-bold"
+                      >
+                        <option value="all">Entire Batch Community</option>
+                        <option value="students">Students Only</option>
+                        <option value="teachers">Faculty Only</option>
+                        <option value="parents">Parents Only</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="font-bold text-blue-950 block mb-1">Target Batch</label>
+                      <select
+                        value={editingAnnouncement.batchId || (adminBatchFilter !== 'all' ? adminBatchFilter : activeBatchId)}
+                        onChange={(e) =>
+                          setEditingAnnouncement({ ...editingAnnouncement, batchId: e.target.value })
+                        }
+                        className="w-full rounded-xl border border-slate-200 p-2.5 font-bold"
+                      >
+                        {batches.map((b) => (
+                          <option key={b.id} value={b.id}>{b.name}</option>
+                        ))}
+                      </select>
+                    </div>
                   </div>
                   <div>
                     <label className="font-bold text-blue-950 block mb-1">Notice Content</label>
@@ -2563,24 +3076,31 @@ export const AdminMasterControlPage: React.FC<AdminMasterControlPageProps> = ({
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {events.map((ev) => (
+            {events
+              .filter((ev) => adminBatchFilter === 'all' || isInBatch(ev.batchId, adminBatchFilter))
+              .map((ev) => (
               <div
                 key={ev.id}
                 className="rounded-xl border border-slate-200 bg-white p-4 shadow-xs flex flex-col justify-between"
               >
                 <div>
                   <div className="flex items-center justify-between mb-2">
-                    <span
-                      className={`px-2.5 py-0.5 rounded text-[10px] font-bold uppercase ${
-                        ev.type === 'holiday'
-                          ? 'bg-amber-100 text-amber-800'
-                          : ev.type === 'exam'
-                          ? 'bg-red-100 text-red-800'
-                          : 'bg-blue-100 text-blue-900'
-                      }`}
-                    >
-                      {ev.type}
-                    </span>
+                    <div className="flex items-center gap-1.5">
+                      <span
+                        className={`px-2.5 py-0.5 rounded text-[10px] font-bold uppercase ${
+                          ev.type === 'holiday'
+                            ? 'bg-amber-100 text-amber-800'
+                            : ev.type === 'exam'
+                            ? 'bg-red-100 text-red-800'
+                            : 'bg-blue-100 text-blue-900'
+                        }`}
+                      >
+                        {ev.type}
+                      </span>
+                      <span className="px-2 py-0.5 rounded bg-indigo-50 text-indigo-800 text-[10px] font-bold">
+                        {ev.batchName || getBatchName(ev.batchId)}
+                      </span>
+                    </div>
                     <div className="flex items-center gap-1">
                       <button
                         onClick={() => setEditingEvent(ev)}
@@ -2637,6 +3157,18 @@ export const AdminMasterControlPage: React.FC<AdminMasterControlPageProps> = ({
                       onChange={(e) => setEditingEvent({ ...editingEvent, startDate: e.target.value })}
                       className="w-full rounded-xl border border-slate-200 p-2.5"
                     />
+                  </div>
+                  <div>
+                    <label className="font-bold text-blue-950 block mb-1">Target Batch</label>
+                    <select
+                      value={editingEvent.batchId || (adminBatchFilter !== 'all' ? adminBatchFilter : activeBatchId)}
+                      onChange={(e) => setEditingEvent({ ...editingEvent, batchId: e.target.value })}
+                      className="w-full rounded-xl border border-slate-200 p-2.5 font-bold"
+                    >
+                      {batches.map((b) => (
+                        <option key={b.id} value={b.id}>{b.name}</option>
+                      ))}
+                    </select>
                   </div>
                   <div>
                     <label className="font-bold text-blue-950 block mb-1">Category</label>
@@ -2713,15 +3245,22 @@ export const AdminMasterControlPage: React.FC<AdminMasterControlPageProps> = ({
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {materials.map((m) => (
+            {materials
+              .filter((m) => adminBatchFilter === 'all' || isInBatch(m.batchId, adminBatchFilter))
+              .map((m) => (
               <div
                 key={m.id}
                 className="rounded-xl border border-slate-200 bg-white p-4 shadow-xs flex items-start justify-between gap-3"
               >
                 <div>
-                  <span className="px-2 py-0.5 rounded bg-blue-50 text-blue-800 text-[10px] font-bold uppercase">
-                    {m.fileType} • {m.fileSize || 'Doc'}
-                  </span>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="px-2 py-0.5 rounded bg-blue-50 text-blue-800 text-[10px] font-bold uppercase">
+                      {m.fileType} • {m.fileSize || 'Doc'}
+                    </span>
+                    <span className="px-2 py-0.5 rounded bg-indigo-50 text-indigo-800 text-[10px] font-bold">
+                      {m.batchName || getBatchName(m.batchId)}
+                    </span>
+                  </div>
                   <h3 className="font-serif text-base font-bold text-blue-950 mt-1">{m.title}</h3>
                   <p className="text-xs text-slate-600 mt-1">{m.description}</p>
                   <a
@@ -2773,6 +3312,18 @@ export const AdminMasterControlPage: React.FC<AdminMasterControlPageProps> = ({
                   </button>
                 </div>
                 <div className="space-y-3 mt-4 text-xs">
+                  <div>
+                    <label className="font-bold text-blue-950 block mb-1">Target Batch</label>
+                    <select
+                      value={editingMaterial.batchId || (adminBatchFilter !== 'all' ? adminBatchFilter : activeBatchId)}
+                      onChange={(e) => setEditingMaterial({ ...editingMaterial, batchId: e.target.value })}
+                      className="w-full rounded-xl border border-slate-200 p-2.5 font-bold"
+                    >
+                      {batches.map((b) => (
+                        <option key={b.id} value={b.id}>{b.name}</option>
+                      ))}
+                    </select>
+                  </div>
                   <div>
                     <label className="font-bold text-blue-950 block mb-1">Title</label>
                     <input
@@ -2876,10 +3427,15 @@ export const AdminMasterControlPage: React.FC<AdminMasterControlPageProps> = ({
                     onClick={async () => {
                       if (!editingMaterial.title) return;
                       const id = editingMaterial.id || `mat-${Date.now()}`;
+                      const chosenBatchId =
+                        editingMaterial.batchId ||
+                        (adminBatchFilter !== 'all' ? adminBatchFilter : activeBatchId || DEFAULT_BATCH_ID);
                       const payload: LearningMaterial = {
                         id,
                         title: editingMaterial.title,
                         description: editingMaterial.description || '',
+                        batchId: chosenBatchId,
+                        batchName: getBatchName(chosenBatchId),
                         classId: editingMaterial.classId || (classes[0]?.id || ''),
                         subjectId: editingMaterial.subjectId || 'sub-cmath',
                         teacherId: editingMaterial.teacherId || (userProfile?.userId || 'faculty_directorate'),
@@ -2891,7 +3447,7 @@ export const AdminMasterControlPage: React.FC<AdminMasterControlPageProps> = ({
                       };
                       await setDoc(doc(db, 'learningMaterials', id), sanitizeFirestoreDoc(payload), { merge: true });
                       setEditingMaterial(null);
-                      triggerNotice(`Material "${payload.title}" saved successfully!`);
+                      triggerNotice(`Material "${payload.title}" saved to ${payload.batchName}!`);
                     }}
                     className="px-5 py-2 rounded-xl bg-blue-900 text-white font-bold text-xs hover:bg-blue-950"
                   >
