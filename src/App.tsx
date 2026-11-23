@@ -258,6 +258,11 @@ const MainApp: React.FC = () => {
         <ZahiraHomePage
           onSignIn={(targetPage) => handleHomeAuthAction('signin', targetPage)}
           onSignUp={(targetPage) => handleHomeAuthAction('signup', targetPage)}
+          onEnterLMS={(targetPage = 'dashboard') => {
+            setCurrentPage(targetPage);
+            setShowPublicHome(false);
+            window.scrollTo({ top: 0, behavior: 'auto' });
+          }}
         />
         <AuthModal
           isOpen={authModalOpen}
