@@ -660,6 +660,73 @@
         "updatedAt": { "type": "string" }
       },
       "required": ["id", "examYear", "title", "totalCandidates", "universityQualifiedCount", "universityPassRate", "updatedBy"]
+    },
+    "classRecording": {
+      "title": "Class Recording Video",
+      "description": "YouTube-linked recorded lecture uploaded by Teachers and Admins for a specific calendar date and batch",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "youtubeUrl": { "type": "string" },
+        "youtubeVideoId": { "type": "string" },
+        "date": { "type": "string" },
+        "batchId": { "type": "string" },
+        "batchName": { "type": "string" },
+        "subject": { "type": "string" },
+        "category": { "type": "string" },
+        "teacherId": { "type": "string" },
+        "teacherName": { "type": "string" },
+        "teacherSubject": { "type": "string" },
+        "sessionLabel": { "type": "string" },
+        "durationLabel": { "type": "string" },
+        "qualityLabel": { "type": "string" },
+        "description": { "type": "string" },
+        "viewCount": { "type": "number" },
+        "lastViewedAt": { "type": "string" },
+        "uploadedBy": { "type": "string" },
+        "uploadedByName": { "type": "string" },
+        "uploadedByRole": { "type": "string", "enum": ["admin", "teacher"] },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "title", "youtubeUrl", "youtubeVideoId", "date", "batchId", "subject", "sessionLabel", "uploadedBy"]
+    },
+    "recordingTeacher": {
+      "title": "Recording Teacher Directory Entry",
+      "description": "Manually managed teacher and subject entry added by Teachers and Admins for categorizing class recordings (never synced with user accounts)",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "subject": { "type": "string" },
+        "profileSummary": { "type": "string" },
+        "batchId": { "type": "string" },
+        "batchName": { "type": "string" },
+        "createdBy": { "type": "string" },
+        "createdByName": { "type": "string" },
+        "createdByRole": { "type": "string", "enum": ["admin", "teacher"] },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "name", "subject", "batchId", "createdBy", "createdAt"]
+    },
+    "recordingWatchProgress": {
+      "title": "Recording Watch Progress",
+      "description": "Per-user Mark as Watched state and resume timestamp for calendar class recordings",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "recordingId": { "type": "string" },
+        "userId": { "type": "string" },
+        "userName": { "type": "string" },
+        "batchId": { "type": "string" },
+        "watched": { "type": "boolean" },
+        "lastPositionSeconds": { "type": "number" },
+        "watchedAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "recordingId", "userId", "watched", "updatedAt"]
     }
   },
   "firestore": {
@@ -798,6 +865,18 @@
     "/yearlyResultsReports/{reportId}": {
       "schema": { "$ref": "yearlyResultReport" },
       "description": "Yearly G.C.E. A/L results PDF reports and graph statistics synced between Admin/Teacher panels and the public homepage"
+    },
+    "/classRecordings/{recordingId}": {
+      "schema": { "$ref": "classRecording" },
+      "description": "Multiple YouTube class lecture recordings per calendar date uploaded by Teachers and Admins"
+    },
+    "/recordingWatchProgress/{progressId}": {
+      "schema": { "$ref": "recordingWatchProgress" },
+      "description": "Per-user watched tracking for calendar class recordings"
+    },
+    "/recordingTeachers/{teacherId}": {
+      "schema": { "$ref": "recordingTeacher" },
+      "description": "Manually added bulk list of teachers and their subjects for uploading and filtering class recordings"
     }
   }
 }
