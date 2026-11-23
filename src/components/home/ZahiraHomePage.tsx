@@ -66,6 +66,7 @@ import {
   YearlyResultReport,
 } from '../../types';
 import { ZahiraLogo } from '../common/ZahiraLogo';
+import { Rotating3DSchoolLogo } from '../common/Rotating3DSchoolLogo';
 
 import boysHeroImg from '../../assets/images/zahira_boys_science_hero_1795362820631.jpg';
 import boysBioImg from '../../assets/images/zahira_boys_bio_lab_1795362821598.jpg';
@@ -219,112 +220,6 @@ const GALLERY_ITEMS: GalleryEntry[] = [
   },
 ];
 
-/**
- * True 3D Rotating Medallion using the website's official school logo (/assets/aistudio/image_27ea2622.png).
- */
-const Rotating3DSchoolLogo: React.FC<{
-  size?: 'hero' | 'compact';
-  scrollSpinDeg?: any;
-}> = ({ size = 'hero', scrollSpinDeg }) => {
-  const prefersReducedMotion = useReducedMotion();
-  const [imgError, setImgError] = useState(false);
-
-  const dims =
-    size === 'hero'
-      ? 'w-32 h-32 sm:w-40 sm:h-40'
-      : 'w-20 h-20 sm:w-24 sm:h-24';
-
-  const LogoContent = (
-    <div className="w-full h-full rounded-full bg-white flex items-center justify-center p-2.5 sm:p-3 overflow-hidden border-[3px] border-amber-400/90 shadow-inner">
-      {!imgError ? (
-        <img
-          src="/assets/aistudio/image_27ea2622.png"
-          alt="Zahira College Mawanella Official Crest"
-          referrerPolicy="no-referrer"
-          onError={() => setImgError(true)}
-          className="w-full h-full object-contain select-none scale-105"
-        />
-      ) : (
-        <svg viewBox="0 0 64 64" fill="none" className="w-full h-full" aria-hidden="true">
-          <circle cx="32" cy="32" r="24" stroke="#13295B" strokeWidth="3" />
-          <rect x="20" y="20" width="12" height="12" fill="#7B1123" />
-          <rect x="32" y="32" width="12" height="12" fill="#13295B" />
-        </svg>
-      )}
-    </div>
-  );
-
-  return (
-    <div
-      className={`relative ${dims} shrink-0 select-none`}
-      style={{ perspective: '1100px' }}
-    >
-      <div
-        aria-hidden="true"
-        className="absolute -inset-3 rounded-full bg-gradient-to-tr from-blue-600/20 via-amber-400/15 to-red-600/20 blur-xl pointer-events-none"
-      />
-
-      <motion.div
-        style={{
-          transformStyle: 'preserve-3d',
-          rotateY: scrollSpinDeg ?? 0,
-        }}
-        className="w-full h-full relative"
-      >
-        <motion.div
-          animate={
-            prefersReducedMotion
-              ? undefined
-              : {
-                  rotateY: [0, 360],
-                  rotateX: [4, -4, 4],
-                }
-          }
-          transition={
-            prefersReducedMotion
-              ? undefined
-              : {
-                  rotateY: { repeat: Infinity, duration: 11, ease: 'linear' },
-                  rotateX: { repeat: Infinity, duration: 5.5, ease: 'easeInOut' },
-                }
-          }
-          whileHover={prefersReducedMotion ? undefined : { scale: 1.07 }}
-          style={{ transformStyle: 'preserve-3d' }}
-          className="w-full h-full relative cursor-grab active:cursor-grabbing"
-        >
-          {[-6, -3, 0, 3, 6].map((zOffset) => (
-            <div
-              key={zOffset}
-              aria-hidden="true"
-              style={{ transform: `translateZ(${zOffset}px)` }}
-              className="absolute inset-0 rounded-full bg-gradient-to-b from-blue-950 via-amber-500 to-red-900 border border-amber-300/60 shadow-sm"
-            />
-          ))}
-
-          <div
-            style={{
-              transform: 'translateZ(8px)',
-              backfaceVisibility: 'hidden',
-            }}
-            className="absolute inset-0 rounded-full shadow-2xl"
-          >
-            {LogoContent}
-          </div>
-
-          <div
-            style={{
-              transform: 'rotateY(180deg) translateZ(8px)',
-              backfaceVisibility: 'hidden',
-            }}
-            className="absolute inset-0 rounded-full shadow-2xl"
-          >
-            {LogoContent}
-          </div>
-        </motion.div>
-      </motion.div>
-    </div>
-  );
-};
 
 export const ZahiraHomePage: React.FC<ZahiraHomePageProps> = ({
   onSignIn,
@@ -676,14 +571,14 @@ export const ZahiraHomePage: React.FC<ZahiraHomePageProps> = ({
       {/* 1. 3-ZONE TOP BAR (Brand Left · Links Center · Sign In & Sign Up)   */}
       {/* =================================================================== */}
       <header className="sticky top-0 z-40 h-16 border-b border-slate-200/80 dark:border-slate-800/80 bg-white/85 dark:bg-slate-950/85 backdrop-blur-md">
-        <div className="max-w-[1440px] mx-auto h-full px-4 sm:px-6 lg:px-10 flex items-center justify-between gap-4">
+        <div className="max-w-[1440px] mx-auto h-full px-3 sm:px-6 lg:px-10 flex items-center justify-between gap-2 sm:gap-4">
           <button
             type="button"
             onClick={() => window.scrollTo({ top: 0, behavior: prefersReducedMotion ? 'auto' : 'smooth' })}
-            className="flex items-center gap-2.5 text-left whitespace-nowrap shrink-0 group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 rounded-lg"
+            className="flex items-center gap-2 sm:gap-2.5 text-left min-w-0 shrink group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 rounded-lg py-1"
           >
-            <ZahiraLogo size="sm" className="group-hover:scale-105 transition-transform" />
-            <span className="font-serif text-base sm:text-lg font-bold tracking-tight text-slate-900 dark:text-white whitespace-nowrap shrink-0">
+            <ZahiraLogo size="sm" className="group-hover:scale-105 transition-transform shrink-0" />
+            <span className="font-serif text-sm sm:text-lg font-bold tracking-tight text-slate-900 dark:text-white truncate">
               Zahira Science Project
             </span>
           </button>
@@ -704,11 +599,11 @@ export const ZahiraHomePage: React.FC<ZahiraHomePageProps> = ({
             ))}
           </nav>
 
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             <button
               type="button"
               onClick={toggleTheme}
-              className="w-9 h-9 flex items-center justify-center rounded-lg text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors shrink-0"
+              className="min-w-[44px] min-h-[44px] sm:w-9 sm:h-9 sm:min-w-0 sm:min-h-0 flex items-center justify-center rounded-lg text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors shrink-0"
               aria-label={isDark ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
               title={isDark ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
             >
@@ -727,7 +622,7 @@ export const ZahiraHomePage: React.FC<ZahiraHomePageProps> = ({
             <button
               type="button"
               onClick={() => onSignUp('dashboard')}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-blue-900 hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-500 px-3.5 sm:px-4 py-2 text-xs sm:text-sm font-semibold text-white transition-colors whitespace-nowrap shrink-0 shadow-xs"
+              className="inline-flex items-center gap-1.5 rounded-lg bg-blue-900 hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-500 min-h-[40px] px-3 sm:px-4 py-2 text-xs sm:text-sm font-semibold text-white transition-colors whitespace-nowrap shrink-0 shadow-xs"
             >
               <UserPlus className="w-3.5 h-3.5" />
               <span>Sign Up</span>
@@ -736,10 +631,11 @@ export const ZahiraHomePage: React.FC<ZahiraHomePageProps> = ({
             <button
               type="button"
               onClick={() => setMobileMenuOpen((prev) => !prev)}
-              className="lg:hidden w-9 h-9 flex items-center justify-center rounded-lg border border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors shrink-0"
+              className="lg:hidden min-w-[44px] min-h-[44px] flex items-center justify-center rounded-lg border border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors shrink-0"
               aria-label="Toggle Menu"
+              aria-expanded={mobileMenuOpen}
             >
-              {mobileMenuOpen ? <X className="w-4 h-4" /> : <Menu className="w-4 h-4" />}
+              {mobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
             </button>
           </div>
         </div>
@@ -752,7 +648,7 @@ export const ZahiraHomePage: React.FC<ZahiraHomePageProps> = ({
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -8 }}
               transition={{ duration: 0.18 }}
-              className="lg:hidden border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 px-4 py-4 space-y-2 shadow-lg"
+              className="lg:hidden border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 px-4 py-4 space-y-3 shadow-xl max-h-[calc(100dvh-4rem)] overflow-y-auto"
             >
               <div className="flex flex-col space-y-1">
                 {navItems.map((item) => (
@@ -760,20 +656,20 @@ export const ZahiraHomePage: React.FC<ZahiraHomePageProps> = ({
                     key={item.id}
                     type="button"
                     onClick={() => scrollToSection(item.id)}
-                    className="w-full text-left px-3 py-2.5 rounded-lg text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-900"
+                    className="w-full text-left px-3.5 min-h-[44px] flex items-center rounded-xl text-sm font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-900 active:bg-slate-200 dark:active:bg-slate-800 transition-colors"
                   >
                     {item.label}
                   </button>
                 ))}
               </div>
-              <div className="pt-2 border-t border-slate-100 dark:border-slate-800 grid grid-cols-2 gap-2">
+              <div className="pt-3 border-t border-slate-100 dark:border-slate-800 grid grid-cols-2 gap-2.5">
                 <button
                   type="button"
                   onClick={() => {
                     setMobileMenuOpen(false);
                     onSignIn('dashboard');
                   }}
-                  className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 py-2.5 text-sm font-semibold"
+                  className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 min-h-[44px] py-2.5 text-sm font-semibold"
                 >
                   <LogIn className="w-4 h-4" />
                   <span>Sign In</span>
@@ -784,7 +680,7 @@ export const ZahiraHomePage: React.FC<ZahiraHomePageProps> = ({
                     setMobileMenuOpen(false);
                     onSignUp('dashboard');
                   }}
-                  className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-blue-900 dark:bg-blue-600 text-white py-2.5 text-sm font-semibold"
+                  className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-blue-900 dark:bg-blue-600 text-white min-h-[44px] py-2.5 text-sm font-semibold"
                 >
                   <UserPlus className="w-4 h-4" />
                   <span>Sign Up</span>
@@ -804,13 +700,13 @@ export const ZahiraHomePage: React.FC<ZahiraHomePageProps> = ({
           className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_75%_55%_at_75%_25%,rgba(30,64,175,0.08),transparent_70%)] dark:bg-[radial-gradient(ellipse_75%_55%_at_75%_25%,rgba(59,130,246,0.14),transparent_70%)]"
         />
 
-        <div className="max-w-[1440px] mx-auto px-4 sm:px-6 lg:px-10 py-12 sm:py-20 lg:py-24 relative">
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-10 lg:gap-12 items-center">
+        <div className="max-w-[1440px] mx-auto px-4 sm:px-6 lg:px-10 py-8 sm:py-16 lg:py-24 relative">
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-12 items-center">
             <motion.div
               initial="hidden"
               animate="visible"
               variants={fadeUp}
-              className="lg:col-span-6 space-y-7"
+              className="lg:col-span-6 space-y-6 sm:space-y-7"
             >
               <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs font-semibold tracking-wide text-slate-600 dark:text-slate-400">
                 <span className="text-red-700 dark:text-red-400">Zahira College Mawanella</span>
@@ -821,14 +717,14 @@ export const ZahiraHomePage: React.FC<ZahiraHomePageProps> = ({
               </div>
 
               <div className="space-y-4">
-                <h1 className="font-serif text-4xl sm:text-5xl xl:text-[3.5rem] font-bold tracking-tight text-slate-950 dark:text-white leading-[1.08] text-balance">
+                <h1 className="font-serif text-3xl sm:text-5xl xl:text-[3.5rem] font-bold tracking-tight text-slate-950 dark:text-white leading-[1.1] text-balance">
                   Advancing{' '}
                   <span className="text-blue-800 dark:text-blue-400">Science</span>
                   <br />
                   Zahira College Mawanella
                 </h1>
 
-                <p className="text-base sm:text-lg text-slate-600 dark:text-slate-300 leading-relaxed max-w-xl">
+                <p className="text-sm sm:text-lg text-slate-600 dark:text-slate-300 leading-relaxed max-w-xl">
                   A dedicated Boys&apos; Advanced Level English Medium Science initiative built on our{' '}
                   <strong className="font-semibold text-slate-900 dark:text-white">
                     Two Teachers per Subject
@@ -838,11 +734,11 @@ export const ZahiraHomePage: React.FC<ZahiraHomePageProps> = ({
               </div>
 
               {/* Hero CTAs: Sign Up + Sign In + Admissions shortcut */}
-              <div className="flex flex-wrap items-center gap-3.5 pt-1">
+              <div className="grid grid-cols-2 sm:flex sm:flex-wrap items-center gap-3 sm:gap-3.5 pt-1">
                 <button
                   type="button"
                   onClick={() => onSignUp('dashboard')}
-                  className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-900 hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-500 px-6 py-3.5 text-sm font-semibold text-white shadow-sm hover:shadow-md transition-all whitespace-nowrap shrink-0"
+                  className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-900 hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-500 min-h-[46px] px-5 sm:px-6 py-3 text-sm font-semibold text-white shadow-sm hover:shadow-md transition-all whitespace-nowrap shrink-0"
                 >
                   <UserPlus className="w-4 h-4" />
                   <span>Sign Up</span>
@@ -851,7 +747,7 @@ export const ZahiraHomePage: React.FC<ZahiraHomePageProps> = ({
                 <button
                   type="button"
                   onClick={() => onSignIn('dashboard')}
-                  className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 px-6 py-3.5 text-sm font-semibold text-slate-800 dark:text-slate-100 transition-colors whitespace-nowrap shrink-0"
+                  className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 min-h-[46px] px-5 sm:px-6 py-3 text-sm font-semibold text-slate-800 dark:text-slate-100 transition-colors whitespace-nowrap shrink-0"
                 >
                   <LogIn className="w-4 h-4 text-blue-800 dark:text-blue-400" />
                   <span>Sign In</span>
@@ -860,35 +756,35 @@ export const ZahiraHomePage: React.FC<ZahiraHomePageProps> = ({
                 <button
                   type="button"
                   onClick={() => scrollToSection('admissions')}
-                  className="inline-flex items-center gap-1.5 px-3 py-3 text-sm font-semibold text-slate-600 dark:text-slate-300 hover:text-blue-900 dark:hover:text-blue-400 transition-colors whitespace-nowrap shrink-0"
+                  className="col-span-2 sm:col-span-1 inline-flex items-center justify-center sm:justify-start gap-1.5 min-h-[44px] px-3 py-2.5 text-sm font-semibold text-slate-600 dark:text-slate-300 hover:text-blue-900 dark:hover:text-blue-400 transition-colors whitespace-nowrap shrink-0"
                 >
                   <FileText className="w-4 h-4" />
                   <span>Admission Form</span>
                 </button>
               </div>
 
-              <div className="pt-6 border-t border-slate-200/80 dark:border-slate-800 grid grid-cols-3 gap-4 sm:gap-6 max-w-xl">
+              <div className="pt-5 sm:pt-6 border-t border-slate-200/80 dark:border-slate-800 grid grid-cols-3 gap-3 sm:gap-6 max-w-xl">
                 <div>
-                  <p className="font-mono text-xl sm:text-2xl font-semibold text-slate-950 dark:text-white tabular-nums">
+                  <p className="font-mono text-lg sm:text-2xl font-semibold text-slate-950 dark:text-white tabular-nums">
                     2 : 1
                   </p>
-                  <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                  <p className="text-[11px] sm:text-xs text-slate-500 dark:text-slate-400 mt-0.5 leading-snug">
                     Teachers per Subject
                   </p>
                 </div>
                 <div>
-                  <p className="font-mono text-xl sm:text-2xl font-semibold text-blue-900 dark:text-blue-400 tabular-nums">
+                  <p className="font-mono text-lg sm:text-2xl font-semibold text-blue-900 dark:text-blue-400 tabular-nums">
                     {batches.length || 1}
                   </p>
-                  <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                  <p className="text-[11px] sm:text-xs text-slate-500 dark:text-slate-400 mt-0.5 leading-snug">
                     Active LMS Batches
                   </p>
                 </div>
                 <div>
-                  <p className="font-mono text-xl sm:text-2xl font-semibold text-slate-950 dark:text-white tabular-nums">
+                  <p className="font-mono text-lg sm:text-2xl font-semibold text-slate-950 dark:text-white tabular-nums">
                     {rosterCount !== null && rosterCount > 0 ? rosterCount : '5 Core'}
                   </p>
-                  <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                  <p className="text-[11px] sm:text-xs text-slate-500 dark:text-slate-400 mt-0.5 leading-snug">
                     {rosterCount !== null && rosterCount > 0
                       ? 'Enrolled Scholars'
                       : 'Science Subjects'}
@@ -912,28 +808,28 @@ export const ZahiraHomePage: React.FC<ZahiraHomePageProps> = ({
                     referrerPolicy="no-referrer"
                     className="w-full h-full object-cover"
                   />
-                  <div className="absolute inset-0 bg-gradient-to-t from-slate-950/70 via-slate-950/15 to-transparent" />
+                  <div className="absolute inset-0 bg-gradient-to-t from-slate-950/75 via-slate-950/20 to-transparent" />
 
-                  <div className="absolute bottom-4 left-5 right-5 flex items-end justify-between gap-4 text-white">
+                  <div className="absolute bottom-3.5 left-4 right-4 sm:bottom-4 sm:left-5 sm:right-5 flex items-end justify-between gap-4 text-white">
                     <div>
-                      <p className="text-[11px] font-semibold tracking-wider uppercase text-amber-300">
+                      <p className="text-[10px] sm:text-[11px] font-semibold tracking-wider uppercase text-amber-300">
                         Science Complex · Hall 28
                       </p>
-                      <p className="font-serif text-lg sm:text-xl font-bold leading-snug">
+                      <p className="font-serif text-base sm:text-xl font-bold leading-snug">
                         G.C.E. A/L English Medium Science
                       </p>
                     </div>
                   </div>
                 </div>
 
-                <div className="p-6 sm:p-8 flex flex-col sm:flex-row items-center gap-6 bg-gradient-to-br from-slate-50 via-white to-blue-50/50 dark:from-slate-950 dark:via-slate-900 dark:to-blue-950/30 border-t border-slate-100 dark:border-slate-800">
+                <div className="p-5 sm:p-8 flex flex-col sm:flex-row items-center gap-5 sm:gap-6 bg-gradient-to-br from-slate-50 via-white to-blue-50/50 dark:from-slate-950 dark:via-slate-900 dark:to-blue-950/30 border-t border-slate-100 dark:border-slate-800">
                   <Rotating3DSchoolLogo size="hero" scrollSpinDeg={crestScrollSpin} />
 
                   <div className="space-y-2 text-center sm:text-left">
                     <p className="text-xs font-semibold uppercase tracking-wider text-blue-800 dark:text-blue-400">
                       Official Institutional Crest
                     </p>
-                    <h2 className="font-serif text-xl font-bold text-slate-950 dark:text-white leading-snug">
+                    <h2 className="font-serif text-lg sm:text-xl font-bold text-slate-950 dark:text-white leading-snug">
                       {siteConfig.schoolName || 'Zahira College Mawanella'}
                     </h2>
                     <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
@@ -954,17 +850,17 @@ export const ZahiraHomePage: React.FC<ZahiraHomePageProps> = ({
         id="showcase"
         ref={appleStageRef}
         aria-label="Interactive Science Project Scroll Showcase"
-        className="relative h-[235vh] bg-slate-950 text-white border-b border-slate-800"
+        className="relative h-[205vh] sm:h-[235vh] bg-slate-950 text-white border-b border-slate-800"
       >
-        <div className="sticky top-16 h-[calc(100dvh-4rem)] overflow-hidden flex flex-col justify-between py-5 sm:py-7">
+        <div className="sticky top-16 h-[calc(100dvh-4rem)] overflow-hidden flex flex-col justify-between py-4 sm:py-7">
           <div
             aria-hidden="true"
             className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_70%_60%_at_50%_40%,rgba(37,99,235,0.22),transparent_72%)]"
           />
 
-          <div className="max-w-[1440px] w-full flex-1 min-h-0 mx-auto px-4 sm:px-6 lg:px-10 relative z-10 flex flex-col justify-between gap-4 sm:gap-6">
-            <div className="flex flex-col md:flex-row md:items-end justify-between gap-4 shrink-0">
-              <div className="relative min-h-[5.25rem] sm:min-h-[5.75rem] flex-1">
+          <div className="max-w-[1440px] w-full flex-1 min-h-0 mx-auto px-4 sm:px-6 lg:px-10 relative z-10 flex flex-col justify-between gap-3 sm:gap-6">
+            <div className="flex flex-col md:flex-row md:items-end justify-between gap-3 sm:gap-4 shrink-0">
+              <div className="relative min-h-[6.5rem] sm:min-h-[5.75rem] flex-1">
                 <motion.div
                   style={
                     prefersReducedMotion
@@ -975,10 +871,10 @@ export const ZahiraHomePage: React.FC<ZahiraHomePageProps> = ({
                     activeAppleChapter === 0 ? 'pointer-events-auto' : 'pointer-events-none'
                   }`}
                 >
-                  <p className="font-mono text-xs font-semibold uppercase tracking-widest text-amber-300">
+                  <p className="font-mono text-[11px] sm:text-xs font-semibold uppercase tracking-widest text-amber-300">
                     Chapter 01 · The Foundation
                   </p>
-                  <h2 className="font-serif text-2xl sm:text-4xl lg:text-5xl font-bold tracking-tight text-white text-balance">
+                  <h2 className="font-serif text-xl sm:text-4xl lg:text-5xl font-bold tracking-tight text-white text-balance leading-tight">
                     Built for A/L Science. Two Teachers per Subject.
                   </h2>
                 </motion.div>
@@ -993,10 +889,10 @@ export const ZahiraHomePage: React.FC<ZahiraHomePageProps> = ({
                     activeAppleChapter === 1 ? 'pointer-events-auto' : 'pointer-events-none'
                   }`}
                 >
-                  <p className="font-mono text-xs font-semibold uppercase tracking-widest text-blue-300">
+                  <p className="font-mono text-[11px] sm:text-xs font-semibold uppercase tracking-widest text-blue-300">
                     Chapter 02 · Seminar Discipline
                   </p>
-                  <h2 className="font-serif text-2xl sm:text-4xl lg:text-5xl font-bold tracking-tight text-white text-balance">
+                  <h2 className="font-serif text-xl sm:text-4xl lg:text-5xl font-bold tracking-tight text-white text-balance leading-tight">
                     Focused Boys&apos; Study Halls &amp; Paper Mastery.
                   </h2>
                 </motion.div>
@@ -1011,10 +907,10 @@ export const ZahiraHomePage: React.FC<ZahiraHomePageProps> = ({
                     activeAppleChapter === 2 ? 'pointer-events-auto' : 'pointer-events-none'
                   }`}
                 >
-                  <p className="font-mono text-xs font-semibold uppercase tracking-widest text-emerald-300">
+                  <p className="font-mono text-[11px] sm:text-xs font-semibold uppercase tracking-widest text-emerald-300">
                     Chapter 03 · Laboratory &amp; AI Precision
                   </p>
-                  <h2 className="font-serif text-2xl sm:text-4xl lg:text-5xl font-bold tracking-tight text-white text-balance">
+                  <h2 className="font-serif text-xl sm:text-4xl lg:text-5xl font-bold tracking-tight text-white text-balance leading-tight">
                     Real Practicals Meets AI-Era Revision.
                   </h2>
                 </motion.div>
@@ -1038,7 +934,7 @@ export const ZahiraHomePage: React.FC<ZahiraHomePageProps> = ({
                         transformStyle: 'preserve-3d',
                       }
                 }
-                className="relative w-full h-full min-h-[220px] sm:min-h-[300px] rounded-3xl border border-white/15 bg-slate-900 overflow-hidden shadow-[0_32px_90px_-15px_rgba(0,0,0,0.75)]"
+                className="relative w-full h-full min-h-[210px] sm:min-h-[300px] rounded-2xl sm:rounded-3xl border border-white/15 bg-slate-900 overflow-hidden shadow-[0_32px_90px_-15px_rgba(0,0,0,0.75)]"
               >
                 <motion.div
                   style={
@@ -1057,12 +953,12 @@ export const ZahiraHomePage: React.FC<ZahiraHomePageProps> = ({
                     style={prefersReducedMotion ? undefined : { scale: ch1ImgScale }}
                     className="w-full h-full object-cover"
                   />
-                  <div className="absolute inset-0 bg-gradient-to-t from-slate-950/90 via-slate-950/25 to-transparent" />
-                  <div className="absolute bottom-6 left-6 right-6 sm:bottom-8 sm:left-8 sm:right-8 flex flex-col sm:flex-row sm:items-end justify-between gap-4">
-                    <p className="text-sm sm:text-base text-slate-200 max-w-xl leading-relaxed">
+                  <div className="absolute inset-0 bg-gradient-to-t from-slate-950/95 via-slate-950/40 to-transparent" />
+                  <div className="absolute bottom-4 left-4 right-4 sm:bottom-8 sm:left-8 sm:right-8 flex flex-col sm:flex-row sm:items-end justify-between gap-2.5 sm:gap-4">
+                    <p className="text-xs sm:text-base text-slate-200 max-w-xl leading-relaxed">
                       Every English Medium Science subject divides complex theory and lab sessions across two specialist teachers so students grasp every proof early.
                     </p>
-                    <span className="font-mono text-xs text-amber-300 shrink-0 tabular-nums">
+                    <span className="font-mono text-[11px] sm:text-xs text-amber-300 shrink-0 tabular-nums">
                       01 / 03 · Scroll to continue
                     </span>
                   </div>
@@ -1085,12 +981,12 @@ export const ZahiraHomePage: React.FC<ZahiraHomePageProps> = ({
                     style={prefersReducedMotion ? undefined : { scale: ch2ImgScale }}
                     className="w-full h-full object-cover"
                   />
-                  <div className="absolute inset-0 bg-gradient-to-t from-slate-950/90 via-slate-950/25 to-transparent" />
-                  <div className="absolute bottom-6 left-6 right-6 sm:bottom-8 sm:left-8 sm:right-8 flex flex-col sm:flex-row sm:items-end justify-between gap-4">
-                    <p className="text-sm sm:text-base text-slate-200 max-w-xl leading-relaxed">
+                  <div className="absolute inset-0 bg-gradient-to-t from-slate-950/95 via-slate-950/40 to-transparent" />
+                  <div className="absolute bottom-4 left-4 right-4 sm:bottom-8 sm:left-8 sm:right-8 flex flex-col sm:flex-row sm:items-end justify-between gap-2.5 sm:gap-4">
+                    <p className="text-xs sm:text-base text-slate-200 max-w-xl leading-relaxed">
                       Dedicated study seminars pair past-paper walkthroughs with continuous term tracking across Physical Science and Biological Science cohorts.
                     </p>
-                    <span className="font-mono text-xs text-blue-300 shrink-0 tabular-nums">
+                    <span className="font-mono text-[11px] sm:text-xs text-blue-300 shrink-0 tabular-nums">
                       02 / 03 · Hall 28 Commons
                     </span>
                   </div>
@@ -1113,16 +1009,16 @@ export const ZahiraHomePage: React.FC<ZahiraHomePageProps> = ({
                     style={prefersReducedMotion ? undefined : { scale: ch3ImgScale }}
                     className="w-full h-full object-cover"
                   />
-                  <div className="absolute inset-0 bg-gradient-to-t from-slate-950/92 via-slate-950/30 to-transparent" />
-                  <div className="absolute bottom-6 left-6 right-6 sm:bottom-8 sm:left-8 sm:right-8 flex flex-col sm:flex-row sm:items-end justify-between gap-4">
-                    <p className="text-sm sm:text-base text-slate-200 max-w-xl leading-relaxed">
+                  <div className="absolute inset-0 bg-gradient-to-t from-slate-950/95 via-slate-950/50 to-transparent" />
+                  <div className="absolute bottom-4 left-4 right-4 sm:bottom-8 sm:left-8 sm:right-8 flex flex-col sm:flex-row sm:items-end justify-between gap-3 sm:gap-4">
+                    <p className="text-xs sm:text-base text-slate-200 max-w-xl leading-relaxed">
                       Sign up or sign in to access unit materials, subject discussions, PvP quiz arenas, and live faculty attendance inside the portal.
                     </p>
-                    <div className="flex items-center gap-2.5 shrink-0">
+                    <div className="flex items-center gap-2.5 shrink-0 w-full sm:w-auto">
                       <button
                         type="button"
                         onClick={() => onSignUp('dashboard')}
-                        className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 px-4 py-2 text-xs font-semibold text-white transition-colors"
+                        className="flex-1 sm:flex-initial inline-flex items-center justify-center gap-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 min-h-[42px] px-4 py-2 text-xs font-semibold text-white transition-colors"
                       >
                         <UserPlus className="w-3.5 h-3.5" />
                         <span>Sign Up</span>
@@ -1130,7 +1026,7 @@ export const ZahiraHomePage: React.FC<ZahiraHomePageProps> = ({
                       <button
                         type="button"
                         onClick={() => onSignIn('dashboard')}
-                        className="inline-flex items-center gap-1.5 rounded-lg bg-white/15 hover:bg-white/25 border border-white/25 px-4 py-2 text-xs font-semibold text-white transition-colors"
+                        className="flex-1 sm:flex-initial inline-flex items-center justify-center gap-1.5 rounded-lg bg-white/15 hover:bg-white/25 border border-white/25 min-h-[42px] px-4 py-2 text-xs font-semibold text-white transition-colors"
                       >
                         <LogIn className="w-3.5 h-3.5" />
                         <span>Sign In</span>
@@ -1141,8 +1037,8 @@ export const ZahiraHomePage: React.FC<ZahiraHomePageProps> = ({
               </motion.div>
             </div>
 
-            <div className="flex items-center justify-between gap-4 pt-1">
-              <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+            <div className="flex items-center justify-between gap-3 sm:gap-4 pt-1 shrink-0">
+              <div className="flex items-center gap-2 sm:gap-3 overflow-x-auto no-scrollbar w-full sm:w-auto pb-0.5 sm:pb-0">
                 {[
                   { idx: 0 as const, label: '01 · Dual Faculty' },
                   { idx: 1 as const, label: '02 · Boys Seminars' },
@@ -1154,7 +1050,7 @@ export const ZahiraHomePage: React.FC<ZahiraHomePageProps> = ({
                       key={ch.idx}
                       type="button"
                       onClick={() => jumpToAppleChapter(ch.idx)}
-                      className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
+                      className={`px-3 min-h-[40px] sm:min-h-0 py-1.5 rounded-lg text-[11px] sm:text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
                         active
                           ? 'bg-white text-slate-950'
                           : 'bg-white/10 text-slate-300 hover:bg-white/20'
@@ -1166,7 +1062,7 @@ export const ZahiraHomePage: React.FC<ZahiraHomePageProps> = ({
                 })}
               </div>
 
-              <div className="hidden sm:flex items-center gap-2 text-xs text-slate-400">
+              <div className="hidden sm:flex items-center gap-2 text-xs text-slate-400 shrink-0">
                 <span>Scroll Progress</span>
                 <div className="w-28 h-1.5 rounded-full bg-white/15 overflow-hidden">
                   <motion.div
@@ -1298,31 +1194,31 @@ export const ZahiraHomePage: React.FC<ZahiraHomePageProps> = ({
               <div
                 role="tablist"
                 aria-label="Graph Analysis Mode"
-                className="inline-flex items-center p-1 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 self-start"
+                className="w-full sm:w-auto grid grid-cols-2 sm:inline-flex items-center p-1 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 self-start"
               >
                 <button
                   type="button"
                   onClick={() => setResultGraphMode('rates')}
-                  className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
+                  className={`inline-flex items-center justify-center gap-1.5 px-3 sm:px-3.5 min-h-[40px] py-2 rounded-lg text-[11px] sm:text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
                     resultGraphMode === 'rates'
                       ? 'bg-blue-900 text-white dark:bg-blue-600'
                       : 'text-slate-600 dark:text-slate-300 hover:text-slate-950 dark:hover:text-white'
                   }`}
                 >
-                  <BarChart3 className="w-3.5 h-3.5" />
-                  <span>Pass Rate Bar Graph</span>
+                  <BarChart3 className="w-3.5 h-3.5 shrink-0" />
+                  <span>Pass Rate Graph</span>
                 </button>
                 <button
                   type="button"
                   onClick={() => setResultGraphMode('selections')}
-                  className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
+                  className={`inline-flex items-center justify-center gap-1.5 px-3 sm:px-3.5 min-h-[40px] py-2 rounded-lg text-[11px] sm:text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
                     resultGraphMode === 'selections'
                       ? 'bg-blue-900 text-white dark:bg-blue-600'
                       : 'text-slate-600 dark:text-slate-300 hover:text-slate-950 dark:hover:text-white'
                   }`}
                 >
-                  <TrendingUp className="w-3.5 h-3.5" />
-                  <span>Selection Trend Graph</span>
+                  <TrendingUp className="w-3.5 h-3.5 shrink-0" />
+                  <span>Selection Trend</span>
                 </button>
               </div>
             )}
@@ -1331,7 +1227,7 @@ export const ZahiraHomePage: React.FC<ZahiraHomePageProps> = ({
           {yearlyResults.length > 0 ? (
             <div className="space-y-8">
               {/* Interactive Recharts Graph Panel */}
-              <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 sm:p-8 shadow-xs space-y-4">
+              <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 sm:p-8 shadow-xs space-y-4">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 dark:border-slate-800 pb-4">
                   <div>
                     <h3 className="font-serif text-lg sm:text-xl font-bold text-slate-950 dark:text-white">
@@ -1348,12 +1244,12 @@ export const ZahiraHomePage: React.FC<ZahiraHomePageProps> = ({
                   </span>
                 </div>
 
-                <div className="h-72 sm:h-80 w-full">
+                <div className="h-64 sm:h-80 w-full">
                   <ResponsiveContainer width="100%" height="100%">
                     {resultGraphMode === 'rates' ? (
                       <BarChart
                         data={resultsChartData}
-                        margin={{ top: 10, right: 16, left: -10, bottom: 4 }}
+                        margin={{ top: 10, right: 8, left: -18, bottom: 4 }}
                       >
                         <CartesianGrid strokeDasharray="3 3" stroke="#cbd5e1" opacity={0.45} />
                         <XAxis dataKey="year" tick={{ fontSize: 12 }} />
@@ -1468,7 +1364,7 @@ export const ZahiraHomePage: React.FC<ZahiraHomePageProps> = ({
                       </div>
                     </div>
 
-                    <div className="pt-4 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between gap-2">
+                    <div className="pt-4 border-t border-slate-100 dark:border-slate-800 grid grid-cols-2 sm:flex sm:items-center justify-between gap-2">
                       {report.pdfFileUrl ? (
                         <>
                           <button
@@ -1481,7 +1377,7 @@ export const ZahiraHomePage: React.FC<ZahiraHomePageProps> = ({
                                 fileName: report.pdfFileName || `Zahira_AL_Results_${report.examYear}.pdf`,
                               })
                             }
-                            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 px-3 py-2 text-xs font-semibold text-slate-800 dark:text-slate-100 transition-colors"
+                            className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 min-h-[42px] px-3 py-2 text-xs font-semibold text-slate-800 dark:text-slate-100 transition-colors"
                           >
                             <Eye className="w-3.5 h-3.5" />
                             <span>Preview PDF</span>
@@ -1492,14 +1388,14 @@ export const ZahiraHomePage: React.FC<ZahiraHomePageProps> = ({
                             download={report.pdfFileName || `Zahira_AL_Results_${report.examYear}.pdf`}
                             target={report.pdfFileUrl.startsWith('http') ? '_blank' : undefined}
                             rel="noopener noreferrer"
-                            className="inline-flex items-center gap-1.5 rounded-lg bg-blue-900 hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-500 px-3.5 py-2 text-xs font-semibold text-white transition-colors"
+                            className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-blue-900 hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-500 min-h-[42px] px-3.5 py-2 text-xs font-semibold text-white transition-colors"
                           >
                             <Download className="w-3.5 h-3.5" />
                             <span>Download PDF</span>
                           </a>
                         </>
                       ) : (
-                        <span className="text-xs text-slate-500 dark:text-slate-400">
+                        <span className="col-span-2 text-xs text-slate-500 dark:text-slate-400">
                           Graph figures verified · PDF sheet pending upload
                         </span>
                       )}
@@ -1766,20 +1662,20 @@ export const ZahiraHomePage: React.FC<ZahiraHomePageProps> = ({
             <div
               role="tablist"
               aria-label="Science Stream Selector"
-              className="inline-flex items-center p-1 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 self-start"
+              className="w-full sm:w-auto grid grid-cols-2 sm:inline-flex items-center p-1 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 self-start"
             >
               <button
                 type="button"
                 role="tab"
                 aria-selected={activeStream === 'physical'}
                 onClick={() => setActiveStream('physical')}
-                className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg text-xs sm:text-sm font-semibold transition-colors whitespace-nowrap shrink-0 ${
+                className={`inline-flex items-center justify-center gap-2 px-3 sm:px-4 min-h-[42px] py-2 rounded-lg text-xs sm:text-sm font-semibold transition-colors whitespace-nowrap shrink-0 ${
                   activeStream === 'physical'
                     ? 'bg-blue-900 text-white dark:bg-blue-600'
                     : 'text-slate-600 dark:text-slate-300 hover:text-slate-950 dark:hover:text-white'
                 }`}
               >
-                <Atom className="w-4 h-4" />
+                <Atom className="w-4 h-4 shrink-0" />
                 <span>Physical Science</span>
               </button>
               <button
@@ -1787,13 +1683,13 @@ export const ZahiraHomePage: React.FC<ZahiraHomePageProps> = ({
                 role="tab"
                 aria-selected={activeStream === 'biological'}
                 onClick={() => setActiveStream('biological')}
-                className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg text-xs sm:text-sm font-semibold transition-colors whitespace-nowrap shrink-0 ${
+                className={`inline-flex items-center justify-center gap-2 px-3 sm:px-4 min-h-[42px] py-2 rounded-lg text-xs sm:text-sm font-semibold transition-colors whitespace-nowrap shrink-0 ${
                   activeStream === 'biological'
                     ? 'bg-blue-900 text-white dark:bg-blue-600'
                     : 'text-slate-600 dark:text-slate-300 hover:text-slate-950 dark:hover:text-white'
                 }`}
               >
-                <Microscope className="w-4 h-4" />
+                <Microscope className="w-4 h-4 shrink-0" />
                 <span>Biological Science</span>
               </button>
             </div>
@@ -1978,7 +1874,7 @@ export const ZahiraHomePage: React.FC<ZahiraHomePageProps> = ({
               </p>
             </div>
 
-            <div className="inline-flex items-center p-1 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 self-start">
+            <div className="w-full sm:w-auto grid grid-cols-3 sm:inline-flex items-center p-1 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 self-start">
               {(
                 [
                   { id: 'year', label: `Year ${currentYear}` },
@@ -1990,7 +1886,7 @@ export const ZahiraHomePage: React.FC<ZahiraHomePageProps> = ({
                   key={opt.id}
                   type="button"
                   onClick={() => setRankPeriod(opt.id)}
-                  className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
+                  className={`px-2.5 sm:px-3.5 min-h-[40px] py-1.5 rounded-lg text-[11px] sm:text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
                     rankPeriod === opt.id
                       ? 'bg-blue-900 text-white dark:bg-blue-600'
                       : 'text-slate-600 dark:text-slate-300 hover:text-slate-950 dark:hover:text-white'
@@ -2004,13 +1900,46 @@ export const ZahiraHomePage: React.FC<ZahiraHomePageProps> = ({
 
           {topRanks.length > 0 ? (
             <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden shadow-xs">
-              <div className="overflow-x-auto">
+              {/* Mobile Compact Stacked Leaderboard Rows */}
+              <div className="sm:hidden divide-y divide-slate-100 dark:divide-slate-800">
+                {topRanks.map((row, idx) => (
+                  <div
+                    key={row.userId}
+                    className="p-4 flex items-center justify-between gap-3"
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <span className="font-mono text-sm font-bold text-blue-900 dark:text-blue-400 tabular-nums shrink-0">
+                        #{String(idx + 1).padStart(2, '0')}
+                      </span>
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold text-slate-950 dark:text-white truncate">
+                          {row.userName}
+                        </p>
+                        <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                          {row.batchName || activeBatch?.name || 'Science EM'} · {row.accuracyPercent}% Acc
+                        </p>
+                      </div>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <p className="font-mono text-sm font-bold text-slate-950 dark:text-white tabular-nums">
+                        {row.totalPoints.toLocaleString()}
+                      </p>
+                      <p className="text-[10px] text-slate-500 dark:text-slate-400 tabular-nums">
+                        {row.quizzesDone} quizzes
+                      </p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Desktop / Tablet Leaderboard Table */}
+              <div className="hidden sm:block overflow-x-auto">
                 <table className="w-full text-left border-collapse">
                   <thead>
                     <tr className="border-b border-slate-200 dark:border-slate-800 text-[11px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 bg-slate-50/70 dark:bg-slate-900/60">
                       <th className="py-3.5 px-5">Rank</th>
                       <th className="py-3.5 px-5">Scholar</th>
-                      <th className="py-3.5 px-5 hidden sm:table-cell">Batch</th>
+                      <th className="py-3.5 px-5">Batch</th>
                       <th className="py-3.5 px-5 text-right">Accuracy</th>
                       <th className="py-3.5 px-5 text-right">Quizzes</th>
                       <th className="py-3.5 px-5 text-right">Points</th>
@@ -2035,7 +1964,7 @@ export const ZahiraHomePage: React.FC<ZahiraHomePageProps> = ({
                             </p>
                           )}
                         </td>
-                        <td className="py-4 px-5 hidden sm:table-cell text-xs text-slate-600 dark:text-slate-300">
+                        <td className="py-4 px-5 text-xs text-slate-600 dark:text-slate-300">
                           {row.batchName || activeBatch?.name || 'Science EM'}
                         </td>
                         <td className="py-4 px-5 text-right font-mono text-xs font-semibold text-emerald-700 dark:text-emerald-400 tabular-nums">
@@ -2052,14 +1981,14 @@ export const ZahiraHomePage: React.FC<ZahiraHomePageProps> = ({
                   </tbody>
                 </table>
               </div>
-              <div className="px-5 py-4 border-t border-slate-100 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-900 flex flex-wrap items-center justify-between gap-3">
+              <div className="px-4 sm:px-5 py-4 border-t border-slate-100 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-900 flex flex-wrap items-center justify-between gap-3">
                 <span className="text-xs text-slate-500 dark:text-slate-400">
                   Sign in to compete in 1v1 duels and view full Top-20 standings.
                 </span>
                 <button
                   type="button"
                   onClick={() => onSignIn('leaderboard')}
-                  className="inline-flex items-center gap-1.5 text-xs font-semibold text-blue-900 dark:text-blue-400 hover:underline underline-offset-4"
+                  className="inline-flex items-center gap-1.5 text-xs font-semibold text-blue-900 dark:text-blue-400 hover:underline underline-offset-4 min-h-[36px]"
                 >
                   <Trophy className="w-3.5 h-3.5" />
                   <span>Sign In to View Full Ranks</span>
@@ -2260,14 +2189,14 @@ export const ZahiraHomePage: React.FC<ZahiraHomePageProps> = ({
                   </div>
                 )}
 
-                <div className="flex flex-wrap items-center justify-between gap-4 pt-1">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-4 pt-1">
                   <span className="text-xs text-slate-500 dark:text-slate-400">
                     Already registered? Sign in to message teachers directly.
                   </span>
                   <button
                     type="submit"
                     disabled={submittingInquiry}
-                    className="inline-flex items-center gap-2 rounded-xl bg-blue-900 hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-500 disabled:opacity-50 px-6 py-3 text-sm font-semibold text-white transition-colors shadow-xs whitespace-nowrap shrink-0"
+                    className="w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-xl bg-blue-900 hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-500 disabled:opacity-50 min-h-[46px] px-6 py-3 text-sm font-semibold text-white transition-colors shadow-xs whitespace-nowrap shrink-0"
                   >
                     <Send className="w-4 h-4" />
                     <span>{submittingInquiry ? 'Sending...' : 'Send Inquiry'}</span>
@@ -2367,28 +2296,28 @@ export const ZahiraHomePage: React.FC<ZahiraHomePageProps> = ({
                         (lightboxIndex - 1 + GALLERY_ITEMS.length) % GALLERY_ITEMS.length
                       )
                     }
-                    className="w-9 h-9 rounded-lg border border-slate-200 dark:border-slate-700 flex items-center justify-center text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800"
+                    className="w-11 h-11 rounded-lg border border-slate-200 dark:border-slate-700 flex items-center justify-center text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800"
                     aria-label="Previous image"
                   >
-                    <ChevronLeft className="w-4 h-4" />
+                    <ChevronLeft className="w-5 h-5" />
                   </button>
                   <button
                     type="button"
                     onClick={() =>
                       setLightboxIndex((lightboxIndex + 1) % GALLERY_ITEMS.length)
                     }
-                    className="w-9 h-9 rounded-lg border border-slate-200 dark:border-slate-700 flex items-center justify-center text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800"
+                    className="w-11 h-11 rounded-lg border border-slate-200 dark:border-slate-700 flex items-center justify-center text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800"
                     aria-label="Next image"
                   >
-                    <ChevronRight className="w-4 h-4" />
+                    <ChevronRight className="w-5 h-5" />
                   </button>
                   <button
                     type="button"
                     onClick={() => setLightboxIndex(null)}
-                    className="w-9 h-9 rounded-lg bg-slate-900 dark:bg-slate-800 text-white flex items-center justify-center hover:bg-slate-800 dark:hover:bg-slate-700"
+                    className="w-11 h-11 rounded-lg bg-slate-900 dark:bg-slate-800 text-white flex items-center justify-center hover:bg-slate-800 dark:hover:bg-slate-700"
                     aria-label="Close gallery viewer"
                   >
-                    <X className="w-4 h-4" />
+                    <X className="w-5 h-5" />
                   </button>
                 </div>
               </div>
@@ -2406,20 +2335,20 @@ export const ZahiraHomePage: React.FC<ZahiraHomePageProps> = ({
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-sm flex items-center justify-center p-4"
+            className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-sm flex items-center justify-center p-2 sm:p-4"
             onClick={() => setPdfViewer(null)}
           >
             <div
-              className="relative max-w-5xl w-full h-[86dvh] rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 overflow-hidden shadow-2xl flex flex-col"
+              className="relative max-w-5xl w-full h-[90dvh] sm:h-[86dvh] rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 overflow-hidden shadow-2xl flex flex-col"
               onClick={(e) => e.stopPropagation()}
             >
-              <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-4">
-                <div className="min-w-0">
-                  <h3 className="font-serif text-base sm:text-lg font-bold text-slate-950 dark:text-white truncate">
+              <div className="px-4 sm:px-5 py-3.5 sm:py-4 border-b border-slate-200 dark:border-slate-800 flex flex-wrap sm:flex-nowrap items-center justify-between gap-3">
+                <div className="min-w-0 flex-1">
+                  <h3 className="font-serif text-sm sm:text-lg font-bold text-slate-950 dark:text-white truncate">
                     {pdfViewer.title}
                   </h3>
                   {pdfViewer.subtitle && (
-                    <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
+                    <p className="text-[11px] sm:text-xs text-slate-500 dark:text-slate-400 truncate">
                       {pdfViewer.subtitle}
                     </p>
                   )}
@@ -2431,26 +2360,27 @@ export const ZahiraHomePage: React.FC<ZahiraHomePageProps> = ({
                     download={pdfViewer.fileName}
                     target={pdfViewer.url.startsWith('http') ? '_blank' : undefined}
                     rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1.5 rounded-lg bg-blue-900 hover:bg-blue-800 dark:bg-blue-600 px-3.5 py-2 text-xs font-semibold text-white transition-colors"
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-blue-900 hover:bg-blue-800 dark:bg-blue-600 min-h-[40px] px-3 sm:px-3.5 py-2 text-xs font-semibold text-white transition-colors"
                   >
                     <Download className="w-3.5 h-3.5" />
-                    <span>Download PDF</span>
+                    <span className="hidden min-[420px]:inline">Download PDF</span>
+                    <span className="min-[420px]:hidden">PDF</span>
                   </a>
                   {pdfViewer.url.startsWith('http') && (
                     <a
                       href={pdfViewer.url}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 dark:border-slate-700 px-3 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800"
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 dark:border-slate-700 min-h-[40px] px-3 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800"
                     >
                       <ExternalLink className="w-3.5 h-3.5" />
-                      <span>Open Link</span>
+                      <span className="hidden sm:inline">Open Link</span>
                     </a>
                   )}
                   <button
                     type="button"
                     onClick={() => setPdfViewer(null)}
-                    className="w-9 h-9 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 flex items-center justify-center hover:bg-slate-200 dark:hover:bg-slate-700"
+                    className="w-10 h-10 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 flex items-center justify-center hover:bg-slate-200 dark:hover:bg-slate-700"
                     aria-label="Close PDF viewer"
                   >
                     <X className="w-4 h-4" />
