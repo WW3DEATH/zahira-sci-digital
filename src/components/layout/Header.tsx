@@ -125,14 +125,15 @@ export const Header: React.FC<HeaderProps> = ({
           title="Zahira College Mawanella Science Project EM"
         >
           {/* Official Zahira College Mawanella Crest */}
-          <ZahiraLogo size="sm" className="group-hover:scale-105 transition-transform" />
+          <ZahiraLogo size="sm" className="group-hover:scale-105 transition-transform shrink-0" />
 
           <div className="flex flex-col min-w-0">
             <span className="font-serif text-sm sm:text-base lg:text-lg font-bold tracking-tight text-slate-900 dark:text-slate-100 leading-none truncate">
-              Zahira College Mawanella Science Project EM
+              <span className="sm:hidden">ZCM Science EM</span>
+              <span className="hidden sm:inline">Zahira College Mawanella Science Project EM</span>
             </span>
             <span className="text-[9px] sm:text-[10px] font-bold text-red-600 dark:text-red-400 tracking-wider uppercase mt-0.5 truncate">
-              Active Batch · {activeBatch?.name || '2k28 Science EM'}
+              Batch · {activeBatch?.name || '2k28 Science EM'}
             </span>
           </div>
         </div>
@@ -151,13 +152,13 @@ export const Header: React.FC<HeaderProps> = ({
               <span className="max-w-[140px] truncate">{activeBatch?.name || '2k28 Science EM'}</span>
             </div>
           ) : (
-            <div className="flex items-center gap-1 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-2 py-1">
+            <div className="flex items-center gap-1 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 px-1.5 sm:px-2 py-1">
               <Layers className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400 shrink-0" />
               <select
                 aria-label="Active Academic Batch"
                 value={activeBatchId}
                 onChange={(e) => setActiveBatchId(e.target.value)}
-                className="bg-transparent text-[11px] font-bold text-slate-800 dark:text-slate-100 focus:outline-none cursor-pointer max-w-[115px] sm:max-w-[160px]"
+                className="bg-transparent text-[11px] font-bold text-slate-800 dark:text-slate-100 focus:outline-none cursor-pointer max-w-[82px] min-[420px]:max-w-[115px] sm:max-w-[160px]"
               >
                 <option value={ALL_BATCHES_ID} className="bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100">
                   All Batches ({batches.length})
