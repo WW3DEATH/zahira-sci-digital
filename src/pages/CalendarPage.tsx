@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Calendar as CalendarIcon,
   ChevronLeft,
@@ -28,19 +28,57 @@ import {
   CheckSquare,
   Eye,
   Power,
+  Video,
+  PlayCircle,
+  Pencil,
+  Film,
+  UserPlus,
+  TrendingUp,
 } from 'lucide-react';
-import { collection, doc, onSnapshot, setDoc, deleteDoc } from 'firebase/firestore';
+import {
+  collection,
+  doc,
+  onSnapshot,
+  setDoc,
+  deleteDoc,
+  updateDoc,
+  increment,
+  query,
+  where,
+  writeBatch,
+} from 'firebase/firestore';
 import { jsPDF } from 'jspdf';
 import { db, sanitizeFirestoreDoc, handleFirestoreError, OperationType } from '../firebase';
 import { useAuth } from '../context/AuthContext';
 import { ALL_BATCHES_ID, useBatch, isInBatch } from '../context/BatchContext';
-import { SchoolEvent, SchoolEventType, STUDY_GROUP_ROOMS, AttendanceRecord, AttendanceStatus, AttendanceDayControl, UserProfile, SchoolClass, ScheduledClass, RosterStudent } from '../types';
+import {
+  SchoolEvent,
+  SchoolEventType,
+  STUDY_GROUP_ROOMS,
+  AttendanceRecord,
+  AttendanceStatus,
+  AttendanceDayControl,
+  UserProfile,
+  SchoolClass,
+  ScheduledClass,
+  RosterStudent,
+  ClassRecording,
+  RecordingTeacher,
+  RecordingWatchProgress,
+} from '../types';
 import {
   syncGoogleCalendarToFirestore,
   createGoogleCalendarEvent,
   deleteGoogleCalendarEvent,
 } from '../services/googleCalendarService';
 import { PDFPreviewModal, PDFPreviewData } from '../components/common/PDFPreviewModal';
+import { CalendarRecordingPlayer } from '../components/calendar/CalendarRecordingPlayer';
+import {
+  TeacherNameHoverTrigger,
+  TeacherProfileSummary,
+  formatRecordingViewCount,
+} from '../components/calendar/TeacherHoverCard';
+import { extractYouTubeVideoId, getYouTubeThumbnailUrl } from '../utils/youtubeUtils';
 import { isFakeSeedRosterStudent } from '../services/dataService';
 import {
   buildAttendanceRecordId,
@@ -50,15 +88,15 @@ import {
 } from '../utils/attendanceUtils';
 
 export interface CalendarPageProps {
-  initialTab?: 'events' | 'attendance';
+  initialTab?: 'events' | 'attendance' | 'recordings';
 }
 
 export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events' }) => {
   const { activeRole, userProfile, googleAccessToken, connectGoogleCalendar } = useAuth();
   const { batches, activeBatchId, activeBatch, setActiveBatchId, isBatchLocked, getBatchName, resolveWriteBatchId } = useBatch();
 
-  // Active view tab: 'events' | 'attendance'
-  const [activeTab, setActiveTab] = useState<'events' | 'attendance'>(initialTab);
+  // Active view tab: 'events' | 'attendance' | 'recordings'
+  const [activeTab, setActiveTab] = useState<'events' | 'attendance' | 'recordings'>(initialTab);
 
   // Calendar date state (for browsing months)
   const [currentDate, setCurrentDate] = useState(() => new Date());
@@ -116,6 +154,60 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
   const [exportingPDF, setExportingPDF] = useState(false);
   const [previewPDFData, setPreviewPDFData] = useState<PDFPreviewData | null>(null);
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
+
+  // Class Recordings State (Multiple YouTube recordings per single day)
+  const [classRecordings, setClassRecordings] = useState<ClassRecording[]>([]);
+  const [recordingTeachers, setRecordingTeachers] = useState<RecordingTeacher[]>([]);
+  const [watchProgressMap, setWatchProgressMap] = useState<Record<string, RecordingWatchProgress>>({});
+  const [recordingDate, setRecordingDate] = useState(() => new Date().toISOString().split('T')[0]);
+  const [recordingViewScope, setRecordingViewScope] = useState<'day' | 'all'>('day');
+  const [recordingCategoryFilter, setRecordingCategoryFilter] = useState<string>('all');
+  const [recordingTeacherFilter, setRecordingTeacherFilter] = useState<string>('all');
+  const [groupRecordingsByTeacher, setGroupRecordingsByTeacher] = useState<boolean>(true);
+  const [recordingSortMode, setRecordingSortMode] = useState<'latest' | 'most_watched'>('latest');
+  const [activeRecordingId, setActiveRecordingId] = useState<string | null>(null);
+  const [savingWatchId, setSavingWatchId] = useState<string | null>(null);
+  const viewedRecordingIdsRef = useRef<Set<string>>(new Set());
+
+  // Recording Upload / Edit / Delete Modal State (Teachers & Admins Only)
+  const [isRecordingModalOpen, setIsRecordingModalOpen] = useState(false);
+  const [editingRecording, setEditingRecording] = useState<ClassRecording | null>(null);
+  const [recTitle, setRecTitle] = useState('');
+  const [recYoutubeUrl, setRecYoutubeUrl] = useState('');
+  const [recDate, setRecDate] = useState(() => new Date().toISOString().split('T')[0]);
+  const [recCategory, setRecCategory] = useState('Physics');
+  const [recCustomCategory, setRecCustomCategory] = useState('');
+  const [recTeacherSelectionMode, setRecTeacherSelectionMode] = useState<'directory' | 'manual'>('directory');
+  const [recSelectedTeacherId, setRecSelectedTeacherId] = useState('');
+  const [recTeacherName, setRecTeacherName] = useState('');
+  const [recTeacherSubject, setRecTeacherSubject] = useState('');
+  const [recSessionLabel, setRecSessionLabel] = useState('');
+  const [recDurationLabel, setRecDurationLabel] = useState('');
+  const [recQualityLabel, setRecQualityLabel] = useState('720p');
+  const [recDescription, setRecDescription] = useState('');
+  const [recFormError, setRecFormError] = useState<string | null>(null);
+  const [savingRecording, setSavingRecording] = useState(false);
+  const [recordingToDelete, setRecordingToDelete] = useState<ClassRecording | null>(null);
+
+  // Bulk Teachers Directory Modal State (Teachers & Admins Only — never synced with user accounts)
+  const [isTeacherDirectoryModalOpen, setIsTeacherDirectoryModalOpen] = useState(false);
+  const [bulkTeacherPasteText, setBulkTeacherPasteText] = useState('');
+  const [bulkTeacherRows, setBulkTeacherRows] = useState<
+    Array<{ localId: string; name: string; subject: string }>
+  >([
+    { localId: 'row-init-1', name: '', subject: '' },
+    { localId: 'row-init-2', name: '', subject: '' },
+    { localId: 'row-init-3', name: '', subject: '' },
+  ]);
+  const [bulkTeacherApplyAllBatches, setBulkTeacherApplyAllBatches] = useState(true);
+  const [teacherDirectoryError, setTeacherDirectoryError] = useState<string | null>(null);
+  const [savingBulkTeachers, setSavingBulkTeachers] = useState(false);
+  const [editingTeacherEntryId, setEditingTeacherEntryId] = useState<string | null>(null);
+  const [editingTeacherEntryName, setEditingTeacherEntryName] = useState('');
+  const [editingTeacherEntrySubject, setEditingTeacherEntrySubject] = useState('');
+  const [editingTeacherEntryBio, setEditingTeacherEntryBio] = useState('');
+  const [savingTeacherEntryEdit, setSavingTeacherEntryEdit] = useState(false);
+  const [teacherEntryToDelete, setTeacherEntryToDelete] = useState<RecordingTeacher | null>(null);
 
   const isTeacherOrAdmin = activeRole === 'admin' || activeRole === 'teacher';
 
@@ -233,6 +325,70 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
     return () => unsub();
   }, []);
 
+  // 5. Real-time listener for Class Recordings (supports multiple recordings per single day)
+  useEffect(() => {
+    const unsub = onSnapshot(
+      collection(db, 'classRecordings'),
+      (snapshot) => {
+        const list: ClassRecording[] = [];
+        snapshot.forEach((d) => {
+          const data = d.data() as ClassRecording;
+          list.push({ ...data, id: d.id });
+        });
+        list.sort((a, b) => {
+          const dateCmp = (b.date || '').localeCompare(a.date || '');
+          if (dateCmp !== 0) return dateCmp;
+          return (a.createdAt || '').localeCompare(b.createdAt || '');
+        });
+        setClassRecordings(list);
+      },
+      (error) => handleFirestoreError(error, OperationType.LIST, 'classRecordings')
+    );
+    return () => unsub();
+  }, []);
+
+  // 6. Real-time listener for per-user Mark as Watched tracking
+  useEffect(() => {
+    const currentUserId = userProfile?.userId || 'guest';
+    const progressQuery = query(
+      collection(db, 'recordingWatchProgress'),
+      where('userId', '==', currentUserId)
+    );
+    const unsub = onSnapshot(
+      progressQuery,
+      (snapshot) => {
+        const map: Record<string, RecordingWatchProgress> = {};
+        snapshot.forEach((d) => {
+          const data = d.data() as RecordingWatchProgress;
+          if (data.recordingId) {
+            map[data.recordingId] = { ...data, id: d.id };
+          }
+        });
+        setWatchProgressMap(map);
+      },
+      (error) => handleFirestoreError(error, OperationType.LIST, 'recordingWatchProgress')
+    );
+    return () => unsub();
+  }, [userProfile?.userId]);
+
+  // 7. Real-time listener for manual Recording Teachers Directory (strictly Admin/Teacher entered, NEVER synced with accounts)
+  useEffect(() => {
+    const unsub = onSnapshot(
+      collection(db, 'recordingTeachers'),
+      (snapshot) => {
+        const list: RecordingTeacher[] = [];
+        snapshot.forEach((d) => {
+          const data = d.data() as RecordingTeacher;
+          list.push({ ...data, id: d.id });
+        });
+        list.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+        setRecordingTeachers(list);
+      },
+      (error) => handleFirestoreError(error, OperationType.LIST, 'recordingTeachers')
+    );
+    return () => unsub();
+  }, []);
+
   const activeBatchName = activeBatch?.name || getBatchName(activeBatchId);
   const writeBatchId = resolveWriteBatchId(activeBatchId);
   const writeBatchName = getBatchName(writeBatchId);
@@ -241,6 +397,10 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
   const batchSchoolEvents = schoolEvents.filter((ev) => isInBatch(ev.batchId, activeBatchId));
   const batchScheduledClasses = scheduledClasses.filter((sc) => isInBatch(sc.batchId, activeBatchId));
   const batchAttendanceRecords = attendanceRecords.filter((r) => isInBatch(r.batchId, activeBatchId));
+  const batchRecordings = classRecordings.filter((rec) => isInBatch(rec.batchId, activeBatchId));
+  const batchRecordingTeachers = recordingTeachers.filter(
+    (t) => t.batchId === ALL_BATCHES_ID || isInBatch(t.batchId, activeBatchId)
+  );
 
   useEffect(() => {
     if (batchClasses.length > 0) {
@@ -970,6 +1130,809 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
     };
   };
 
+  // Recording helpers & handlers
+  const RECORDING_BASE_CATEGORIES = [
+    'Physics',
+    'Mathematics',
+    'Chemistry',
+    'Biology',
+    'Revision',
+    'ICT',
+    'Past Papers',
+    'Practical',
+  ] as const;
+
+  const formatDisplaySessionDate = (isoDate: string) => {
+    if (!isoDate || !isoDate.includes('-')) return isoDate;
+    const [y, m, d] = isoDate.split('-');
+    return `${d}-${m}-${y}`;
+  };
+
+  const getRecordingCategory = (rec: ClassRecording): string => {
+    const raw = (rec.category || rec.subject || 'Physics').trim();
+    if (raw === 'Combined Mathematics') return 'Mathematics';
+    return raw;
+  };
+
+  const getRecordingTeacherLabel = (rec: ClassRecording): string => {
+    if (rec.teacherId) {
+      const matched = batchRecordingTeachers.find((t) => t.id === rec.teacherId);
+      if (matched?.name) return matched.name.trim();
+    }
+    return (rec.teacherName || '').trim() || 'Teacher Not Specified';
+  };
+
+  const getRecordingTeacherSubject = (rec: ClassRecording): string => {
+    if ((rec.teacherSubject || '').trim()) return rec.teacherSubject!.trim();
+    if (rec.teacherId) {
+      const byId = batchRecordingTeachers.find((t) => t.id === rec.teacherId);
+      if (byId?.subject) return byId.subject.trim();
+    }
+    const label = (rec.teacherName || '').trim().toLowerCase();
+    if (label) {
+      const byName = batchRecordingTeachers.find((t) => t.name.trim().toLowerCase() === label);
+      if (byName?.subject) return byName.subject.trim();
+    }
+    return '';
+  };
+
+  const matchesRecordingCategory = (rec: ClassRecording, categoryFilter: string): boolean => {
+    if (categoryFilter === 'all') return true;
+    const cat = getRecordingCategory(rec);
+    if (cat.toLowerCase() === categoryFilter.toLowerCase()) return true;
+    if (
+      categoryFilter.toLowerCase() === 'mathematics' &&
+      (rec.subject || '').toLowerCase().includes('math')
+    ) {
+      return true;
+    }
+    return false;
+  };
+
+  const matchesRecordingTeacher = (rec: ClassRecording, teacherFilter: string): boolean => {
+    if (teacherFilter === 'all') return true;
+    return getRecordingTeacherLabel(rec).toLowerCase() === teacherFilter.toLowerCase();
+  };
+
+  const getRecordingsForDate = (dateStr: string) => {
+    return batchRecordings.filter((rec) => rec.date === dateStr);
+  };
+
+  const filteredRecordingsRaw = batchRecordings.filter((rec) => {
+    if (recordingViewScope === 'day' && rec.date !== recordingDate) return false;
+    if (!matchesRecordingCategory(rec, recordingCategoryFilter)) return false;
+    if (!matchesRecordingTeacher(rec, recordingTeacherFilter)) return false;
+    return true;
+  });
+
+  const filteredRecordings = React.useMemo(() => {
+    if (recordingSortMode !== 'most_watched') return filteredRecordingsRaw;
+    return [...filteredRecordingsRaw].sort((a, b) => {
+      const diff = (b.viewCount || 0) - (a.viewCount || 0);
+      if (diff !== 0) return diff;
+      return (b.date || '').localeCompare(a.date || '');
+    });
+  }, [filteredRecordingsRaw, recordingSortMode]);
+
+  // Top most-watched recordings in the active batch (shown with Trending indicator)
+  const trendingRecordingIds = React.useMemo(() => {
+    const withViews = batchRecordings
+      .filter((r) => (r.viewCount || 0) > 0)
+      .sort((a, b) => (b.viewCount || 0) - (a.viewCount || 0));
+    const topThresholdCount = Math.min(2, withViews.length);
+    const ids = new Set<string>();
+    for (let i = 0; i < topThresholdCount; i++) {
+      ids.add(withViews[i].id);
+    }
+    return ids;
+  }, [batchRecordings]);
+
+  // Track unique session views per recording in Firestore cleanly
+  const recordRecordingView = useCallback(async (recordingId: string) => {
+    if (!recordingId || viewedRecordingIdsRef.current.has(recordingId)) return;
+    viewedRecordingIdsRef.current.add(recordingId);
+    try {
+      await updateDoc(doc(db, 'classRecordings', recordingId), {
+        viewCount: increment(1),
+        lastViewedAt: new Date().toISOString(),
+      });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `classRecordings/${recordingId}`);
+    }
+  }, []);
+
+  const handleSelectRecordingItem = (rec: ClassRecording) => {
+    setActiveRecordingId(rec.id);
+    recordRecordingView(rec.id);
+  };
+
+  // Aggregate teacher profile summary & all subjects they teach (from manual directory + recordings, NEVER synced to user accounts)
+  const getTeacherProfileSummary = useCallback(
+    (teacherName: string, currentSubject?: string): TeacherProfileSummary => {
+      const normalizedTarget = teacherName.trim().toLowerCase();
+
+      const matchingDirEntries = batchRecordingTeachers.filter(
+        (t) => t.name.trim().toLowerCase() === normalizedTarget
+      );
+
+      const matchingRecordings = batchRecordings.filter((r) => {
+        const label = getRecordingTeacherLabel(r).toLowerCase();
+        return label === normalizedTarget;
+      });
+
+      const subjectsMap = new Map<string, string>();
+      const addSubject = (raw?: string) => {
+        const clean = (raw || '').trim();
+        if (!clean) return;
+        const key = clean.toLowerCase();
+        if (!subjectsMap.has(key)) {
+          subjectsMap.set(key, clean);
+        }
+      };
+
+      if (currentSubject) addSubject(currentSubject);
+      matchingDirEntries.forEach((t) => addSubject(t.subject));
+      matchingRecordings.forEach((r) => {
+        addSubject(r.teacherSubject);
+        addSubject(getRecordingCategory(r));
+      });
+
+      const allSubjects = Array.from(subjectsMap.values());
+      const primarySubject =
+        (currentSubject || '').trim() ||
+        matchingDirEntries[0]?.subject?.trim() ||
+        allSubjects[0] ||
+        'Science Faculty';
+
+      const otherSubjects = allSubjects.filter(
+        (s) => s.toLowerCase() !== primarySubject.toLowerCase()
+      );
+
+      const totalRecordings = matchingRecordings.length;
+      const totalViews = matchingRecordings.reduce((sum, r) => sum + (r.viewCount || 0), 0);
+      const customSummary = matchingDirEntries.find((t) => t.profileSummary?.trim())?.profileSummary?.trim();
+
+      const defaultSummary =
+        totalRecordings > 0
+          ? `Zahira College faculty educator teaching ${
+              allSubjects.length > 0 ? allSubjects.join(', ') : primarySubject
+            }, with ${totalRecordings} recorded ${
+              totalRecordings === 1 ? 'lesson' : 'lessons'
+            } and ${totalViews.toLocaleString()} cumulative student ${
+              totalViews === 1 ? 'view' : 'views'
+            }.`
+          : `Zahira College faculty educator registered for ${
+              allSubjects.length > 0 ? allSubjects.join(', ') : primarySubject
+            }. Recordings uploaded under this teacher appear here.`;
+
+      const sortedDates = matchingRecordings
+        .map((r) => r.date)
+        .filter(Boolean)
+        .sort((a, b) => b.localeCompare(a));
+
+      return {
+        name: matchingDirEntries[0]?.name || teacherName.trim(),
+        primarySubject,
+        otherSubjects,
+        allSubjects: allSubjects.length > 0 ? allSubjects : [primarySubject],
+        profileSummary: customSummary || defaultSummary,
+        totalRecordings,
+        totalViews,
+        latestDate: sortedDates[0],
+      };
+    },
+    [batchRecordingTeachers, batchRecordings]
+  );
+
+  const dayRecordingsForSelectedRecDate = batchRecordings.filter(
+    (rec) =>
+      rec.date === recordingDate &&
+      matchesRecordingCategory(rec, recordingCategoryFilter) &&
+      matchesRecordingTeacher(rec, recordingTeacherFilter)
+  );
+
+  // Unique dates in batch that contain recordings (newest first)
+  const recordedDatesList = Array.from(new Set(batchRecordings.map((r) => r.date))).sort((a, b) =>
+    b.localeCompare(a)
+  );
+
+  // Categories available in filter chips (presets + teacher directory subjects + recording categories)
+  const availableRecordingCategories = Array.from(
+    new Set([
+      ...RECORDING_BASE_CATEGORIES,
+      ...batchRecordingTeachers
+        .map((t) => (t.subject === 'Combined Mathematics' ? 'Mathematics' : t.subject.trim()))
+        .filter(Boolean),
+      ...batchRecordings.map((r) => getRecordingCategory(r)).filter(Boolean),
+    ])
+  );
+
+  // Unified Teacher filter entries: bulk-added manual teachers directory + any recording teacher names
+  const teacherFilterOptions = React.useMemo(() => {
+    const map = new Map<string, { name: string; subject: string; count: number }>();
+    batchRecordingTeachers.forEach((t) => {
+      const cleanName = t.name.trim();
+      if (!cleanName) return;
+      const key = cleanName.toLowerCase();
+      if (!map.has(key)) {
+        map.set(key, { name: cleanName, subject: t.subject.trim(), count: 0 });
+      }
+    });
+    batchRecordings.forEach((rec) => {
+      const cleanName = getRecordingTeacherLabel(rec);
+      if (!cleanName || cleanName === 'Teacher Not Specified') return;
+      const key = cleanName.toLowerCase();
+      const existing = map.get(key);
+      const inferredSubj = getRecordingTeacherSubject(rec) || getRecordingCategory(rec);
+      if (existing) {
+        existing.count += 1;
+        if (!existing.subject && inferredSubj) existing.subject = inferredSubj;
+      } else {
+        map.set(key, { name: cleanName, subject: inferredSubj, count: 1 });
+      }
+    });
+    return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
+  }, [batchRecordingTeachers, batchRecordings]);
+
+  // Group filtered recordings by Teacher Name (preserving teacher subject)
+  const recordingsGroupedByTeacher = React.useMemo(() => {
+    const groups = new Map<string, { teacher: string; subject: string; items: ClassRecording[] }>();
+    filteredRecordings.forEach((rec) => {
+      const teacher = getRecordingTeacherLabel(rec);
+      const subj = getRecordingTeacherSubject(rec);
+      const key = teacher.toLowerCase();
+      const existing = groups.get(key);
+      if (existing) {
+        existing.items.push(rec);
+        if (!existing.subject && subj) existing.subject = subj;
+      } else {
+        groups.set(key, { teacher, subject: subj, items: [rec] });
+      }
+    });
+    return Array.from(groups.values());
+  }, [filteredRecordings, batchRecordingTeachers]);
+
+  // Keep activeRecordingId synced to a valid recording in the active list
+  useEffect(() => {
+    const pool =
+      recordingSortMode === 'most_watched'
+        ? filteredRecordings
+        : recordingViewScope === 'day'
+        ? dayRecordingsForSelectedRecDate
+        : filteredRecordings;
+    if (pool.length === 0) {
+      if (activeRecordingId !== null) setActiveRecordingId(null);
+      return;
+    }
+    if (!activeRecordingId || !pool.some((r) => r.id === activeRecordingId)) {
+      setActiveRecordingId(pool[0].id);
+    }
+  }, [
+    recordingDate,
+    recordingViewScope,
+    recordingCategoryFilter,
+    recordingTeacherFilter,
+    recordingSortMode,
+    classRecordings,
+    activeBatchId,
+  ]);
+
+  const activeRecording =
+    filteredRecordings.find((r) => r.id === activeRecordingId) ||
+    filteredRecordings[0] ||
+    null;
+
+  const handleSelectCategoryFilter = (nextCat: string) => {
+    setRecordingCategoryFilter(nextCat);
+    if (recordingViewScope === 'day' && nextCat !== 'all') {
+      const hasMatchOnDay = batchRecordings.some(
+        (rec) =>
+          rec.date === recordingDate &&
+          matchesRecordingCategory(rec, nextCat) &&
+          matchesRecordingTeacher(rec, recordingTeacherFilter)
+      );
+      const hasMatchAnywhere = batchRecordings.some(
+        (rec) =>
+          matchesRecordingCategory(rec, nextCat) &&
+          matchesRecordingTeacher(rec, recordingTeacherFilter)
+      );
+      if (!hasMatchOnDay && hasMatchAnywhere) {
+        setRecordingViewScope('all');
+      }
+    }
+  };
+
+  const handleSelectTeacherFilter = (nextTeacher: string) => {
+    setRecordingTeacherFilter(nextTeacher);
+    if (recordingViewScope === 'day' && nextTeacher !== 'all') {
+      const hasMatchOnDay = batchRecordings.some(
+        (rec) =>
+          rec.date === recordingDate &&
+          matchesRecordingCategory(rec, recordingCategoryFilter) &&
+          matchesRecordingTeacher(rec, nextTeacher)
+      );
+      const hasMatchAnywhere = batchRecordings.some(
+        (rec) =>
+          matchesRecordingCategory(rec, recordingCategoryFilter) &&
+          matchesRecordingTeacher(rec, nextTeacher)
+      );
+      if (!hasMatchOnDay && hasMatchAnywhere) {
+        setRecordingViewScope('all');
+      }
+    }
+  };
+
+  const shiftRecordingDate = (deltaDays: number) => {
+    const d = new Date(`${recordingDate}T00:00:00`);
+    d.setDate(d.getDate() + deltaDays);
+    const nextIso = d.toISOString().split('T')[0];
+    setRecordingDate(nextIso);
+    setSelectedDateStr(nextIso);
+    setRecordingViewScope('day');
+  };
+
+  const applySubjectToCategoryFields = (subjectRaw: string) => {
+    const trimmed = subjectRaw.trim();
+    if (!trimmed) return;
+    const normalized = trimmed === 'Combined Mathematics' ? 'Mathematics' : trimmed;
+    const matchedPreset = RECORDING_BASE_CATEGORIES.find(
+      (cat) => cat.toLowerCase() === normalized.toLowerCase()
+    );
+    if (matchedPreset) {
+      setRecCategory(matchedPreset);
+      setRecCustomCategory('');
+    } else {
+      setRecCategory('__custom__');
+      setRecCustomCategory(trimmed);
+    }
+  };
+
+  const handleSelectDirectoryTeacherForUpload = (teacherId: string) => {
+    setRecSelectedTeacherId(teacherId);
+    const found = batchRecordingTeachers.find((t) => t.id === teacherId);
+    if (found) {
+      setRecTeacherName(found.name);
+      setRecTeacherSubject(found.subject);
+      applySubjectToCategoryFields(found.subject);
+    } else {
+      setRecTeacherName('');
+      setRecTeacherSubject('');
+    }
+    if (recFormError) setRecFormError(null);
+  };
+
+  const openRecordingModal = (
+    prefillDate?: string,
+    target?: ClassRecording | null,
+    preselectedTeacher?: RecordingTeacher | null
+  ) => {
+    if (!isTeacherOrAdmin) return;
+    setRecFormError(null);
+    if (target) {
+      const targetCat = getRecordingCategory(target);
+      const isPreset = (RECORDING_BASE_CATEGORIES as readonly string[]).includes(targetCat);
+      const matchedDirTeacher =
+        (target.teacherId && batchRecordingTeachers.find((t) => t.id === target.teacherId)) ||
+        (target.teacherName &&
+          batchRecordingTeachers.find(
+            (t) => t.name.trim().toLowerCase() === target.teacherName!.trim().toLowerCase()
+          )) ||
+        null;
+
+      setEditingRecording(target);
+      setRecTitle(target.title);
+      setRecYoutubeUrl(target.youtubeUrl);
+      setRecDate(target.date);
+      setRecCategory(isPreset ? targetCat : '__custom__');
+      setRecCustomCategory(isPreset ? '' : targetCat);
+      if (matchedDirTeacher) {
+        setRecTeacherSelectionMode('directory');
+        setRecSelectedTeacherId(matchedDirTeacher.id);
+        setRecTeacherName(matchedDirTeacher.name);
+        setRecTeacherSubject(target.teacherSubject || matchedDirTeacher.subject);
+      } else {
+        setRecTeacherSelectionMode(batchRecordingTeachers.length > 0 && !target.teacherName ? 'directory' : 'manual');
+        setRecSelectedTeacherId('');
+        setRecTeacherName(target.teacherName || '');
+        setRecTeacherSubject(target.teacherSubject || '');
+      }
+      setRecSessionLabel(target.sessionLabel);
+      setRecDurationLabel(target.durationLabel || '');
+      setRecQualityLabel(target.qualityLabel || '720p');
+      setRecDescription(target.description || '');
+    } else {
+      const targetDate = prefillDate || recordingDate || selectedDateStr;
+      setEditingRecording(null);
+      setRecTitle('');
+      setRecYoutubeUrl('');
+      setRecDate(targetDate);
+      if (preselectedTeacher) {
+        setRecTeacherSelectionMode('directory');
+        setRecSelectedTeacherId(preselectedTeacher.id);
+        setRecTeacherName(preselectedTeacher.name);
+        setRecTeacherSubject(preselectedTeacher.subject);
+        applySubjectToCategoryFields(preselectedTeacher.subject);
+      } else {
+        setRecCategory('Physics');
+        setRecCustomCategory('');
+        // Do NOT auto-sync from teacher accounts — admin/teacher picks from manually managed directory or types manually
+        setRecTeacherSelectionMode(batchRecordingTeachers.length > 0 ? 'directory' : 'manual');
+        setRecSelectedTeacherId('');
+        setRecTeacherName('');
+        setRecTeacherSubject('');
+      }
+      setRecSessionLabel(
+        `${writeBatchName.toUpperCase()} THEORY ${formatDisplaySessionDate(targetDate)}`
+      );
+      setRecDurationLabel('');
+      setRecQualityLabel('720p');
+      setRecDescription('');
+    }
+    setIsRecordingModalOpen(true);
+  };
+
+  const handleSaveRecording = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!isTeacherOrAdmin) return;
+    setRecFormError(null);
+
+    const parsedVideoId = extractYouTubeVideoId(recYoutubeUrl);
+    if (!parsedVideoId) {
+      setRecFormError(
+        'Please enter a valid YouTube link (e.g. youtube.com/watch?v=..., youtu.be/..., or youtube.com/live/...).'
+      );
+      return;
+    }
+
+    const resolvedCategory =
+      recCategory === '__custom__' ? recCustomCategory.trim() : recCategory.trim();
+    if (!resolvedCategory) {
+      setRecFormError('Please select or enter a category (e.g. Physics, Mathematics, Revision).');
+      return;
+    }
+
+    let resolvedTeacherId: string | undefined;
+    let resolvedTeacherName = recTeacherName.trim();
+    let resolvedTeacherSubject = recTeacherSubject.trim();
+
+    if (recTeacherSelectionMode === 'directory') {
+      const dirTeacher = batchRecordingTeachers.find((t) => t.id === recSelectedTeacherId);
+      if (!dirTeacher) {
+        setRecFormError('Please select a teacher from the list (or switch to Custom Name).');
+        return;
+      }
+      resolvedTeacherId = dirTeacher.id;
+      resolvedTeacherName = dirTeacher.name.trim();
+      resolvedTeacherSubject = dirTeacher.subject.trim();
+    } else if (!resolvedTeacherName) {
+      setRecFormError('Please select or enter the teacher’s name for this recording.');
+      return;
+    }
+
+    if (!recTitle.trim() || !recDate) {
+      setRecFormError('Please provide both a recording title and calendar date.');
+      return;
+    }
+
+    setSavingRecording(true);
+    try {
+      const nowIso = new Date().toISOString();
+      const recordingId = editingRecording?.id || `rec-${Date.now()}`;
+      const payload: ClassRecording = sanitizeFirestoreDoc({
+        id: recordingId,
+        title: recTitle.trim(),
+        youtubeUrl: recYoutubeUrl.trim(),
+        youtubeVideoId: parsedVideoId,
+        date: recDate,
+        batchId: editingRecording?.batchId || writeBatchId,
+        batchName: editingRecording?.batchName || writeBatchName,
+        subject: resolvedCategory,
+        category: resolvedCategory,
+        teacherId: resolvedTeacherId,
+        teacherName: resolvedTeacherName,
+        teacherSubject: resolvedTeacherSubject || resolvedCategory,
+        sessionLabel:
+          recSessionLabel.trim() ||
+          `${writeBatchName.toUpperCase()} ${formatDisplaySessionDate(recDate)}`,
+        durationLabel: recDurationLabel.trim() || undefined,
+        qualityLabel: recQualityLabel || '720p',
+        description: recDescription.trim() || undefined,
+        viewCount: editingRecording?.viewCount ?? 0,
+        lastViewedAt: editingRecording?.lastViewedAt,
+        uploadedBy: editingRecording?.uploadedBy || userProfile?.userId || 'faculty',
+        uploadedByName: editingRecording?.uploadedByName || userProfile?.fullName || 'Faculty Lead',
+        uploadedByRole:
+          editingRecording?.uploadedByRole || (activeRole === 'admin' ? 'admin' : 'teacher'),
+        createdAt: editingRecording?.createdAt || nowIso,
+        updatedAt: nowIso,
+      });
+
+      await setDoc(doc(db, 'classRecordings', recordingId), payload, { merge: true });
+
+      setIsRecordingModalOpen(false);
+      setRecordingDate(recDate);
+      setSelectedDateStr(recDate);
+      setRecordingViewScope('day');
+      setActiveRecordingId(recordingId);
+      setActiveTab('recordings');
+      setSyncMessage(
+        editingRecording
+          ? `Updated class recording "${payload.title}".`
+          : `Uploaded recording "${payload.title}" under ${resolvedTeacherName}${
+              resolvedTeacherSubject ? ` (${resolvedTeacherSubject})` : ''
+            }.`
+      );
+      setTimeout(() => setSyncMessage(null), 4000);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, 'classRecordings');
+    } finally {
+      setSavingRecording(false);
+    }
+  };
+
+  // Bulk Recording Teachers Directory Handlers (Admin & Teacher Only — zero account sync)
+  const createEmptyBulkTeacherRow = () => ({
+    localId: `row-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    name: '',
+    subject: '',
+  });
+
+  const openTeacherDirectoryModal = () => {
+    if (!isTeacherOrAdmin) return;
+    setTeacherDirectoryError(null);
+    setBulkTeacherPasteText('');
+    setEditingTeacherEntryId(null);
+    setTeacherEntryToDelete(null);
+    setBulkTeacherRows([
+      createEmptyBulkTeacherRow(),
+      createEmptyBulkTeacherRow(),
+      createEmptyBulkTeacherRow(),
+    ]);
+    setIsTeacherDirectoryModalOpen(true);
+  };
+
+  const handleParseBulkTeachersPaste = () => {
+    setTeacherDirectoryError(null);
+    const lines = bulkTeacherPasteText
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+    if (lines.length === 0) {
+      setTeacherDirectoryError(
+        'Paste at least one line in the format "Teacher Name - Subject" or "Teacher Name, Subject".'
+      );
+      return;
+    }
+
+    const parsedRows: Array<{ localId: string; name: string; subject: string }> = [];
+    const invalidLines: number[] = [];
+
+    lines.forEach((line, index) => {
+      // Split by tab, pipe, comma, em/en dash, or space-padded hyphen (so hyphenated names stay intact)
+      let parts: string[] = [];
+      if (line.includes('\t')) parts = line.split('\t');
+      else if (line.includes('|')) parts = line.split('|');
+      else if (line.includes('—')) parts = line.split('—');
+      else if (line.includes('–')) parts = line.split('–');
+      else if (line.includes(',')) parts = line.split(',');
+      else if (/\s+-\s+/.test(line)) parts = line.split(/\s+-\s+/);
+      else if (line.includes('-')) parts = line.split('-');
+
+      const name = (parts[0] || '').trim();
+      const subject = parts.slice(1).join(' ').trim();
+      if (!name || !subject) {
+        invalidLines.push(index + 1);
+      } else {
+        parsedRows.push({
+          localId: `parsed-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 6)}`,
+          name,
+          subject,
+        });
+      }
+    });
+
+    if (parsedRows.length === 0) {
+      setTeacherDirectoryError(
+        'Could not parse Name and Subject from lines. Use format like: Mr. M.F.M. Rizwan - Physics'
+      );
+      return;
+    }
+
+    setBulkTeacherRows((prev) => {
+      const nonEmptyExisting = prev.filter((r) => r.name.trim() || r.subject.trim());
+      return [...nonEmptyExisting, ...parsedRows];
+    });
+    setBulkTeacherPasteText('');
+
+    if (invalidLines.length > 0) {
+      setTeacherDirectoryError(
+        `Loaded ${parsedRows.length} teacher(s). Line(s) ${invalidLines.join(
+          ', '
+        )} skipped because a subject separator (-, comma, or |) was missing.`
+      );
+    }
+  };
+
+  const handleSaveBulkTeachers = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!isTeacherOrAdmin) return;
+    setTeacherDirectoryError(null);
+
+    const populatedRows = bulkTeacherRows.filter(
+      (row) => row.name.trim().length > 0 || row.subject.trim().length > 0
+    );
+
+    if (populatedRows.length === 0) {
+      setTeacherDirectoryError('Add at least one teacher name and subject before saving.');
+      return;
+    }
+
+    const incompleteRow = populatedRows.find((r) => !r.name.trim() || !r.subject.trim());
+    if (incompleteRow) {
+      setTeacherDirectoryError('Every row needs both a Teacher Name and a Subject.');
+      return;
+    }
+
+    setSavingBulkTeachers(true);
+    try {
+      const targetBatchId = bulkTeacherApplyAllBatches ? ALL_BATCHES_ID : writeBatchId;
+      const targetBatchName = bulkTeacherApplyAllBatches ? 'All Batches' : writeBatchName;
+      const nowIso = new Date().toISOString();
+
+      const existingKeys = new Set(
+        batchRecordingTeachers.map(
+          (t) => `${t.name.trim().toLowerCase()}::${t.subject.trim().toLowerCase()}`
+        )
+      );
+
+      const batch = writeBatch(db);
+      let addedCount = 0;
+
+      populatedRows.forEach((row, idx) => {
+        const cleanName = row.name.trim();
+        const cleanSubject = row.subject.trim();
+        const dedupKey = `${cleanName.toLowerCase()}::${cleanSubject.toLowerCase()}`;
+        if (existingKeys.has(dedupKey)) return;
+        existingKeys.add(dedupKey);
+
+        const docId = `rteacher-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 6)}`;
+        const entry: RecordingTeacher = sanitizeFirestoreDoc({
+          id: docId,
+          name: cleanName,
+          subject: cleanSubject,
+          batchId: targetBatchId,
+          batchName: targetBatchName,
+          createdBy: userProfile?.userId || 'faculty',
+          createdByName: userProfile?.fullName || 'Faculty Lead',
+          createdByRole: activeRole === 'admin' ? 'admin' : 'teacher',
+          createdAt: nowIso,
+          updatedAt: nowIso,
+        });
+        batch.set(doc(db, 'recordingTeachers', docId), entry);
+        addedCount += 1;
+      });
+
+      if (addedCount === 0) {
+        setTeacherDirectoryError(
+          'All entered teacher and subject pairs are already in your directory.'
+        );
+        setSavingBulkTeachers(false);
+        return;
+      }
+
+      await batch.commit();
+
+      setBulkTeacherRows([
+        createEmptyBulkTeacherRow(),
+        createEmptyBulkTeacherRow(),
+        createEmptyBulkTeacherRow(),
+      ]);
+      setBulkTeacherPasteText('');
+      setSyncMessage(`Added ${addedCount} teacher${addedCount === 1 ? '' : 's'} with subjects to Recordings.`);
+      setTimeout(() => setSyncMessage(null), 4000);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, 'recordingTeachers');
+    } finally {
+      setSavingBulkTeachers(false);
+    }
+  };
+
+  const handleSaveTeacherEntryEdit = async (entry: RecordingTeacher) => {
+    if (!isTeacherOrAdmin) return;
+    const cleanName = editingTeacherEntryName.trim();
+    const cleanSubject = editingTeacherEntrySubject.trim();
+    if (!cleanName || !cleanSubject) {
+      setTeacherDirectoryError('Both Teacher Name and Subject are required.');
+      return;
+    }
+    setSavingTeacherEntryEdit(true);
+    try {
+      const updated = sanitizeFirestoreDoc({
+        ...entry,
+        name: cleanName,
+        subject: cleanSubject,
+        profileSummary: editingTeacherEntryBio.trim() || undefined,
+        updatedAt: new Date().toISOString(),
+      });
+      await setDoc(doc(db, 'recordingTeachers', entry.id), updated, { merge: true });
+      setEditingTeacherEntryId(null);
+      setEditingTeacherEntryBio('');
+      setTeacherDirectoryError(null);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, `recordingTeachers/${entry.id}`);
+    } finally {
+      setSavingTeacherEntryEdit(false);
+    }
+  };
+
+  const handleConfirmDeleteTeacherEntry = async () => {
+    if (!teacherEntryToDelete || !isTeacherOrAdmin) return;
+    const target = teacherEntryToDelete;
+    setTeacherEntryToDelete(null);
+    try {
+      await deleteDoc(doc(db, 'recordingTeachers', target.id));
+      if (
+        recordingTeacherFilter !== 'all' &&
+        recordingTeacherFilter.toLowerCase() === target.name.trim().toLowerCase()
+      ) {
+        setRecordingTeacherFilter('all');
+      }
+      if (recSelectedTeacherId === target.id) {
+        setRecSelectedTeacherId('');
+        setRecTeacherName('');
+        setRecTeacherSubject('');
+      }
+      setSyncMessage(`Removed "${target.name} (${target.subject})" from recording teachers list.`);
+      setTimeout(() => setSyncMessage(null), 3500);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, `recordingTeachers/${target.id}`);
+    }
+  };
+
+  const handleConfirmDeleteRecording = async () => {
+    if (!recordingToDelete || !isTeacherOrAdmin) return;
+    const target = recordingToDelete;
+    setRecordingToDelete(null);
+    try {
+      await deleteDoc(doc(db, 'classRecordings', target.id));
+      if (activeRecordingId === target.id) {
+        setActiveRecordingId(null);
+      }
+      setSyncMessage(`Removed recording "${target.title}".`);
+      setTimeout(() => setSyncMessage(null), 3500);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, `classRecordings/${target.id}`);
+    }
+  };
+
+  const handleToggleWatched = async (recording: ClassRecording) => {
+    const uid = userProfile?.userId || 'guest';
+    const progressId = `${uid}__${recording.id}`;
+    const currentlyWatched = !!watchProgressMap[recording.id]?.watched;
+    const nextWatched = !currentlyWatched;
+
+    setSavingWatchId(recording.id);
+    try {
+      const nowIso = new Date().toISOString();
+      const payload: RecordingWatchProgress = sanitizeFirestoreDoc({
+        id: progressId,
+        recordingId: recording.id,
+        userId: uid,
+        userName: userProfile?.fullName || 'Scholar',
+        batchId: recording.batchId,
+        watched: nextWatched,
+        watchedAt: nextWatched ? nowIso : undefined,
+        updatedAt: nowIso,
+      });
+      await setDoc(doc(db, 'recordingWatchProgress', progressId), payload, { merge: true });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, `recordingWatchProgress/${progressId}`);
+    } finally {
+      setSavingWatchId(null);
+    }
+  };
+
   // Stats for the active attendance date (calculated strictly from active real scholars in active batch)
   const totalStudents = batchStudents.length;
   const presentCount = batchStudents.filter((s) => (register[s.id] || 'present') === 'present').length;
@@ -1034,6 +1997,17 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
             </span>
           </button>
 
+          {/* Upload Recording CTA when on Recordings tab (Teachers & Admins Only) */}
+          {activeTab === 'recordings' && isTeacherOrAdmin && (
+            <button
+              onClick={() => openRecordingModal(recordingDate)}
+              className="flex items-center gap-1.5 rounded-xl bg-[#0284c7] hover:bg-[#0369a1] px-4 py-2 text-xs font-bold text-white transition-colors shadow-xs"
+            >
+              <Plus className="w-4 h-4" />
+              <span>Upload Class Recording</span>
+            </button>
+          )}
+
           {/* Mark Holiday, Exam, or Study Group Button */}
           {isTeacherOrAdmin ? (
             <button
@@ -1078,18 +2052,18 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
       )}
 
       {/* View Tabs */}
-      <div className="flex overflow-x-auto no-scrollbar border-b border-stone-200">
+      <div className="flex overflow-x-auto no-scrollbar border-b border-stone-200 dark:border-slate-800">
         <button
           onClick={() => setActiveTab('events')}
           className={`flex items-center gap-2 border-b-2 py-3 px-4 sm:px-5 text-xs font-bold whitespace-nowrap shrink-0 transition-colors ${
             activeTab === 'events'
-              ? 'border-stone-900 text-stone-900'
-              : 'border-transparent text-stone-500 hover:text-stone-700'
+              ? 'border-stone-900 dark:border-white text-stone-900 dark:text-white'
+              : 'border-transparent text-stone-500 dark:text-slate-400 hover:text-stone-700 dark:hover:text-slate-200'
           }`}
         >
           <CalendarIcon className="w-4 h-4 shrink-0" />
           <span>School Events & Holidays</span>
-          <span className="rounded-full bg-stone-100 px-2 py-0.5 text-[10px] text-stone-700 font-semibold">
+          <span className="rounded-full bg-stone-100 dark:bg-slate-800 px-2 py-0.5 text-[10px] text-stone-700 dark:text-slate-300 font-semibold font-mono tabular-nums">
             {batchSchoolEvents.length}
           </span>
         </button>
@@ -1101,14 +2075,32 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
           }}
           className={`flex items-center gap-2 border-b-2 py-3 px-4 sm:px-5 text-xs font-bold whitespace-nowrap shrink-0 transition-colors ${
             activeTab === 'attendance'
-              ? 'border-stone-900 text-stone-900'
-              : 'border-transparent text-stone-500 hover:text-stone-700'
+              ? 'border-stone-900 dark:border-white text-stone-900 dark:text-white'
+              : 'border-transparent text-stone-500 dark:text-slate-400 hover:text-stone-700 dark:hover:text-slate-200'
           }`}
         >
           <CalendarCheck2 className="w-4 h-4 shrink-0" />
           <span>Attendance Calendar & Roll-Call</span>
-          <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] text-emerald-800 font-semibold">
+          <span className="rounded-full bg-emerald-100 dark:bg-emerald-950/60 px-2 py-0.5 text-[10px] text-emerald-800 dark:text-emerald-300 font-semibold font-mono tabular-nums">
             {totalStudents} Scholars
+          </span>
+        </button>
+
+        <button
+          onClick={() => {
+            setActiveTab('recordings');
+            setRecordingDate(selectedDateStr);
+          }}
+          className={`flex items-center gap-2 border-b-2 py-3 px-4 sm:px-5 text-xs font-bold whitespace-nowrap shrink-0 transition-colors ${
+            activeTab === 'recordings'
+              ? 'border-[#0284c7] text-[#0284c7] dark:text-sky-400 dark:border-sky-400'
+              : 'border-transparent text-stone-500 dark:text-slate-400 hover:text-stone-700 dark:hover:text-slate-200'
+          }`}
+        >
+          <Video className="w-4 h-4 shrink-0" />
+          <span>Class Recordings</span>
+          <span className="rounded-full bg-sky-100 dark:bg-sky-950/60 px-2 py-0.5 text-[10px] text-sky-800 dark:text-sky-300 font-semibold font-mono tabular-nums">
+            {batchRecordings.length}
           </span>
         </button>
       </div>
@@ -1218,6 +2210,7 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
                   const isSelected = selectedDateStr === dateStr;
                   const isToday = new Date().toISOString().split('T')[0] === dateStr;
                   const dayEvents = getEventsForDate(dateStr);
+                  const dayRecordings = getRecordingsForDate(dateStr);
                   const attSummary = getAttendanceSummaryForDate(dateStr);
 
                   return (
@@ -1232,7 +2225,7 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
                           : 'border-stone-100 bg-white hover:border-stone-300'
                       }`}
                     >
-                      <div className="flex items-center justify-between">
+                      <div className="flex items-center justify-between gap-1">
                         <span
                           className={`text-xs font-bold inline-flex h-5 w-5 items-center justify-center rounded-full ${
                             isToday
@@ -1245,18 +2238,38 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
                           {dayNum}
                         </span>
 
-                        {attSummary && (
-                          <span
-                            className={`h-2 w-2 rounded-full ${
-                              attSummary.rate >= 80
-                                ? 'bg-emerald-500'
-                                : attSummary.rate >= 60
-                                ? 'bg-amber-500'
-                                : 'bg-rose-500'
-                            }`}
-                            title={`Attendance on ${dateStr}: ${attSummary.rate}% (${attSummary.present}/${attSummary.total})`}
-                          />
-                        )}
+                        <div className="flex items-center gap-1">
+                          {dayRecordings.length > 0 && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setSelectedDateStr(dateStr);
+                                setRecordingDate(dateStr);
+                                setRecordingViewScope('day');
+                                setActiveTab('recordings');
+                              }}
+                              className="inline-flex items-center gap-0.5 rounded px-1 py-0.2 bg-sky-100 text-[#0284c7] hover:bg-sky-200 text-[9px] font-bold transition-colors"
+                              title={`${dayRecordings.length} class recording${dayRecordings.length > 1 ? 's' : ''} on ${dateStr}`}
+                            >
+                              <PlayCircle className="w-2.5 h-2.5" />
+                              <span className="hidden sm:inline">{dayRecordings.length}</span>
+                            </button>
+                          )}
+
+                          {attSummary && (
+                            <span
+                              className={`h-2 w-2 rounded-full ${
+                                attSummary.rate >= 80
+                                  ? 'bg-emerald-500'
+                                  : attSummary.rate >= 60
+                                  ? 'bg-amber-500'
+                                  : 'bg-rose-500'
+                              }`}
+                              title={`Attendance on ${dateStr}: ${attSummary.rate}% (${attSummary.present}/${attSummary.total})`}
+                            />
+                          )}
+                        </div>
                       </div>
 
                       {/* Event Chips */}
@@ -1483,6 +2496,102 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
                     </div>
                   ))}
                 </div>
+              </div>
+
+              {/* Class Recordings for this Date */}
+              <div className="mt-4 pt-3 border-t border-stone-100 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] uppercase font-bold tracking-wider text-stone-500">
+                    Day's Recordings ({getRecordingsForDate(selectedDateStr).length})
+                  </span>
+                  {isTeacherOrAdmin && (
+                    <button
+                      onClick={() => openRecordingModal(selectedDateStr)}
+                      className="text-[10px] font-bold text-[#0284c7] hover:text-[#0369a1] flex items-center gap-1"
+                    >
+                      <Plus className="w-3 h-3" />
+                      <span>Upload Recording</span>
+                    </button>
+                  )}
+                </div>
+
+                {getRecordingsForDate(selectedDateStr).length === 0 ? (
+                  <p className="text-[11px] text-stone-400">No class recordings uploaded for {selectedDateStr}.</p>
+                ) : (
+                  <div className="space-y-1.5">
+                    {getRecordingsForDate(selectedDateStr).map((rec) => {
+                      const teacherLabel = getRecordingTeacherLabel(rec);
+                      const teacherSubj = getRecordingTeacherSubject(rec);
+                      const isTrending = trendingRecordingIds.has(rec.id);
+                      return (
+                        <div
+                          key={rec.id}
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => {
+                            setRecordingDate(selectedDateStr);
+                            setRecordingViewScope('day');
+                            handleSelectRecordingItem(rec);
+                            setActiveTab('recordings');
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault();
+                              setRecordingDate(selectedDateStr);
+                              setRecordingViewScope('day');
+                              handleSelectRecordingItem(rec);
+                              setActiveTab('recordings');
+                            }
+                          }}
+                          className="w-full text-left p-2 rounded-lg bg-sky-50/70 hover:bg-sky-100/80 border border-sky-200/80 text-xs flex items-center justify-between gap-2 transition-colors cursor-pointer"
+                        >
+                          <div className="min-w-0 space-y-0.5">
+                            <p className="font-bold text-stone-900 text-[11px] truncate">{rec.title}</p>
+                            <div className="flex flex-wrap items-center gap-1.5 text-[10px] text-stone-500">
+                              <span>{getRecordingCategory(rec)}</span>
+                              {rec.teacherName && (
+                                <>
+                                  <span>·</span>
+                                  <TeacherNameHoverTrigger
+                                    teacherName={teacherLabel}
+                                    currentSubject={teacherSubj || getRecordingCategory(rec)}
+                                    getSummary={getTeacherProfileSummary}
+                                    onFilterByTeacher={(name) => {
+                                      setRecordingViewScope('all');
+                                      handleSelectTeacherFilter(name);
+                                      setActiveTab('recordings');
+                                    }}
+                                    className="font-semibold text-stone-700"
+                                  >
+                                    <span>
+                                      {teacherLabel}
+                                      {teacherSubj ? ` (${teacherSubj})` : ''}
+                                    </span>
+                                  </TeacherNameHoverTrigger>
+                                </>
+                              )}
+                              <span>·</span>
+                              <span className="inline-flex items-center gap-0.5 font-mono tabular-nums text-stone-600">
+                                <Eye className="w-2.5 h-2.5 text-[#0284c7]" />
+                                {formatRecordingViewCount(rec.viewCount)}
+                              </span>
+                              {isTrending && (
+                                <span className="inline-flex items-center gap-0.5 rounded bg-amber-100 px-1 py-0.2 text-[9px] font-bold text-amber-800">
+                                  <TrendingUp className="w-2.5 h-2.5" />
+                                  Trending
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                          <span className="inline-flex items-center gap-1 shrink-0 rounded-md bg-[#0284c7] px-2 py-1 text-[10px] font-bold text-white">
+                            <PlayCircle className="w-3 h-3" />
+                            Watch
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
 
               {/* Quick Actions for this Date */}
@@ -1964,6 +3073,793 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
         </div>
       )}
 
+      {/* TAB 3: CLASS RECORDINGS (MULTIPLE YOUTUBE RECORDINGS PER DAY) */}
+      {activeTab === 'recordings' && (
+        <div className="space-y-5">
+          {/* Date Navigator & Filters Bar */}
+          <div className="rounded-2xl border border-stone-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 shadow-xs space-y-3">
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+              {/* Date Picker & Quick Day Stepping */}
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => shiftRecordingDate(-1)}
+                  className="rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-800 p-2 min-h-[40px] min-w-[40px] flex items-center justify-center text-stone-700 dark:text-slate-200 hover:bg-stone-100 dark:hover:bg-slate-700 transition-colors"
+                  title="Previous Day"
+                  aria-label="Previous Day"
+                >
+                  <ChevronLeft className="w-4 h-4" />
+                </button>
+
+                <input
+                  type="date"
+                  value={recordingDate}
+                  onChange={(e) => {
+                    if (!e.target.value) return;
+                    setRecordingDate(e.target.value);
+                    setSelectedDateStr(e.target.value);
+                    setRecordingViewScope('day');
+                  }}
+                  aria-label="Select recording calendar date"
+                  className="rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-800 px-3 py-2 min-h-[40px] text-xs font-bold font-mono tabular-nums text-stone-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-[#0284c7]"
+                />
+
+                <button
+                  type="button"
+                  onClick={() => shiftRecordingDate(1)}
+                  className="rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-800 p-2 min-h-[40px] min-w-[40px] flex items-center justify-center text-stone-700 dark:text-slate-200 hover:bg-stone-100 dark:hover:bg-slate-700 transition-colors"
+                  title="Next Day"
+                  aria-label="Next Day"
+                >
+                  <ChevronRight className="w-4 h-4" />
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    const today = new Date().toISOString().split('T')[0];
+                    setRecordingDate(today);
+                    setSelectedDateStr(today);
+                    setRecordingViewScope('day');
+                  }}
+                  className="rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-800 px-3 py-2 min-h-[40px] text-xs font-semibold text-stone-700 dark:text-slate-200 hover:bg-stone-100 dark:hover:bg-slate-700 transition-colors"
+                >
+                  Today
+                </button>
+
+                {/* Scope Toggle: Single Day vs All Batch Dates */}
+                <div className="inline-flex items-center rounded-xl bg-stone-100 dark:bg-slate-800 p-1">
+                  <button
+                    type="button"
+                    onClick={() => setRecordingViewScope('day')}
+                    className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap ${
+                      recordingViewScope === 'day'
+                        ? 'bg-white dark:bg-slate-700 text-stone-900 dark:text-white shadow-2xs'
+                        : 'text-stone-600 dark:text-slate-400 hover:text-stone-900'
+                    }`}
+                  >
+                    Day ({dayRecordingsForSelectedRecDate.length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setRecordingViewScope('all')}
+                    className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap ${
+                      recordingViewScope === 'all'
+                        ? 'bg-white dark:bg-slate-700 text-stone-900 dark:text-white shadow-2xs'
+                        : 'text-stone-600 dark:text-slate-400 hover:text-stone-900'
+                    }`}
+                  >
+                    All Dates ({batchRecordings.length})
+                  </button>
+                </div>
+              </div>
+
+              {/* Date / Upload Action Row */}
+              <div className="flex flex-wrap items-center gap-2">
+                {(recordingCategoryFilter !== 'all' || recordingTeacherFilter !== 'all') && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setRecordingCategoryFilter('all');
+                      setRecordingTeacherFilter('all');
+                    }}
+                    className="rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-800 px-3 py-2 min-h-[40px] text-xs font-semibold text-stone-700 dark:text-slate-200 hover:bg-stone-100 dark:hover:bg-slate-700 transition-colors"
+                  >
+                    Clear Filters
+                  </button>
+                )}
+
+                {isTeacherOrAdmin && (
+                  <button
+                    type="button"
+                    onClick={openTeacherDirectoryModal}
+                    className="inline-flex items-center gap-1.5 rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-800 hover:bg-stone-100 dark:hover:bg-slate-700 px-3.5 py-2 min-h-[40px] text-xs font-bold text-stone-800 dark:text-slate-100 shadow-2xs transition-colors cursor-pointer"
+                  >
+                    <UserPlus className="w-4 h-4 text-[#0284c7]" />
+                    <span>Manage Teachers</span>
+                    <span className="font-mono tabular-nums text-[10px] opacity-75">
+                      ({batchRecordingTeachers.length})
+                    </span>
+                  </button>
+                )}
+
+                {isTeacherOrAdmin && (
+                  <button
+                    type="button"
+                    onClick={() => openRecordingModal(recordingDate)}
+                    className="inline-flex items-center gap-1.5 rounded-xl bg-[#0284c7] hover:bg-[#0369a1] px-4 py-2 min-h-[40px] text-xs font-bold text-white shadow-xs transition-colors cursor-pointer"
+                  >
+                    <Plus className="w-4 h-4" />
+                    <span>Add Recording to Day</span>
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Category Filter Buttons (e.g. Physics, Mathematics, Revision) */}
+            <div className="flex flex-col gap-2.5 pt-2.5 border-t border-stone-100 dark:border-slate-800">
+              <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-0.5">
+                <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-stone-500 dark:text-slate-400 whitespace-nowrap shrink-0">
+                  <Filter className="w-3.5 h-3.5 text-stone-400" />
+                  Category:
+                </span>
+                <button
+                  type="button"
+                  onClick={() => handleSelectCategoryFilter('all')}
+                  className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold whitespace-nowrap shrink-0 transition-colors cursor-pointer ${
+                    recordingCategoryFilter === 'all'
+                      ? 'bg-stone-900 dark:bg-white text-white dark:text-stone-900 shadow-2xs'
+                      : 'bg-stone-100 dark:bg-slate-800 text-stone-700 dark:text-slate-300 hover:bg-stone-200 dark:hover:bg-slate-700'
+                  }`}
+                >
+                  <span>All</span>
+                  <span className="font-mono tabular-nums text-[10px] opacity-80">
+                    ({batchRecordings.length})
+                  </span>
+                </button>
+                {availableRecordingCategories.map((cat) => {
+                  const catCount = batchRecordings.filter((r) =>
+                    matchesRecordingCategory(r, cat)
+                  ).length;
+                  const isActiveCat =
+                    recordingCategoryFilter.toLowerCase() === cat.toLowerCase();
+                  return (
+                    <button
+                      key={cat}
+                      type="button"
+                      onClick={() => handleSelectCategoryFilter(cat)}
+                      className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold whitespace-nowrap shrink-0 transition-colors cursor-pointer ${
+                        isActiveCat
+                          ? 'bg-[#0284c7] text-white shadow-2xs'
+                          : 'bg-stone-100 dark:bg-slate-800 text-stone-700 dark:text-slate-300 hover:bg-stone-200 dark:hover:bg-slate-700'
+                      }`}
+                    >
+                      <span>{cat}</span>
+                      {catCount > 0 && (
+                        <span className="font-mono tabular-nums text-[10px] opacity-85">
+                          ({catCount})
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Teacher & Subject Filter Bar (Manually entered directory + labels only — never synced to accounts) */}
+              <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pb-0.5">
+                <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-stone-500 dark:text-slate-400 whitespace-nowrap shrink-0">
+                  <GraduationCap className="w-3.5 h-3.5 text-stone-400" />
+                  Teacher:
+                </span>
+                <button
+                  type="button"
+                  onClick={() => handleSelectTeacherFilter('all')}
+                  className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold whitespace-nowrap shrink-0 transition-colors cursor-pointer ${
+                    recordingTeacherFilter === 'all'
+                      ? 'bg-stone-900 dark:bg-white text-white dark:text-stone-900 shadow-2xs'
+                      : 'bg-stone-100 dark:bg-slate-800 text-stone-700 dark:text-slate-300 hover:bg-stone-200 dark:hover:bg-slate-700'
+                  }`}
+                >
+                  <span>All Teachers</span>
+                </button>
+                {teacherFilterOptions.length === 0 ? (
+                  <span className="text-[11px] text-stone-400 dark:text-slate-500 whitespace-nowrap">
+                    {isTeacherOrAdmin
+                      ? 'Add teachers in bulk using "Manage Teachers" so students can identify each teacher & subject'
+                      : 'Teachers will appear here once added by Admin or Teacher'}
+                  </span>
+                ) : (
+                  teacherFilterOptions.map((item) => {
+                    const isActiveTeacher =
+                      recordingTeacherFilter.toLowerCase() === item.name.toLowerCase();
+                    return (
+                      <button
+                        key={item.name}
+                        type="button"
+                        onClick={() => handleSelectTeacherFilter(item.name)}
+                        className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold whitespace-nowrap shrink-0 transition-colors cursor-pointer ${
+                          isActiveTeacher
+                            ? 'bg-[#13295B] dark:bg-sky-600 text-white shadow-2xs'
+                            : 'bg-stone-100 dark:bg-slate-800 text-stone-700 dark:text-slate-300 hover:bg-stone-200 dark:hover:bg-slate-700'
+                        }`}
+                      >
+                        <span>{item.name}</span>
+                        {item.subject && (
+                          <span
+                            className={`text-[10px] font-medium ${
+                              isActiveTeacher ? 'text-sky-200' : 'text-stone-500 dark:text-slate-400'
+                            }`}
+                          >
+                            · {item.subject}
+                          </span>
+                        )}
+                        <span className="font-mono tabular-nums text-[10px] opacity-80">
+                          ({item.count})
+                        </span>
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+
+            {/* Quick Jump Chips for Dates That Have Recordings */}
+            {recordedDatesList.length > 0 && (
+              <div className="flex items-center gap-2 pt-2 border-t border-stone-100 dark:border-slate-800 overflow-x-auto no-scrollbar">
+                <span className="text-[11px] font-semibold text-stone-400 dark:text-slate-500 whitespace-nowrap shrink-0">
+                  Recorded dates:
+                </span>
+                {recordedDatesList.slice(0, 10).map((d) => {
+                  const countForDay = batchRecordings.filter((r) => r.date === d).length;
+                  const isActiveDate = recordingViewScope === 'day' && recordingDate === d;
+                  return (
+                    <button
+                      key={d}
+                      type="button"
+                      onClick={() => {
+                        setRecordingDate(d);
+                        setSelectedDateStr(d);
+                        setRecordingViewScope('day');
+                      }}
+                      className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-[11px] font-mono tabular-nums font-semibold whitespace-nowrap shrink-0 border transition-colors ${
+                        isActiveDate
+                          ? 'bg-[#0284c7] text-white border-[#0284c7]'
+                          : 'bg-stone-50 dark:bg-slate-800 text-stone-700 dark:text-slate-300 border-stone-200 dark:border-slate-700 hover:bg-stone-100 dark:hover:bg-slate-700'
+                      }`}
+                    >
+                      <span>{d}</span>
+                      <span
+                        className={`text-[10px] ${
+                          isActiveDate ? 'text-sky-100' : 'text-stone-400 dark:text-slate-500'
+                        }`}
+                      >
+                        ({countForDay})
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Two-Zone Player Stage & Multi-Recording Day Queue */}
+          <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 items-start">
+            {/* Primary Stage: Sample-Matched YouTube Video Player + Metadata Card */}
+            <div className="xl:col-span-8">
+              {activeRecording ? (
+                <CalendarRecordingPlayer
+                  recording={activeRecording}
+                  isWatched={!!watchProgressMap[activeRecording.id]?.watched}
+                  isTrending={trendingRecordingIds.has(activeRecording.id)}
+                  savingWatchState={savingWatchId === activeRecording.id}
+                  onToggleWatched={handleToggleWatched}
+                  onFirstPlay={(rec) => recordRecordingView(rec.id)}
+                  getTeacherSummary={getTeacherProfileSummary}
+                  onFilterByTeacher={(name) => handleSelectTeacherFilter(name)}
+                  isTeacherOrAdmin={isTeacherOrAdmin}
+                  onEdit={(rec) => openRecordingModal(rec.date, rec)}
+                  onDelete={(rec) => setRecordingToDelete(rec)}
+                />
+              ) : (
+                <div className="rounded-2xl border border-stone-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-8 sm:p-12 text-center space-y-4 shadow-xs">
+                  <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-sky-50 dark:bg-sky-950/50 text-[#0284c7] dark:text-sky-400">
+                    <Film className="w-7 h-7" />
+                  </div>
+                  <div className="space-y-1.5 max-w-md mx-auto">
+                    <h3 className="font-serif text-lg sm:text-xl font-bold text-stone-900 dark:text-white">
+                      {recordingViewScope === 'day'
+                        ? `No recordings match for ${recordingDate}`
+                        : 'No matching class recordings found'}
+                    </h3>
+                    <p className="text-xs sm:text-sm text-stone-500 dark:text-slate-400">
+                      {isTeacherOrAdmin
+                        ? 'Upload YouTube class recordings with a category and teacher name for any calendar date, or clear filters to browse all lessons.'
+                        : 'Try switching to All Dates, choosing a different category/teacher filter, or selecting a highlighted date from the calendar.'}
+                    </p>
+                  </div>
+
+                  <div className="flex flex-wrap items-center justify-center gap-2.5 pt-2">
+                    {recordingViewScope === 'day' && batchRecordings.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setRecordingViewScope('all')}
+                        className="inline-flex items-center gap-2 rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-800 px-4 py-2.5 min-h-[42px] text-xs sm:text-sm font-semibold text-stone-700 dark:text-slate-200 hover:bg-stone-100 dark:hover:bg-slate-700 transition-colors"
+                      >
+                        <PlayCircle className="w-4 h-4 text-[#0284c7]" />
+                        <span>Browse All Dates ({batchRecordings.length})</span>
+                      </button>
+                    )}
+                    {(recordingCategoryFilter !== 'all' || recordingTeacherFilter !== 'all') && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setRecordingCategoryFilter('all');
+                          setRecordingTeacherFilter('all');
+                        }}
+                        className="inline-flex items-center gap-2 rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-800 px-4 py-2.5 min-h-[42px] text-xs sm:text-sm font-semibold text-stone-700 dark:text-slate-200 hover:bg-stone-100 dark:hover:bg-slate-700 transition-colors"
+                      >
+                        <span>Reset Filters</span>
+                      </button>
+                    )}
+                    {isTeacherOrAdmin && (
+                      <button
+                        type="button"
+                        onClick={() => openRecordingModal(recordingDate)}
+                        className="inline-flex items-center gap-2 rounded-xl bg-[#0284c7] hover:bg-[#0369a1] px-4 py-2.5 min-h-[42px] text-xs sm:text-sm font-bold text-white shadow-xs transition-colors"
+                      >
+                        <Plus className="w-4 h-4" />
+                        <span>Upload Recording for {recordingDate}</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Right Sidebar: Recordings Categorized by Teacher Name + Mini Calendar */}
+            <div className="xl:col-span-4 space-y-4">
+              {/* Day / Filtered Playlist Card */}
+              <div className="rounded-2xl border border-stone-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 sm:p-5 shadow-xs space-y-3.5">
+                <div className="flex items-center justify-between gap-2 pb-3 border-b border-stone-100 dark:border-slate-800">
+                  <div>
+                    <h4 className="font-serif text-base font-bold text-stone-900 dark:text-white">
+                      {recordingViewScope === 'day'
+                        ? `Recordings on ${recordingDate}`
+                        : `All Batch Recordings`}
+                    </h4>
+                    <p className="text-[11px] text-stone-500 dark:text-slate-400">
+                      {filteredRecordings.length}{' '}
+                      {filteredRecordings.length === 1 ? 'recording' : 'recordings'}
+                      {recordingCategoryFilter !== 'all' ? ` · ${recordingCategoryFilter}` : ''}
+                      {recordingTeacherFilter !== 'all' ? ` · ${recordingTeacherFilter}` : ''}
+                    </p>
+                  </div>
+
+                  <div className="flex flex-wrap items-center justify-end gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setRecordingSortMode((prev) =>
+                          prev === 'most_watched' ? 'latest' : 'most_watched'
+                        )
+                      }
+                      className={`inline-flex items-center gap-1 rounded-lg border px-2 py-1.5 text-[11px] font-semibold transition-colors ${
+                        recordingSortMode === 'most_watched'
+                          ? 'border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/50 text-amber-800 dark:text-amber-300'
+                          : 'border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-800 text-stone-600 dark:text-slate-300'
+                      }`}
+                      title="Sort playlist by most viewed lessons"
+                    >
+                      <TrendingUp className="w-3 h-3" />
+                      <span>Most Watched</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setGroupRecordingsByTeacher((prev) => !prev)}
+                      className={`rounded-lg border px-2.5 py-1.5 text-[11px] font-semibold transition-colors ${
+                        groupRecordingsByTeacher
+                          ? 'border-[#0284c7]/40 bg-sky-50 dark:bg-sky-950/50 text-[#0284c7] dark:text-sky-300'
+                          : 'border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-800 text-stone-600 dark:text-slate-300'
+                      }`}
+                      title="Toggle grouping recordings by teacher name"
+                    >
+                      By Teacher
+                    </button>
+
+                    {isTeacherOrAdmin && (
+                      <button
+                        type="button"
+                        onClick={() => openRecordingModal(recordingDate)}
+                        className="inline-flex items-center gap-1 rounded-lg bg-stone-900 dark:bg-sky-600 px-2.5 py-1.5 text-[11px] font-bold text-white hover:bg-stone-800 dark:hover:bg-sky-500 transition-colors"
+                        title="Add another recording to this date"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        <span>Add</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {filteredRecordings.length === 0 ? (
+                  <p className="text-xs text-stone-400 dark:text-slate-500 py-4 text-center">
+                    No recordings match the selected filters.
+                  </p>
+                ) : groupRecordingsByTeacher ? (
+                  <div className="space-y-4 max-h-[500px] overflow-y-auto pr-0.5 side-view-scrollbar">
+                    {recordingsGroupedByTeacher.map((group) => (
+                      <div key={group.teacher} className="space-y-2">
+                        {/* Teacher & Subject Group Header */}
+                        <div className="flex items-center justify-between gap-2 px-1 pb-1 border-b border-stone-100 dark:border-slate-800">
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <GraduationCap className="w-3.5 h-3.5 text-[#0284c7] shrink-0" />
+                            <TeacherNameHoverTrigger
+                              teacherName={group.teacher}
+                              currentSubject={group.subject}
+                              getSummary={getTeacherProfileSummary}
+                              onFilterByTeacher={(name) => handleSelectTeacherFilter(name)}
+                              className="text-xs font-bold text-stone-900 dark:text-slate-100 truncate"
+                            >
+                              <span className="truncate">{group.teacher}</span>
+                            </TeacherNameHoverTrigger>
+                            {group.subject && (
+                              <span className="text-[11px] font-medium text-[#0284c7] dark:text-sky-400 truncate">
+                                · {group.subject}
+                              </span>
+                            )}
+                          </div>
+                          <span className="text-[10px] font-mono tabular-nums text-stone-400 dark:text-slate-500 shrink-0">
+                            {group.items.length} {group.items.length === 1 ? 'lesson' : 'lessons'}
+                          </span>
+                        </div>
+
+                        <div className="space-y-2">
+                          {group.items.map((rec, idx) => {
+                            const isCurrent = activeRecording?.id === rec.id;
+                            const watched = !!watchProgressMap[rec.id]?.watched;
+                            const categoryLabel = getRecordingCategory(rec);
+                            const teacherLabel = getRecordingTeacherLabel(rec);
+                            const teacherSubj = getRecordingTeacherSubject(rec);
+                            const isTrending = trendingRecordingIds.has(rec.id);
+                            return (
+                              <div
+                                key={rec.id}
+                                onClick={() => handleSelectRecordingItem(rec)}
+                                role="button"
+                                tabIndex={0}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter' || e.key === ' ') {
+                                    e.preventDefault();
+                                    handleSelectRecordingItem(rec);
+                                  }
+                                }}
+                                className={`group rounded-xl border p-2.5 transition-all cursor-pointer flex gap-3 items-start ${
+                                  isCurrent
+                                    ? 'border-[#0284c7] bg-sky-50/70 dark:bg-sky-950/35 ring-1 ring-[#0284c7]/40'
+                                    : 'border-stone-200/80 dark:border-slate-800 bg-stone-50/50 dark:bg-slate-800/40 hover:border-stone-300 dark:hover:border-slate-700'
+                                }`}
+                              >
+                                {/* Thumbnail */}
+                                <div className="relative w-24 sm:w-28 aspect-video rounded-lg overflow-hidden bg-slate-900 shrink-0">
+                                  <img
+                                    src={getYouTubeThumbnailUrl(rec.youtubeVideoId)}
+                                    alt={rec.title}
+                                    referrerPolicy="no-referrer"
+                                    className="w-full h-full object-cover"
+                                  />
+                                  <div className="absolute inset-0 bg-black/25 flex items-center justify-center">
+                                    <PlayCircle
+                                      className={`w-6 h-6 ${
+                                        isCurrent ? 'text-sky-300 scale-110' : 'text-white/90 group-hover:scale-110'
+                                      } transition-transform`}
+                                    />
+                                  </div>
+                                  {isTrending && (
+                                    <span className="absolute top-1 left-1 inline-flex items-center gap-0.5 rounded bg-amber-500/95 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wide text-white shadow-xs">
+                                      <TrendingUp className="w-2.5 h-2.5" />
+                                      Hot
+                                    </span>
+                                  )}
+                                  {rec.durationLabel && (
+                                    <span className="absolute bottom-1 right-1 rounded bg-black/75 px-1 py-0.2 font-mono tabular-nums text-[9px] font-semibold text-white">
+                                      {rec.durationLabel}
+                                    </span>
+                                  )}
+                                </div>
+
+                                {/* Info */}
+                                <div className="min-w-0 flex-1 space-y-1">
+                                  <div className="flex items-start justify-between gap-1">
+                                    <span className="text-[10px] font-mono tabular-nums text-stone-500 dark:text-slate-400 truncate">
+                                      #{idx + 1} · {categoryLabel}
+                                      {recordingViewScope === 'all' ? ` · ${rec.date}` : ''}
+                                    </span>
+                                    {watched && (
+                                      <span
+                                        className="inline-flex items-center gap-0.5 text-[10px] font-bold text-emerald-600 dark:text-emerald-400 shrink-0"
+                                        title="Watched"
+                                      >
+                                        <CheckCircle2 className="w-3 h-3" />
+                                        <span>Watched</span>
+                                      </span>
+                                    )}
+                                  </div>
+
+                                  <h5 className="text-xs font-bold text-stone-900 dark:text-slate-100 line-clamp-2 leading-snug">
+                                    {rec.title}
+                                  </h5>
+
+                                  <div className="flex flex-wrap items-center justify-between gap-1.5 pt-0.5">
+                                    <div className="flex flex-wrap items-center gap-2 text-[10px] text-stone-500 dark:text-slate-400 min-w-0">
+                                      <TeacherNameHoverTrigger
+                                        teacherName={teacherLabel}
+                                        currentSubject={teacherSubj || categoryLabel}
+                                        getSummary={getTeacherProfileSummary}
+                                        onFilterByTeacher={(name) => handleSelectTeacherFilter(name)}
+                                        className="font-semibold text-stone-700 dark:text-slate-200 truncate max-w-[140px]"
+                                      >
+                                        <span className="truncate">{teacherLabel}</span>
+                                      </TeacherNameHoverTrigger>
+                                      <span aria-hidden="true">·</span>
+                                      <span
+                                        className="inline-flex items-center gap-1 font-mono tabular-nums text-stone-600 dark:text-slate-300"
+                                        title="Views on this recording"
+                                      >
+                                        <Eye className="w-3 h-3 text-[#0284c7]" />
+                                        <span>{formatRecordingViewCount(rec.viewCount)}</span>
+                                      </span>
+                                    </div>
+
+                                    {isTeacherOrAdmin && (
+                                      <div
+                                        className="flex items-center gap-1 shrink-0"
+                                        onClick={(e) => e.stopPropagation()}
+                                      >
+                                        <button
+                                          type="button"
+                                          onClick={() => openRecordingModal(rec.date, rec)}
+                                          className="p-1 rounded hover:bg-stone-200 dark:hover:bg-slate-700 text-stone-500 dark:text-slate-400"
+                                          title="Edit recording"
+                                        >
+                                          <Pencil className="w-3 h-3" />
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => setRecordingToDelete(rec)}
+                                          className="p-1 rounded hover:bg-rose-100 dark:hover:bg-rose-950 text-stone-500 hover:text-rose-600"
+                                          title="Delete recording"
+                                        >
+                                          <Trash2 className="w-3 h-3" />
+                                        </button>
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="space-y-2.5 max-h-[500px] overflow-y-auto pr-0.5 side-view-scrollbar">
+                    {filteredRecordings.map((rec, idx) => {
+                      const isCurrent = activeRecording?.id === rec.id;
+                      const watched = !!watchProgressMap[rec.id]?.watched;
+                      const categoryLabel = getRecordingCategory(rec);
+                      const teacherLabel = getRecordingTeacherLabel(rec);
+                      const teacherSubj = getRecordingTeacherSubject(rec);
+                      const isTrending = trendingRecordingIds.has(rec.id);
+                      return (
+                        <div
+                          key={rec.id}
+                          onClick={() => handleSelectRecordingItem(rec)}
+                          role="button"
+                          tabIndex={0}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault();
+                              handleSelectRecordingItem(rec);
+                            }
+                          }}
+                          className={`group rounded-xl border p-2.5 transition-all cursor-pointer flex gap-3 items-start ${
+                            isCurrent
+                              ? 'border-[#0284c7] bg-sky-50/70 dark:bg-sky-950/35 ring-1 ring-[#0284c7]/40'
+                              : 'border-stone-200/80 dark:border-slate-800 bg-stone-50/50 dark:bg-slate-800/40 hover:border-stone-300 dark:hover:border-slate-700'
+                          }`}
+                        >
+                          <div className="relative w-24 sm:w-28 aspect-video rounded-lg overflow-hidden bg-slate-900 shrink-0">
+                            <img
+                              src={getYouTubeThumbnailUrl(rec.youtubeVideoId)}
+                              alt={rec.title}
+                              referrerPolicy="no-referrer"
+                              className="w-full h-full object-cover"
+                            />
+                            <div className="absolute inset-0 bg-black/25 flex items-center justify-center">
+                              <PlayCircle
+                                className={`w-6 h-6 ${
+                                  isCurrent ? 'text-sky-300 scale-110' : 'text-white/90 group-hover:scale-110'
+                                } transition-transform`}
+                              />
+                            </div>
+                            {isTrending && (
+                              <span className="absolute top-1 left-1 inline-flex items-center gap-0.5 rounded bg-amber-500/95 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wide text-white shadow-xs">
+                                <TrendingUp className="w-2.5 h-2.5" />
+                                Hot
+                              </span>
+                            )}
+                            {rec.durationLabel && (
+                              <span className="absolute bottom-1 right-1 rounded bg-black/75 px-1 py-0.2 font-mono tabular-nums text-[9px] font-semibold text-white">
+                                {rec.durationLabel}
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="min-w-0 flex-1 space-y-1">
+                            <div className="flex items-start justify-between gap-1">
+                              <div className="flex flex-wrap items-center gap-1 text-[10px] font-mono tabular-nums text-stone-500 dark:text-slate-400 min-w-0">
+                                <span>#{idx + 1} · {categoryLabel}</span>
+                                <span>·</span>
+                                <TeacherNameHoverTrigger
+                                  teacherName={teacherLabel}
+                                  currentSubject={teacherSubj || categoryLabel}
+                                  getSummary={getTeacherProfileSummary}
+                                  onFilterByTeacher={(name) => handleSelectTeacherFilter(name)}
+                                  className="font-sans font-semibold text-stone-700 dark:text-slate-200 truncate"
+                                >
+                                  <span>
+                                    {teacherLabel}
+                                    {teacherSubj ? ` (${teacherSubj})` : ''}
+                                  </span>
+                                </TeacherNameHoverTrigger>
+                              </div>
+                              {watched && (
+                                <span
+                                  className="inline-flex items-center gap-0.5 text-[10px] font-bold text-emerald-600 dark:text-emerald-400 shrink-0"
+                                  title="Watched"
+                                >
+                                  <CheckCircle2 className="w-3 h-3" />
+                                  <span>Watched</span>
+                                </span>
+                              )}
+                            </div>
+
+                            <h5 className="text-xs font-bold text-stone-900 dark:text-slate-100 line-clamp-2 leading-snug">
+                              {rec.title}
+                            </h5>
+
+                            <div className="flex items-center justify-between gap-2 pt-0.5">
+                              <div className="flex items-center gap-2 min-w-0">
+                                <span
+                                  className="inline-flex items-center gap-1 text-[10px] font-mono tabular-nums font-medium text-stone-600 dark:text-slate-300 shrink-0"
+                                  title="Views on this recording"
+                                >
+                                  <Eye className="w-3 h-3 text-[#0284c7]" />
+                                  <span>{formatRecordingViewCount(rec.viewCount)}</span>
+                                </span>
+                                <span className="text-[10px] font-medium text-stone-400 dark:text-slate-500 truncate">
+                                  · {rec.sessionLabel}
+                                </span>
+                              </div>
+
+                              {isTeacherOrAdmin && (
+                                <div
+                                  className="flex items-center gap-1 shrink-0"
+                                  onClick={(e) => e.stopPropagation()}
+                                >
+                                  <button
+                                    type="button"
+                                    onClick={() => openRecordingModal(rec.date, rec)}
+                                    className="p-1 rounded hover:bg-stone-200 dark:hover:bg-slate-700 text-stone-500 dark:text-slate-400"
+                                    title="Edit recording"
+                                  >
+                                    <Pencil className="w-3 h-3" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setRecordingToDelete(rec)}
+                                    className="p-1 rounded hover:bg-rose-100 dark:hover:bg-rose-950 text-stone-500 hover:text-rose-600"
+                                    title="Delete recording"
+                                  >
+                                    <Trash2 className="w-3 h-3" />
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* Mini Month Calendar for Selecting Any Day with Multiple Recordings */}
+              <div className="rounded-2xl border border-stone-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 shadow-xs">
+                <div className="flex items-center justify-between pb-2.5 border-b border-stone-100 dark:border-slate-800">
+                  <span className="font-serif text-sm font-bold text-stone-900 dark:text-white">
+                    {monthName}
+                  </span>
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={handlePrevMonth}
+                      className="rounded-lg border border-stone-200 dark:border-slate-700 p-1 text-stone-600 dark:text-slate-300 hover:bg-stone-100 dark:hover:bg-slate-800"
+                      aria-label="Previous month"
+                    >
+                      <ChevronLeft className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleNextMonth}
+                      className="rounded-lg border border-stone-200 dark:border-slate-700 p-1 text-stone-600 dark:text-slate-300 hover:bg-stone-100 dark:hover:bg-slate-800"
+                      aria-label="Next month"
+                    >
+                      <ChevronRight className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-7 gap-1 pt-2 text-center text-[10px] font-bold text-stone-400">
+                  <span>S</span>
+                  <span>M</span>
+                  <span>T</span>
+                  <span>W</span>
+                  <span>T</span>
+                  <span>F</span>
+                  <span>S</span>
+                </div>
+
+                <div className="grid grid-cols-7 gap-1 pt-1.5">
+                  {Array.from({ length: firstDayIndex }).map((_, i) => (
+                    <div key={`rec-empty-${i}`} className="h-8" />
+                  ))}
+                  {Array.from({ length: daysInMonth }).map((_, i) => {
+                    const dayNum = i + 1;
+                    const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(dayNum).padStart(2, '0')}`;
+                    const count = getRecordingsForDate(dateStr).length;
+                    const isPicked = recordingViewScope === 'day' && recordingDate === dateStr;
+                    return (
+                      <button
+                        key={dateStr}
+                        type="button"
+                        onClick={() => {
+                          setRecordingDate(dateStr);
+                          setSelectedDateStr(dateStr);
+                          setRecordingViewScope('day');
+                        }}
+                        className={`relative h-8 rounded-lg text-[11px] font-mono tabular-nums font-semibold flex flex-col items-center justify-center transition-colors ${
+                          isPicked
+                            ? 'bg-[#0284c7] text-white font-bold'
+                            : count > 0
+                            ? 'bg-sky-50 dark:bg-sky-950/50 text-[#0284c7] dark:text-sky-300 hover:bg-sky-100 dark:hover:bg-sky-900/60'
+                            : 'text-stone-600 dark:text-slate-400 hover:bg-stone-100 dark:hover:bg-slate-800'
+                        }`}
+                        title={
+                          count > 0
+                            ? `${count} recording${count > 1 ? 's' : ''} on ${dateStr}`
+                            : dateStr
+                        }
+                      >
+                        <span>{dayNum}</span>
+                        {count > 0 && (
+                          <span
+                            className={`h-1 w-1 rounded-full ${
+                              isPicked ? 'bg-white' : 'bg-[#0284c7] dark:bg-sky-400'
+                            }`}
+                          />
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* MODAL: MARK HOLIDAY OR EXAM DATE */}
       {isAddModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-stone-900/60 p-4 backdrop-blur-xs animate-in fade-in">
@@ -2430,6 +4326,758 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
               >
                 Yes, Remove Cohort
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: UPLOAD OR EDIT YOUTUBE CLASS RECORDING (Teachers & Admins Only) */}
+      {isRecordingModalOpen && isTeacherOrAdmin && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-stone-900/60 p-4 backdrop-blur-xs animate-in fade-in">
+          <div className="w-full max-w-xl rounded-2xl border border-stone-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 sm:p-6 shadow-2xl relative max-h-[92vh] overflow-y-auto">
+            <button
+              type="button"
+              onClick={() => setIsRecordingModalOpen(false)}
+              className="absolute top-4 right-4 rounded-lg p-1.5 text-stone-400 hover:bg-stone-100 dark:hover:bg-slate-800 hover:text-stone-700"
+              aria-label="Close modal"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="mb-5 flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-sky-50 dark:bg-sky-950 text-[#0284c7] dark:text-sky-400 shrink-0">
+                <Video className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="font-serif text-lg sm:text-xl font-bold text-stone-900 dark:text-white">
+                  {editingRecording ? 'Edit Class Recording' : 'Upload YouTube Class Recording'}
+                </h3>
+                <p className="text-xs text-stone-500 dark:text-slate-400">
+                  Add multiple recordings to any calendar date for {writeBatchName}.
+                </p>
+              </div>
+            </div>
+
+            {recFormError && (
+              <div className="mb-4 rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs font-medium text-rose-700 flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0" />
+                <span>{recFormError}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleSaveRecording} className="space-y-4 text-xs">
+              {/* YouTube URL */}
+              <div>
+                <label className="font-semibold text-stone-700 dark:text-slate-300 uppercase tracking-wider block mb-1 text-[10px]">
+                  YouTube Video Link *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={recYoutubeUrl}
+                  onChange={(e) => {
+                    setRecYoutubeUrl(e.target.value);
+                    if (recFormError) setRecFormError(null);
+                  }}
+                  placeholder="https://www.youtube.com/watch?v=... or https://youtu.be/..."
+                  className="w-full rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-800 p-2.5 text-stone-900 dark:text-white focus:bg-white dark:focus:bg-slate-900 focus:outline-none focus:ring-2 focus:ring-[#0284c7]"
+                />
+                {(() => {
+                  const previewId = extractYouTubeVideoId(recYoutubeUrl);
+                  if (!recYoutubeUrl.trim()) return null;
+                  if (!previewId) {
+                    return (
+                      <p className="mt-1 text-[11px] text-rose-600">
+                        Enter a valid YouTube watch, share, live, shorts, or embed URL.
+                      </p>
+                    );
+                  }
+                  return (
+                    <div className="mt-2 flex items-center gap-3 rounded-xl border border-emerald-200 dark:border-emerald-900/60 bg-emerald-50/70 dark:bg-emerald-950/30 p-2">
+                      <img
+                        src={getYouTubeThumbnailUrl(previewId)}
+                        alt="YouTube preview"
+                        referrerPolicy="no-referrer"
+                        className="w-20 aspect-video rounded-lg object-cover bg-slate-900 shrink-0"
+                      />
+                      <div className="min-w-0">
+                        <p className="font-bold text-emerald-800 dark:text-emerald-300 text-[11px] flex items-center gap-1">
+                          <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                          <span>YouTube Video Linked ({previewId})</span>
+                        </p>
+                        <p className="text-[10px] text-emerald-700/80 dark:text-emerald-400/80">
+                          Ready for in-website playback
+                        </p>
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+
+              {/* Title */}
+              <div>
+                <label className="font-semibold text-stone-700 dark:text-slate-300 uppercase tracking-wider block mb-1 text-[10px]">
+                  Recording Title *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={recTitle}
+                  onChange={(e) => setRecTitle(e.target.value)}
+                  placeholder="e.g. NEWTON'S LAW DAY 8 RATE OF CHANGE OF MOMENTUM EM RECORDING | 20-11-2026"
+                  className="w-full rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-800 p-2.5 text-stone-900 dark:text-white focus:bg-white dark:focus:bg-slate-900 focus:outline-none focus:ring-2 focus:ring-[#0284c7]"
+                />
+              </div>
+
+              {/* Date + Category + Teacher Name (Manually entered by Admin/Teacher Only) */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="font-semibold text-stone-700 dark:text-slate-300 uppercase tracking-wider block mb-1 text-[10px]">
+                    Calendar Date *
+                  </label>
+                  <input
+                    type="date"
+                    required
+                    value={recDate}
+                    onChange={(e) => {
+                      const d = e.target.value;
+                      setRecDate(d);
+                      if (!editingRecording && d) {
+                        setRecSessionLabel(
+                          `${writeBatchName.toUpperCase()} THEORY ${formatDisplaySessionDate(d)}`
+                        );
+                      }
+                    }}
+                    className="w-full rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-800 p-2.5 font-mono tabular-nums text-stone-900 dark:text-white focus:bg-white dark:focus:bg-slate-900 focus:outline-none focus:ring-2 focus:ring-[#0284c7]"
+                  />
+                </div>
+
+                <div>
+                  <label className="font-semibold text-stone-700 dark:text-slate-300 uppercase tracking-wider block mb-1 text-[10px]">
+                    Category *
+                  </label>
+                  <select
+                    value={recCategory}
+                    onChange={(e) => setRecCategory(e.target.value)}
+                    className="w-full rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-800 p-2.5 font-semibold text-stone-900 dark:text-white focus:bg-white dark:focus:bg-slate-900 focus:outline-none focus:ring-2 focus:ring-[#0284c7]"
+                  >
+                    {RECORDING_BASE_CATEGORIES.map((cat) => (
+                      <option key={cat} value={cat}>
+                        {cat}
+                      </option>
+                    ))}
+                    <option value="__custom__">Other (Custom Category)</option>
+                  </select>
+                </div>
+              </div>
+
+              {recCategory === '__custom__' && (
+                <div>
+                  <label className="font-semibold text-stone-700 dark:text-slate-300 uppercase tracking-wider block mb-1 text-[10px]">
+                    Custom Category Name *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={recCustomCategory}
+                    onChange={(e) => setRecCustomCategory(e.target.value)}
+                    placeholder="e.g. Organic Chemistry Seminar"
+                    className="w-full rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-800 p-2.5 text-stone-900 dark:text-white focus:bg-white dark:focus:bg-slate-900 focus:outline-none focus:ring-2 focus:ring-[#0284c7]"
+                  />
+                </div>
+              )}
+
+              {/* Teacher & Subject Selector (Picked from Bulk Directory or Entered Manually) */}
+              <div className="rounded-xl border border-stone-200 dark:border-slate-800 bg-stone-50/70 dark:bg-slate-800/40 p-3 space-y-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <label className="font-semibold text-stone-700 dark:text-slate-300 uppercase tracking-wider text-[10px]">
+                    Upload Under Teacher *
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsRecordingModalOpen(false);
+                        openTeacherDirectoryModal();
+                      }}
+                      className="text-[11px] font-bold text-[#0284c7] hover:underline"
+                    >
+                      + Bulk Add Teachers
+                    </button>
+                    <span className="text-stone-300 dark:text-slate-600">|</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRecTeacherSelectionMode((prev) =>
+                          prev === 'directory' ? 'manual' : 'directory'
+                        );
+                        setRecFormError(null);
+                      }}
+                      className="text-[11px] font-semibold text-stone-600 dark:text-slate-300 hover:underline"
+                    >
+                      {recTeacherSelectionMode === 'directory'
+                        ? 'Or enter custom name'
+                        : `Choose from list (${batchRecordingTeachers.length})`}
+                    </button>
+                  </div>
+                </div>
+
+                {recTeacherSelectionMode === 'directory' ? (
+                  batchRecordingTeachers.length === 0 ? (
+                    <div className="rounded-xl border border-dashed border-stone-300 dark:border-slate-700 bg-white dark:bg-slate-900 p-3 text-center space-y-2">
+                      <p className="text-[11px] text-stone-500 dark:text-slate-400">
+                        No teachers added to the recording teachers list yet. Add your bulk teachers list with subjects once, then select any teacher here.
+                      </p>
+                      <div className="flex flex-wrap items-center justify-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsRecordingModalOpen(false);
+                            openTeacherDirectoryModal();
+                          }}
+                          className="inline-flex items-center gap-1.5 rounded-lg bg-[#0284c7] hover:bg-[#0369a1] px-3 py-1.5 text-[11px] font-bold text-white"
+                        >
+                          <UserPlus className="w-3.5 h-3.5" />
+                          <span>Add Bulk Teachers List</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setRecTeacherSelectionMode('manual')}
+                          className="inline-flex items-center gap-1 rounded-lg border border-stone-200 dark:border-slate-700 px-3 py-1.5 text-[11px] font-semibold text-stone-700 dark:text-slate-200"
+                        >
+                          Type Manually Instead
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="space-y-1.5">
+                      <select
+                        required
+                        value={recSelectedTeacherId}
+                        onChange={(e) => handleSelectDirectoryTeacherForUpload(e.target.value)}
+                        aria-label="Select teacher and subject"
+                        className="w-full rounded-xl border border-stone-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-2.5 font-semibold text-stone-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-[#0284c7]"
+                      >
+                        <option value="">-- Select Teacher &amp; Subject --</option>
+                        {batchRecordingTeachers.map((t) => (
+                          <option key={t.id} value={t.id}>
+                            {t.name} — {t.subject}
+                          </option>
+                        ))}
+                      </select>
+                      {recSelectedTeacherId && (
+                        <p className="text-[11px] font-medium text-emerald-700 dark:text-emerald-400 flex items-center gap-1.5">
+                          <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                          <span>
+                            Visible to students as <strong>{recTeacherName}</strong>
+                            {recTeacherSubject ? ` (${recTeacherSubject})` : ''}
+                          </span>
+                        </p>
+                      )}
+                    </div>
+                  )
+                ) : (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                    <div>
+                      <input
+                        type="text"
+                        required
+                        value={recTeacherName}
+                        onChange={(e) => setRecTeacherName(e.target.value)}
+                        placeholder="Teacher name (e.g. Mr. M.F.M. Rizwan)"
+                        className="w-full rounded-xl border border-stone-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-2.5 text-stone-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-[#0284c7]"
+                      />
+                    </div>
+                    <div>
+                      <input
+                        type="text"
+                        value={recTeacherSubject}
+                        onChange={(e) => setRecTeacherSubject(e.target.value)}
+                        placeholder="Teacher subject (e.g. Physics)"
+                        className="w-full rounded-xl border border-stone-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-2.5 text-stone-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-[#0284c7]"
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Session Tag + Duration + Default Quality */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="sm:col-span-1">
+                  <label className="font-semibold text-stone-700 dark:text-slate-300 uppercase tracking-wider block mb-1 text-[10px]">
+                    Duration (Optional)
+                  </label>
+                  <input
+                    type="text"
+                    value={recDurationLabel}
+                    onChange={(e) => setRecDurationLabel(e.target.value)}
+                    placeholder="e.g. 4:19:58"
+                    className="w-full rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-800 p-2.5 font-mono tabular-nums text-stone-900 dark:text-white focus:bg-white dark:focus:bg-slate-900 focus:outline-none focus:ring-2 focus:ring-[#0284c7]"
+                  />
+                </div>
+
+                <div className="sm:col-span-1">
+                  <label className="font-semibold text-stone-700 dark:text-slate-300 uppercase tracking-wider block mb-1 text-[10px]">
+                    Default Quality
+                  </label>
+                  <select
+                    value={recQualityLabel}
+                    onChange={(e) => setRecQualityLabel(e.target.value)}
+                    className="w-full rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-800 p-2.5 font-mono text-stone-900 dark:text-white focus:bg-white dark:focus:bg-slate-900 focus:outline-none focus:ring-2 focus:ring-[#0284c7]"
+                  >
+                    <option value="1080p">1080p</option>
+                    <option value="720p">720p</option>
+                    <option value="480p">480p</option>
+                    <option value="360p">360p</option>
+                  </select>
+                </div>
+
+                <div className="sm:col-span-1">
+                  <label className="font-semibold text-stone-700 dark:text-slate-300 uppercase tracking-wider block mb-1 text-[10px]">
+                    Session Label *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={recSessionLabel}
+                    onChange={(e) => setRecSessionLabel(e.target.value)}
+                    placeholder="2028 THEORY 20-11-2026"
+                    className="w-full rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-800 p-2.5 text-stone-900 dark:text-white focus:bg-white dark:focus:bg-slate-900 focus:outline-none focus:ring-2 focus:ring-[#0284c7]"
+                  />
+                </div>
+              </div>
+
+              {/* Optional Notes */}
+              <div>
+                <label className="font-semibold text-stone-700 dark:text-slate-300 uppercase tracking-wider block mb-1 text-[10px]">
+                  Lesson Notes / Chapters Covered (Optional)
+                </label>
+                <textarea
+                  rows={2}
+                  value={recDescription}
+                  onChange={(e) => setRecDescription(e.target.value)}
+                  placeholder="Topics covered or past paper questions discussed in this recording..."
+                  className="w-full rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-800 p-2.5 text-stone-900 dark:text-white focus:bg-white dark:focus:bg-slate-900 focus:outline-none focus:ring-2 focus:ring-[#0284c7]"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-3 border-t border-stone-100 dark:border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setIsRecordingModalOpen(false)}
+                  className="rounded-xl border border-stone-200 dark:border-slate-700 px-4 py-2 min-h-[40px] font-semibold text-stone-700 dark:text-slate-300 hover:bg-stone-50 dark:hover:bg-slate-800"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingRecording}
+                  className="rounded-xl bg-[#0284c7] hover:bg-[#0369a1] text-white font-bold px-5 py-2 min-h-[40px] transition-colors disabled:opacity-50 shadow-xs flex items-center gap-1.5"
+                >
+                  <Check className="w-4 h-4" />
+                  <span>
+                    {savingRecording
+                      ? 'Publishing...'
+                      : editingRecording
+                      ? 'Save Changes'
+                      : 'Publish Recording'}
+                  </span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* CONFIRM DELETE RECORDING MODAL (In-App, Teachers & Admins Only) */}
+      {recordingToDelete && isTeacherOrAdmin && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-stone-900/60 p-4 backdrop-blur-xs animate-in fade-in">
+          <div className="w-full max-w-md rounded-2xl border border-stone-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 shadow-2xl space-y-4">
+            <div className="flex items-center gap-3 text-rose-600">
+              <div className="p-2.5 rounded-xl bg-rose-50 dark:bg-rose-950 border border-rose-200 dark:border-rose-900 shrink-0">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="font-serif text-lg font-bold text-stone-900 dark:text-white">
+                  Delete Class Recording?
+                </h3>
+                <p className="text-[11px] text-stone-500 dark:text-slate-400">
+                  Scheduled on {recordingToDelete.date}
+                </p>
+              </div>
+            </div>
+            <p className="text-xs text-stone-600 dark:text-slate-300 leading-relaxed">
+              Are you sure you want to remove{' '}
+              <strong className="text-stone-900 dark:text-white">"{recordingToDelete.title}"</strong> from the
+              calendar recordings list?
+            </p>
+            <div className="flex justify-end gap-2 pt-3 border-t border-stone-100 dark:border-slate-800">
+              <button
+                type="button"
+                onClick={() => setRecordingToDelete(null)}
+                className="rounded-xl border border-stone-200 dark:border-slate-700 px-4 py-2 text-xs font-semibold text-stone-700 dark:text-slate-300 hover:bg-stone-50 dark:hover:bg-slate-800"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmDeleteRecording}
+                className="rounded-xl bg-rose-600 hover:bg-rose-700 px-4 py-2 text-xs font-bold text-white shadow-xs"
+              >
+                Confirm Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: BULK TEACHERS & SUBJECTS DIRECTORY (Admin & Teacher Only — Not Synced to Accounts) */}
+      {isTeacherDirectoryModalOpen && isTeacherOrAdmin && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-stone-900/60 p-4 backdrop-blur-xs animate-in fade-in">
+          <div className="w-full max-w-2xl rounded-2xl border border-stone-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 sm:p-6 shadow-2xl relative max-h-[92vh] overflow-y-auto space-y-5">
+            <button
+              type="button"
+              onClick={() => setIsTeacherDirectoryModalOpen(false)}
+              className="absolute top-4 right-4 rounded-lg p-1.5 text-stone-400 hover:bg-stone-100 dark:hover:bg-slate-800 hover:text-stone-700"
+              aria-label="Close modal"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="flex items-center gap-3 pr-8">
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-sky-50 dark:bg-sky-950 text-[#0284c7] dark:text-sky-400 shrink-0">
+                <UserPlus className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="font-serif text-lg sm:text-xl font-bold text-stone-900 dark:text-white">
+                  Bulk Recording Teachers &amp; Subjects
+                </h3>
+                <p className="text-xs text-stone-500 dark:text-slate-400">
+                  Add multiple teachers with their subjects at once. These entries stay separate from login accounts and let uploaders choose a teacher when posting recordings.
+                </p>
+              </div>
+            </div>
+
+            {teacherDirectoryError && (
+              <div className="rounded-xl border border-rose-200 dark:border-rose-900/60 bg-rose-50 dark:bg-rose-950/40 p-3 text-xs font-medium text-rose-700 dark:text-rose-300 flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0" />
+                <span>{teacherDirectoryError}</span>
+              </div>
+            )}
+
+            {/* Quick Bulk Text Paste Helper */}
+            <div className="rounded-xl border border-stone-200 dark:border-slate-800 bg-stone-50/80 dark:bg-slate-800/40 p-3.5 space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <label className="text-[11px] font-bold uppercase tracking-wider text-stone-700 dark:text-slate-200">
+                  Quick Paste Multiple Teachers (Optional)
+                </label>
+                <span className="text-[10px] font-mono text-stone-400 dark:text-slate-500">
+                  Format: Name - Subject (one per line)
+                </span>
+              </div>
+              <textarea
+                rows={3}
+                value={bulkTeacherPasteText}
+                onChange={(e) => setBulkTeacherPasteText(e.target.value)}
+                placeholder={'Mr. M.F.M. Rizwan - Physics\nMr. A.S.M. Farook, Mathematics\nMr. K.L.M. Nazeer | Chemistry'}
+                className="w-full rounded-xl border border-stone-200 dark:border-slate-700 bg-white dark:bg-slate-900 p-2.5 text-xs text-stone-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-[#0284c7]"
+              />
+              <div className="flex justify-end">
+                <button
+                  type="button"
+                  onClick={handleParseBulkTeachersPaste}
+                  disabled={!bulkTeacherPasteText.trim()}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-[#0284c7]/40 bg-sky-50 dark:bg-sky-950/60 px-3 py-1.5 text-xs font-bold text-[#0284c7] dark:text-sky-300 hover:bg-sky-100 disabled:opacity-45 transition-colors cursor-pointer"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Load Lines into Rows Below</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Multi-Row Bulk Builder Form */}
+            <form onSubmit={handleSaveBulkTeachers} className="space-y-3 text-xs">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[11px] font-bold uppercase tracking-wider text-stone-700 dark:text-slate-300">
+                  Teachers List Builder ({bulkTeacherRows.length} rows)
+                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setBulkTeacherRows((prev) => [...prev, createEmptyBulkTeacherRow()])
+                    }
+                    className="inline-flex items-center gap-1 rounded-lg border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-800 px-2.5 py-1 text-[11px] font-semibold text-stone-700 dark:text-slate-200 hover:bg-stone-100"
+                  >
+                    <Plus className="w-3 h-3" />
+                    <span>+1 Row</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setBulkTeacherRows((prev) => [
+                        ...prev,
+                        createEmptyBulkTeacherRow(),
+                        createEmptyBulkTeacherRow(),
+                        createEmptyBulkTeacherRow(),
+                        createEmptyBulkTeacherRow(),
+                        createEmptyBulkTeacherRow(),
+                      ])
+                    }
+                    className="inline-flex items-center gap-1 rounded-lg border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-800 px-2.5 py-1 text-[11px] font-semibold text-stone-700 dark:text-slate-200 hover:bg-stone-100"
+                  >
+                    <Plus className="w-3 h-3" />
+                    <span>+5 Rows</span>
+                  </button>
+                </div>
+              </div>
+
+              <datalist id="recording-teacher-subject-presets">
+                {RECORDING_BASE_CATEGORIES.map((cat) => (
+                  <option key={cat} value={cat} />
+                ))}
+                <option value="Combined Mathematics" />
+              </datalist>
+
+              <div className="space-y-2 max-h-[230px] overflow-y-auto pr-1 side-view-scrollbar">
+                {bulkTeacherRows.map((row, idx) => (
+                  <div
+                    key={row.localId}
+                    className="grid grid-cols-12 gap-2 items-center"
+                  >
+                    <span className="col-span-1 text-[11px] font-mono tabular-nums text-stone-400 text-center">
+                      {idx + 1}.
+                    </span>
+                    <input
+                      type="text"
+                      value={row.name}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setBulkTeacherRows((prev) =>
+                          prev.map((r) => (r.localId === row.localId ? { ...r, name: val } : r))
+                        );
+                      }}
+                      placeholder="Teacher Name (e.g. Mr. M.F.M. Rizwan)"
+                      aria-label={`Teacher name row ${idx + 1}`}
+                      className="col-span-6 rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-800 px-3 py-2 text-stone-900 dark:text-white focus:bg-white dark:focus:bg-slate-900 focus:outline-none focus:ring-2 focus:ring-[#0284c7]"
+                    />
+                    <input
+                      type="text"
+                      list="recording-teacher-subject-presets"
+                      value={row.subject}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setBulkTeacherRows((prev) =>
+                          prev.map((r) =>
+                            r.localId === row.localId ? { ...r, subject: val } : r
+                          )
+                        );
+                      }}
+                      placeholder="Subject (e.g. Physics)"
+                      aria-label={`Subject row ${idx + 1}`}
+                      className="col-span-4 rounded-xl border border-stone-200 dark:border-slate-700 bg-stone-50 dark:bg-slate-800 px-3 py-2 text-stone-900 dark:text-white focus:bg-white dark:focus:bg-slate-900 focus:outline-none focus:ring-2 focus:ring-[#0284c7]"
+                    />
+                    <button
+                      type="button"
+                      disabled={bulkTeacherRows.length <= 1}
+                      onClick={() =>
+                        setBulkTeacherRows((prev) =>
+                          prev.filter((r) => r.localId !== row.localId)
+                        )
+                      }
+                      className="col-span-1 flex items-center justify-center rounded-lg p-2 text-stone-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 disabled:opacity-30"
+                      title="Remove row"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2">
+                <label className="inline-flex items-center gap-2 text-xs text-stone-600 dark:text-slate-300 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={bulkTeacherApplyAllBatches}
+                    onChange={(e) => setBulkTeacherApplyAllBatches(e.target.checked)}
+                    className="h-4 w-4 rounded text-[#0284c7]"
+                  />
+                  <span>
+                    Make teachers available across <strong>All Batches</strong> (uncheck for{' '}
+                    {writeBatchName} only)
+                  </span>
+                </label>
+
+                <button
+                  type="submit"
+                  disabled={savingBulkTeachers}
+                  className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-[#0284c7] hover:bg-[#0369a1] px-4 py-2.5 min-h-[40px] text-xs font-bold text-white shadow-xs transition-colors disabled:opacity-50 cursor-pointer shrink-0"
+                >
+                  <Check className="w-4 h-4" />
+                  <span>
+                    {savingBulkTeachers
+                      ? 'Saving Bulk List...'
+                      : `Save Teachers (${
+                          bulkTeacherRows.filter((r) => r.name.trim() && r.subject.trim()).length
+                        })`}
+                  </span>
+                </button>
+              </div>
+            </form>
+
+            {/* Existing Saved Teachers List */}
+            <div className="pt-4 border-t border-stone-200 dark:border-slate-800 space-y-2.5">
+              <div className="flex items-center justify-between">
+                <h4 className="font-serif text-sm font-bold text-stone-900 dark:text-white">
+                  Saved Recording Teachers ({batchRecordingTeachers.length})
+                </h4>
+                <span className="text-[11px] text-stone-400 dark:text-slate-500">
+                  Shown in recording upload &amp; student filters
+                </span>
+              </div>
+
+              {batchRecordingTeachers.length === 0 ? (
+                <p className="rounded-xl border border-dashed border-stone-200 dark:border-slate-800 py-5 text-center text-xs text-stone-400 dark:text-slate-500">
+                  No teachers saved yet. Add rows above to create your directory.
+                </p>
+              ) : (
+                <div className="space-y-2 max-h-[220px] overflow-y-auto pr-1 side-view-scrollbar">
+                  {batchRecordingTeachers.map((entry) => {
+                    const isEditing = editingTeacherEntryId === entry.id;
+                    const isConfirmingDelete = teacherEntryToDelete?.id === entry.id;
+                    return (
+                      <div
+                        key={entry.id}
+                        className="rounded-xl border border-stone-200 dark:border-slate-800 bg-stone-50/70 dark:bg-slate-800/40 px-3 py-2.5 flex flex-wrap items-center justify-between gap-2"
+                      >
+                        {isEditing ? (
+                          <div className="flex flex-1 flex-col gap-2">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <input
+                                type="text"
+                                value={editingTeacherEntryName}
+                                onChange={(e) => setEditingTeacherEntryName(e.target.value)}
+                                className="flex-1 min-w-[140px] rounded-lg border border-stone-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-2.5 py-1.5 text-xs font-semibold text-stone-900 dark:text-white"
+                                placeholder="Teacher Name"
+                              />
+                              <input
+                                type="text"
+                                list="recording-teacher-subject-presets"
+                                value={editingTeacherEntrySubject}
+                                onChange={(e) => setEditingTeacherEntrySubject(e.target.value)}
+                                className="w-36 rounded-lg border border-stone-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-2.5 py-1.5 text-xs font-semibold text-stone-900 dark:text-white"
+                                placeholder="Subject"
+                              />
+                            </div>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <input
+                                type="text"
+                                value={editingTeacherEntryBio}
+                                onChange={(e) => setEditingTeacherEntryBio(e.target.value)}
+                                className="flex-1 min-w-[200px] rounded-lg border border-stone-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-2.5 py-1.5 text-xs text-stone-800 dark:text-slate-200"
+                                placeholder="Optional profile summary (e.g. B.Sc. Physics · Past Paper Panel Lead)"
+                              />
+                              <button
+                                type="button"
+                                disabled={savingTeacherEntryEdit}
+                                onClick={() => handleSaveTeacherEntryEdit(entry)}
+                                className="rounded-lg bg-emerald-600 hover:bg-emerald-700 px-2.5 py-1.5 text-[11px] font-bold text-white"
+                              >
+                                Save
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setEditingTeacherEntryId(null)}
+                                className="rounded-lg border border-stone-200 dark:border-slate-700 px-2.5 py-1.5 text-[11px] font-semibold text-stone-600 dark:text-slate-300"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <>
+                            <div className="min-w-0">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="text-xs font-bold text-stone-900 dark:text-white">
+                                  {entry.name}
+                                </span>
+                                <span className="rounded-md bg-sky-50 dark:bg-sky-950/60 border border-sky-200 dark:border-sky-800 px-2 py-0.5 text-[10px] font-semibold text-[#0284c7] dark:text-sky-300">
+                                  {entry.subject}
+                                </span>
+                                <span className="text-[10px] text-stone-400 dark:text-slate-500">
+                                  {entry.batchId === ALL_BATCHES_ID ? 'All Batches' : entry.batchName}
+                                </span>
+                              </div>
+                              {entry.profileSummary && (
+                                <p className="text-[10px] text-stone-500 dark:text-slate-400 mt-0.5 line-clamp-1">
+                                  {entry.profileSummary}
+                                </p>
+                              )}
+                            </div>
+
+                            {isConfirmingDelete ? (
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-[11px] font-semibold text-rose-600">
+                                  Remove?
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={handleConfirmDeleteTeacherEntry}
+                                  className="rounded-lg bg-rose-600 hover:bg-rose-700 px-2.5 py-1 text-[11px] font-bold text-white"
+                                >
+                                  Yes
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setTeacherEntryToDelete(null)}
+                                  className="rounded-lg border border-stone-200 dark:border-slate-700 px-2 py-1 text-[11px] font-semibold text-stone-600 dark:text-slate-300"
+                                >
+                                  No
+                                </button>
+                              </div>
+                            ) : (
+                              <div className="flex items-center gap-1 shrink-0">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setIsTeacherDirectoryModalOpen(false);
+                                    openRecordingModal(recordingDate, null, entry);
+                                  }}
+                                  className="rounded-lg border border-[#0284c7]/30 bg-sky-50 dark:bg-sky-950/50 px-2.5 py-1 text-[11px] font-bold text-[#0284c7] dark:text-sky-300 hover:bg-sky-100"
+                                  title={`Upload a recording under ${entry.name}`}
+                                >
+                                  Upload Recording
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setEditingTeacherEntryId(entry.id);
+                                    setEditingTeacherEntryName(entry.name);
+                                    setEditingTeacherEntrySubject(entry.subject);
+                                    setEditingTeacherEntryBio(entry.profileSummary || '');
+                                  }}
+                                  className="rounded-lg p-1.5 text-stone-500 hover:bg-stone-200 dark:hover:bg-slate-700"
+                                  title="Edit teacher"
+                                >
+                                  <Pencil className="w-3.5 h-3.5" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setTeacherEntryToDelete(entry)}
+                                  className="rounded-lg p-1.5 text-stone-500 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40"
+                                  title="Delete teacher"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           </div>
         </div>
