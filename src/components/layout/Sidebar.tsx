@@ -103,7 +103,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         { id: 'classes', label: 'Classes', hint: 'Batch groups & class sessions', icon: GraduationCap },
         { id: 'subjects', label: 'Subjects', hint: 'Physics, Chem, Maths & Bio units', icon: BookOpen },
         { id: 'timetable', label: 'Timetable', hint: 'Weekly class schedule & room slots', icon: Clock },
-        { id: 'calendar', label: 'Calendar', hint: 'Holidays, exams & class schedule', icon: Calendar },
+        { id: 'calendar', label: 'Calendar', hint: 'Events, attendance & class recordings', icon: Calendar },
       ],
     },
     {
