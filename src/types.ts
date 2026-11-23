@@ -782,3 +782,56 @@ export interface YearlyResultReport {
   createdAt: string;
   updatedAt: string;
 }
+
+export interface RecordingTeacher {
+  id: string;
+  name: string;
+  subject: string;
+  profileSummary?: string; // Optional manual educator summary entered by Admin/Teacher
+  batchId: string; // ALL_BATCHES_ID or specific batch ID
+  batchName?: string;
+  createdBy: string;
+  createdByName: string;
+  createdByRole: 'admin' | 'teacher';
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ClassRecording {
+  id: string;
+  title: string;
+  youtubeUrl: string;
+  youtubeVideoId: string;
+  date: string; // YYYY-MM-DD
+  batchId: string;
+  batchName: string;
+  subject: string;
+  category?: string; // e.g., "Physics", "Mathematics", "Revision"
+  teacherId?: string; // Linked manual RecordingTeacher ID (not synced to user accounts)
+  teacherName?: string; // Manually entered or selected by Admin/Teacher only (not synced to accounts)
+  teacherSubject?: string; // Subject taught by the selected teacher
+  sessionLabel: string; // e.g., "2028 THEORY 20-11-2026"
+  durationLabel?: string; // e.g., "4:19:58"
+  qualityLabel?: string; // e.g., "480p", "720p", "1080p"
+  description?: string;
+  viewCount?: number; // Total recorded views across scholars to highlight trending/most-watched lessons
+  lastViewedAt?: string;
+  uploadedBy: string;
+  uploadedByName: string;
+  uploadedByRole: 'admin' | 'teacher';
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RecordingWatchProgress {
+  id: string; // `${userId}__${recordingId}`
+  recordingId: string;
+  userId: string;
+  userName?: string;
+  batchId?: string;
+  watched: boolean;
+  lastPositionSeconds?: number;
+  watchedAt?: string;
+  updatedAt: string;
+}
+
