@@ -26,6 +26,7 @@ import {
   FlaskConical,
   GraduationCap,
   Layers,
+  LayoutDashboard,
   LogIn,
   Mail,
   MapPin,
@@ -57,6 +58,7 @@ import {
 } from 'recharts';
 import { addDoc, collection, onSnapshot } from 'firebase/firestore';
 import { db } from '../../firebase';
+import { useAuth } from '../../context/AuthContext';
 import { useBatch } from '../../context/BatchContext';
 import { useSiteConfig } from '../../context/SiteConfigContext';
 import { useTheme } from '../../context/ThemeContext';
@@ -76,6 +78,7 @@ import physicalBenchImg from '../../assets/images/zahira_physical_stream_lab_179
 interface ZahiraHomePageProps {
   onSignIn: (targetPage?: string) => void;
   onSignUp: (targetPage?: string) => void;
+  onEnterLMS?: (targetPage?: string) => void;
 }
 
 type StreamKey = 'physical' | 'biological';
@@ -224,11 +227,22 @@ const GALLERY_ITEMS: GalleryEntry[] = [
 export const ZahiraHomePage: React.FC<ZahiraHomePageProps> = ({
   onSignIn,
   onSignUp,
+  onEnterLMS,
 }) => {
+  const { userProfile } = useAuth();
   const { batches, activeBatch } = useBatch();
   const { siteConfig } = useSiteConfig();
   const { isDark, toggleTheme } = useTheme();
   const prefersReducedMotion = useReducedMotion();
+  const isSignedIn = Boolean(userProfile);
+
+  const handleEnterLMS = (targetPage = 'dashboard') => {
+    if (onEnterLMS) {
+      onEnterLMS(targetPage);
+    } else {
+      onSignIn(targetPage);
+    }
+  };
 
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [activeStream, setActiveStream] = useState<StreamKey>('physical');
@@ -610,23 +624,37 @@ export const ZahiraHomePage: React.FC<ZahiraHomePageProps> = ({
               {isDark ? <Sun className="w-4 h-4 text-amber-400" /> : <Moon className="w-4 h-4" />}
             </button>
 
-            <button
-              type="button"
-              onClick={() => onSignIn('dashboard')}
-              className="hidden sm:inline-flex items-center gap-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 px-3.5 py-2 text-xs sm:text-sm font-semibold text-slate-800 dark:text-slate-100 transition-colors whitespace-nowrap shrink-0"
-            >
-              <LogIn className="w-3.5 h-3.5" />
-              <span>Sign In</span>
-            </button>
+            {isSignedIn ? (
+              <button
+                type="button"
+                onClick={() => handleEnterLMS('dashboard')}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-blue-900 hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-500 min-h-[40px] px-3.5 sm:px-4 py-2 text-xs sm:text-sm font-semibold text-white transition-colors whitespace-nowrap shrink-0 shadow-xs"
+              >
+                <LayoutDashboard className="w-3.5 h-3.5" />
+                <span>Enter LMS</span>
+                <ArrowRight className="w-3.5 h-3.5 hidden sm:inline" />
+              </button>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  onClick={() => onSignIn('dashboard')}
+                  className="hidden sm:inline-flex items-center gap-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 px-3.5 py-2 text-xs sm:text-sm font-semibold text-slate-800 dark:text-slate-100 transition-colors whitespace-nowrap shrink-0"
+                >
+                  <LogIn className="w-3.5 h-3.5" />
+                  <span>Sign In</span>
+                </button>
 
-            <button
-              type="button"
-              onClick={() => onSignUp('dashboard')}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-blue-900 hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-500 min-h-[40px] px-3 sm:px-4 py-2 text-xs sm:text-sm font-semibold text-white transition-colors whitespace-nowrap shrink-0 shadow-xs"
-            >
-              <UserPlus className="w-3.5 h-3.5" />
-              <span>Sign Up</span>
-            </button>
+                <button
+                  type="button"
+                  onClick={() => onSignUp('dashboard')}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-blue-900 hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-500 min-h-[40px] px-3 sm:px-4 py-2 text-xs sm:text-sm font-semibold text-white transition-colors whitespace-nowrap shrink-0 shadow-xs"
+                >
+                  <UserPlus className="w-3.5 h-3.5" />
+                  <span>Sign Up</span>
+                </button>
+              </>
+            )}
 
             <button
               type="button"
@@ -662,30 +690,47 @@ export const ZahiraHomePage: React.FC<ZahiraHomePageProps> = ({
                   </button>
                 ))}
               </div>
-              <div className="pt-3 border-t border-slate-100 dark:border-slate-800 grid grid-cols-2 gap-2.5">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setMobileMenuOpen(false);
-                    onSignIn('dashboard');
-                  }}
-                  className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 min-h-[44px] py-2.5 text-sm font-semibold"
-                >
-                  <LogIn className="w-4 h-4" />
-                  <span>Sign In</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setMobileMenuOpen(false);
-                    onSignUp('dashboard');
-                  }}
-                  className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-blue-900 dark:bg-blue-600 text-white min-h-[44px] py-2.5 text-sm font-semibold"
-                >
-                  <UserPlus className="w-4 h-4" />
-                  <span>Sign Up</span>
-                </button>
-              </div>
+              {isSignedIn ? (
+                <div className="pt-3 border-t border-slate-100 dark:border-slate-800">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMobileMenuOpen(false);
+                      handleEnterLMS('dashboard');
+                    }}
+                    className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-blue-900 hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-500 text-white min-h-[44px] py-2.5 text-sm font-semibold transition-colors"
+                  >
+                    <LayoutDashboard className="w-4 h-4" />
+                    <span>Enter LMS</span>
+                    <ArrowRight className="w-4 h-4" />
+                  </button>
+                </div>
+              ) : (
+                <div className="pt-3 border-t border-slate-100 dark:border-slate-800 grid grid-cols-2 gap-2.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMobileMenuOpen(false);
+                      onSignIn('dashboard');
+                    }}
+                    className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 min-h-[44px] py-2.5 text-sm font-semibold"
+                  >
+                    <LogIn className="w-4 h-4" />
+                    <span>Sign In</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMobileMenuOpen(false);
+                      onSignUp('dashboard');
+                    }}
+                    className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-blue-900 dark:bg-blue-600 text-white min-h-[44px] py-2.5 text-sm font-semibold"
+                  >
+                    <UserPlus className="w-4 h-4" />
+                    <span>Sign Up</span>
+                  </button>
+                </div>
+              )}
             </motion.div>
           )}
         </AnimatePresence>
@@ -733,25 +778,39 @@ export const ZahiraHomePage: React.FC<ZahiraHomePageProps> = ({
                 </p>
               </div>
 
-              {/* Hero CTAs: Sign Up + Sign In + Admissions shortcut */}
+              {/* Hero CTAs: Enter LMS (signed in) or Sign Up + Sign In + Admissions shortcut */}
               <div className="grid grid-cols-2 sm:flex sm:flex-wrap items-center gap-3 sm:gap-3.5 pt-1">
-                <button
-                  type="button"
-                  onClick={() => onSignUp('dashboard')}
-                  className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-900 hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-500 min-h-[46px] px-5 sm:px-6 py-3 text-sm font-semibold text-white shadow-sm hover:shadow-md transition-all whitespace-nowrap shrink-0"
-                >
-                  <UserPlus className="w-4 h-4" />
-                  <span>Sign Up</span>
-                </button>
+                {isSignedIn ? (
+                  <button
+                    type="button"
+                    onClick={() => handleEnterLMS('dashboard')}
+                    className="col-span-2 sm:col-span-1 inline-flex items-center justify-center gap-2 rounded-xl bg-blue-900 hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-500 min-h-[46px] px-5 sm:px-6 py-3 text-sm font-semibold text-white shadow-sm hover:shadow-md transition-all whitespace-nowrap shrink-0"
+                  >
+                    <LayoutDashboard className="w-4 h-4" />
+                    <span>Enter LMS</span>
+                    <ArrowRight className="w-4 h-4" />
+                  </button>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => onSignUp('dashboard')}
+                      className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-900 hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-500 min-h-[46px] px-5 sm:px-6 py-3 text-sm font-semibold text-white shadow-sm hover:shadow-md transition-all whitespace-nowrap shrink-0"
+                    >
+                      <UserPlus className="w-4 h-4" />
+                      <span>Sign Up</span>
+                    </button>
 
-                <button
-                  type="button"
-                  onClick={() => onSignIn('dashboard')}
-                  className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 min-h-[46px] px-5 sm:px-6 py-3 text-sm font-semibold text-slate-800 dark:text-slate-100 transition-colors whitespace-nowrap shrink-0"
-                >
-                  <LogIn className="w-4 h-4 text-blue-800 dark:text-blue-400" />
-                  <span>Sign In</span>
-                </button>
+                    <button
+                      type="button"
+                      onClick={() => onSignIn('dashboard')}
+                      className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 min-h-[46px] px-5 sm:px-6 py-3 text-sm font-semibold text-slate-800 dark:text-slate-100 transition-colors whitespace-nowrap shrink-0"
+                    >
+                      <LogIn className="w-4 h-4 text-blue-800 dark:text-blue-400" />
+                      <span>Sign In</span>
+                    </button>
+                  </>
+                )}
 
                 <button
                   type="button"
@@ -1012,25 +1071,41 @@ export const ZahiraHomePage: React.FC<ZahiraHomePageProps> = ({
                   <div className="absolute inset-0 bg-gradient-to-t from-slate-950/95 via-slate-950/50 to-transparent" />
                   <div className="absolute bottom-4 left-4 right-4 sm:bottom-8 sm:left-8 sm:right-8 flex flex-col sm:flex-row sm:items-end justify-between gap-3 sm:gap-4">
                     <p className="text-xs sm:text-base text-slate-200 max-w-xl leading-relaxed">
-                      Sign up or sign in to access unit materials, subject discussions, PvP quiz arenas, and live faculty attendance inside the portal.
+                      {isSignedIn
+                        ? 'Enter the LMS portal to access unit materials, subject discussions, PvP quiz arenas, and live faculty attendance.'
+                        : 'Sign up or sign in to access unit materials, subject discussions, PvP quiz arenas, and live faculty attendance inside the portal.'}
                     </p>
                     <div className="flex items-center gap-2.5 shrink-0 w-full sm:w-auto">
-                      <button
-                        type="button"
-                        onClick={() => onSignUp('dashboard')}
-                        className="flex-1 sm:flex-initial inline-flex items-center justify-center gap-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 min-h-[42px] px-4 py-2 text-xs font-semibold text-white transition-colors"
-                      >
-                        <UserPlus className="w-3.5 h-3.5" />
-                        <span>Sign Up</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => onSignIn('dashboard')}
-                        className="flex-1 sm:flex-initial inline-flex items-center justify-center gap-1.5 rounded-lg bg-white/15 hover:bg-white/25 border border-white/25 min-h-[42px] px-4 py-2 text-xs font-semibold text-white transition-colors"
-                      >
-                        <LogIn className="w-3.5 h-3.5" />
-                        <span>Sign In</span>
-                      </button>
+                      {isSignedIn ? (
+                        <button
+                          type="button"
+                          onClick={() => handleEnterLMS('dashboard')}
+                          className="flex-1 sm:flex-initial inline-flex items-center justify-center gap-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 min-h-[42px] px-5 py-2 text-xs font-semibold text-white transition-colors"
+                        >
+                          <LayoutDashboard className="w-3.5 h-3.5" />
+                          <span>Enter LMS</span>
+                          <ArrowRight className="w-3.5 h-3.5" />
+                        </button>
+                      ) : (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => onSignUp('dashboard')}
+                            className="flex-1 sm:flex-initial inline-flex items-center justify-center gap-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 min-h-[42px] px-4 py-2 text-xs font-semibold text-white transition-colors"
+                          >
+                            <UserPlus className="w-3.5 h-3.5" />
+                            <span>Sign Up</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => onSignIn('dashboard')}
+                            className="flex-1 sm:flex-initial inline-flex items-center justify-center gap-1.5 rounded-lg bg-white/15 hover:bg-white/25 border border-white/25 min-h-[42px] px-4 py-2 text-xs font-semibold text-white transition-colors"
+                          >
+                            <LogIn className="w-3.5 h-3.5" />
+                            <span>Sign In</span>
+                          </button>
+                        </>
+                      )}
                     </div>
                   </div>
                 </motion.div>
@@ -1100,7 +1175,9 @@ export const ZahiraHomePage: React.FC<ZahiraHomePageProps> = ({
               </h2>
             </div>
             <p className="text-sm text-slate-600 dark:text-slate-300 max-w-md">
-              All student cohorts managed by school administration appear live below. Select your batch and sign up or sign in to enter your classroom portal.
+              {isSignedIn
+                ? 'All student cohorts managed by school administration appear live below. Enter the LMS to view your classroom portal.'
+                : 'All student cohorts managed by school administration appear live below. Select your batch and sign up or sign in to enter your classroom portal.'}
             </p>
           </motion.div>
 
@@ -1145,23 +1222,37 @@ export const ZahiraHomePage: React.FC<ZahiraHomePageProps> = ({
                 </div>
 
                 <div className="pt-4 border-t border-slate-200/80 dark:border-slate-800 flex items-center justify-between gap-3">
-                  <button
-                    type="button"
-                    onClick={() => onSignUp('dashboard')}
-                    className="inline-flex items-center gap-1.5 rounded-lg bg-blue-900 hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-500 px-3.5 py-2 text-xs font-semibold text-white transition-colors"
-                  >
-                    <UserPlus className="w-3.5 h-3.5" />
-                    <span>Sign Up</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onSignIn('dashboard')}
-                    className="inline-flex items-center gap-1.5 text-xs font-semibold text-blue-900 dark:text-blue-400 hover:underline underline-offset-4"
-                  >
-                    <LogIn className="w-3.5 h-3.5" />
-                    <span>Sign In to Portal</span>
-                    <ArrowRight className="w-3.5 h-3.5" />
-                  </button>
+                  {isSignedIn ? (
+                    <button
+                      type="button"
+                      onClick={() => handleEnterLMS('dashboard')}
+                      className="w-full inline-flex items-center justify-center gap-1.5 rounded-lg bg-blue-900 hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-500 px-3.5 py-2 text-xs font-semibold text-white transition-colors"
+                    >
+                      <LayoutDashboard className="w-3.5 h-3.5" />
+                      <span>Enter LMS</span>
+                      <ArrowRight className="w-3.5 h-3.5" />
+                    </button>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => onSignUp('dashboard')}
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-blue-900 hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-500 px-3.5 py-2 text-xs font-semibold text-white transition-colors"
+                      >
+                        <UserPlus className="w-3.5 h-3.5" />
+                        <span>Sign Up</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onSignIn('dashboard')}
+                        className="inline-flex items-center gap-1.5 text-xs font-semibold text-blue-900 dark:text-blue-400 hover:underline underline-offset-4"
+                      >
+                        <LogIn className="w-3.5 h-3.5" />
+                        <span>Sign In to Portal</span>
+                        <ArrowRight className="w-3.5 h-3.5" />
+                      </button>
+                    </>
+                  )}
                 </div>
               </motion.div>
             ))}
@@ -1419,14 +1510,26 @@ export const ZahiraHomePage: React.FC<ZahiraHomePageProps> = ({
                   </p>
                 </div>
               </div>
-              <button
-                type="button"
-                onClick={() => onSignIn('admin_panel:homepage_sync')}
-                className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 px-5 py-3 text-xs font-semibold text-slate-800 dark:text-slate-100 transition-colors whitespace-nowrap shrink-0"
-              >
-                <LogIn className="w-4 h-4 text-blue-800 dark:text-blue-400" />
-                <span>Teacher / Admin Sign In</span>
-              </button>
+              {isSignedIn ? (
+                <button
+                  type="button"
+                  onClick={() => handleEnterLMS('admin_panel:homepage_sync')}
+                  className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-900 hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-500 px-5 py-3 text-xs font-semibold text-white transition-colors whitespace-nowrap shrink-0"
+                >
+                  <LayoutDashboard className="w-4 h-4" />
+                  <span>Enter LMS</span>
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => onSignIn('admin_panel:homepage_sync')}
+                  className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 px-5 py-3 text-xs font-semibold text-slate-800 dark:text-slate-100 transition-colors whitespace-nowrap shrink-0"
+                >
+                  <LogIn className="w-4 h-4 text-blue-800 dark:text-blue-400" />
+                  <span>Teacher / Admin Sign In</span>
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -1547,14 +1650,26 @@ export const ZahiraHomePage: React.FC<ZahiraHomePageProps> = ({
                       Teachers and Administrators can upload the latest admission PDF inside the <strong>Homepage Sync</strong> tab of either the Admin Panel or Teacher Panel.
                     </p>
                     <div className="flex flex-wrap items-center gap-2.5">
-                      <button
-                        type="button"
-                        onClick={() => onSignIn('teacher_panel')}
-                        className="inline-flex items-center gap-1.5 rounded-lg bg-blue-900 hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-500 px-4 py-2 text-xs font-semibold text-white transition-colors"
-                      >
-                        <LogIn className="w-3.5 h-3.5" />
-                        <span>Faculty Sign In</span>
-                      </button>
+                      {isSignedIn ? (
+                        <button
+                          type="button"
+                          onClick={() => handleEnterLMS('teacher_panel')}
+                          className="inline-flex items-center gap-1.5 rounded-lg bg-blue-900 hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-500 px-4 py-2 text-xs font-semibold text-white transition-colors"
+                        >
+                          <LayoutDashboard className="w-3.5 h-3.5" />
+                          <span>Enter LMS</span>
+                          <ArrowRight className="w-3.5 h-3.5" />
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => onSignIn('teacher_panel')}
+                          className="inline-flex items-center gap-1.5 rounded-lg bg-blue-900 hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-500 px-4 py-2 text-xs font-semibold text-white transition-colors"
+                        >
+                          <LogIn className="w-3.5 h-3.5" />
+                          <span>Faculty Sign In</span>
+                        </button>
+                      )}
                       <button
                         type="button"
                         onClick={() => scrollToSection('contact')}
@@ -1766,17 +1881,31 @@ export const ZahiraHomePage: React.FC<ZahiraHomePageProps> = ({
 
               <div className="p-5 sm:px-6 flex flex-wrap items-center justify-between gap-3 bg-slate-50/70 dark:bg-slate-900/70 rounded-b-2xl">
                 <span className="text-xs text-slate-500 dark:text-slate-400">
-                  Access unit notes, past papers &amp; practical simulations after signing in
+                  {isSignedIn
+                    ? 'Access unit notes, past papers & practical simulations inside the LMS'
+                    : 'Access unit notes, past papers & practical simulations after signing in'}
                 </span>
-                <button
-                  type="button"
-                  onClick={() => onSignUp('subjects')}
-                  className="inline-flex items-center gap-1.5 text-xs font-semibold text-blue-900 dark:text-blue-400 hover:underline underline-offset-4"
-                >
-                  <BookOpen className="w-3.5 h-3.5" />
-                  <span>Sign Up for Units</span>
-                  <ArrowRight className="w-3.5 h-3.5" />
-                </button>
+                {isSignedIn ? (
+                  <button
+                    type="button"
+                    onClick={() => handleEnterLMS('subjects')}
+                    className="inline-flex items-center gap-1.5 text-xs font-semibold text-blue-900 dark:text-blue-400 hover:underline underline-offset-4"
+                  >
+                    <LayoutDashboard className="w-3.5 h-3.5" />
+                    <span>Enter LMS</span>
+                    <ArrowRight className="w-3.5 h-3.5" />
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => onSignUp('subjects')}
+                    className="inline-flex items-center gap-1.5 text-xs font-semibold text-blue-900 dark:text-blue-400 hover:underline underline-offset-4"
+                  >
+                    <BookOpen className="w-3.5 h-3.5" />
+                    <span>Sign Up for Units</span>
+                    <ArrowRight className="w-3.5 h-3.5" />
+                  </button>
+                )}
               </div>
             </div>
           </div>
@@ -1983,17 +2112,31 @@ export const ZahiraHomePage: React.FC<ZahiraHomePageProps> = ({
               </div>
               <div className="px-4 sm:px-5 py-4 border-t border-slate-100 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-900 flex flex-wrap items-center justify-between gap-3">
                 <span className="text-xs text-slate-500 dark:text-slate-400">
-                  Sign in to compete in 1v1 duels and view full Top-20 standings.
+                  {isSignedIn
+                    ? 'Compete in 1v1 duels and view full Top-20 standings in the LMS.'
+                    : 'Sign in to compete in 1v1 duels and view full Top-20 standings.'}
                 </span>
-                <button
-                  type="button"
-                  onClick={() => onSignIn('leaderboard')}
-                  className="inline-flex items-center gap-1.5 text-xs font-semibold text-blue-900 dark:text-blue-400 hover:underline underline-offset-4 min-h-[36px]"
-                >
-                  <Trophy className="w-3.5 h-3.5" />
-                  <span>Sign In to View Full Ranks</span>
-                  <ArrowRight className="w-3.5 h-3.5" />
-                </button>
+                {isSignedIn ? (
+                  <button
+                    type="button"
+                    onClick={() => handleEnterLMS('leaderboard')}
+                    className="inline-flex items-center gap-1.5 text-xs font-semibold text-blue-900 dark:text-blue-400 hover:underline underline-offset-4 min-h-[36px]"
+                  >
+                    <LayoutDashboard className="w-3.5 h-3.5" />
+                    <span>Enter LMS</span>
+                    <ArrowRight className="w-3.5 h-3.5" />
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => onSignIn('leaderboard')}
+                    className="inline-flex items-center gap-1.5 text-xs font-semibold text-blue-900 dark:text-blue-400 hover:underline underline-offset-4 min-h-[36px]"
+                  >
+                    <Trophy className="w-3.5 h-3.5" />
+                    <span>Sign In to View Full Ranks</span>
+                    <ArrowRight className="w-3.5 h-3.5" />
+                  </button>
+                )}
               </div>
             </div>
           ) : (
@@ -2007,27 +2150,43 @@ export const ZahiraHomePage: React.FC<ZahiraHomePageProps> = ({
                     New Season Standings Open
                   </h3>
                   <p className="text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
-                    No ranked quiz scores are recorded for this selected timeframe yet. Sign in or sign up to join the PvP Quiz Arena and climb the live cohort standings.
+                    {isSignedIn
+                      ? 'No ranked quiz scores are recorded for this selected timeframe yet. Enter the LMS to join the PvP Quiz Arena and climb the live cohort standings.'
+                      : 'No ranked quiz scores are recorded for this selected timeframe yet. Sign in or sign up to join the PvP Quiz Arena and climb the live cohort standings.'}
                   </p>
                 </div>
               </div>
               <div className="flex items-center gap-2.5 shrink-0">
-                <button
-                  type="button"
-                  onClick={() => onSignUp('pvp_quiz')}
-                  className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-900 hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-500 px-5 py-3 text-sm font-semibold text-white transition-colors whitespace-nowrap shrink-0"
-                >
-                  <UserPlus className="w-4 h-4" />
-                  <span>Sign Up</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => onSignIn('pvp_quiz')}
-                  className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 px-5 py-3 text-sm font-semibold text-slate-800 dark:text-slate-100 transition-colors whitespace-nowrap shrink-0"
-                >
-                  <LogIn className="w-4 h-4" />
-                  <span>Sign In</span>
-                </button>
+                {isSignedIn ? (
+                  <button
+                    type="button"
+                    onClick={() => handleEnterLMS('pvp_quiz')}
+                    className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-900 hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-500 px-5 py-3 text-sm font-semibold text-white transition-colors whitespace-nowrap shrink-0"
+                  >
+                    <LayoutDashboard className="w-4 h-4" />
+                    <span>Enter LMS</span>
+                    <ArrowRight className="w-4 h-4" />
+                  </button>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => onSignUp('pvp_quiz')}
+                      className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-900 hover:bg-blue-800 dark:bg-blue-600 dark:hover:bg-blue-500 px-5 py-3 text-sm font-semibold text-white transition-colors whitespace-nowrap shrink-0"
+                    >
+                      <UserPlus className="w-4 h-4" />
+                      <span>Sign Up</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onSignIn('pvp_quiz')}
+                      className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 px-5 py-3 text-sm font-semibold text-slate-800 dark:text-slate-100 transition-colors whitespace-nowrap shrink-0"
+                    >
+                      <LogIn className="w-4 h-4" />
+                      <span>Sign In</span>
+                    </button>
+                  </>
+                )}
               </div>
             </div>
           )}
@@ -2191,7 +2350,9 @@ export const ZahiraHomePage: React.FC<ZahiraHomePageProps> = ({
 
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-4 pt-1">
                   <span className="text-xs text-slate-500 dark:text-slate-400">
-                    Already registered? Sign in to message teachers directly.
+                    {isSignedIn
+                      ? 'Open the LMS portal to message teachers directly.'
+                      : 'Already registered? Sign in to message teachers directly.'}
                   </span>
                   <button
                     type="submit"
@@ -2230,22 +2391,36 @@ export const ZahiraHomePage: React.FC<ZahiraHomePageProps> = ({
                 {item.label}
               </button>
             ))}
-            <button
-              type="button"
-              onClick={() => onSignIn('dashboard')}
-              className="font-semibold text-blue-900 dark:text-blue-400 hover:underline underline-offset-4 inline-flex items-center gap-1"
-            >
-              <LogIn className="w-3.5 h-3.5" />
-              <span>Sign In</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => onSignUp('dashboard')}
-              className="font-semibold text-blue-900 dark:text-blue-400 hover:underline underline-offset-4 inline-flex items-center gap-1"
-            >
-              <UserPlus className="w-3.5 h-3.5" />
-              <span>Sign Up</span>
-            </button>
+            {isSignedIn ? (
+              <button
+                type="button"
+                onClick={() => handleEnterLMS('dashboard')}
+                className="font-semibold text-blue-900 dark:text-blue-400 hover:underline underline-offset-4 inline-flex items-center gap-1"
+              >
+                <LayoutDashboard className="w-3.5 h-3.5" />
+                <span>Enter LMS</span>
+                <ArrowRight className="w-3.5 h-3.5" />
+              </button>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  onClick={() => onSignIn('dashboard')}
+                  className="font-semibold text-blue-900 dark:text-blue-400 hover:underline underline-offset-4 inline-flex items-center gap-1"
+                >
+                  <LogIn className="w-3.5 h-3.5" />
+                  <span>Sign In</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onSignUp('dashboard')}
+                  className="font-semibold text-blue-900 dark:text-blue-400 hover:underline underline-offset-4 inline-flex items-center gap-1"
+                >
+                  <UserPlus className="w-3.5 h-3.5" />
+                  <span>Sign Up</span>
+                </button>
+              </>
+            )}
           </div>
         </div>
       </footer>
