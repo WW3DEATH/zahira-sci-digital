@@ -36,6 +36,7 @@ import { AuthModal } from './components/common/AuthModal';
 import { StudentAIChatWidget } from './components/common/StudentAIChatWidget';
 import { CursorEffect } from './components/common/CursorEffect';
 import { ZahiraHomePage } from './components/home/ZahiraHomePage';
+import { ZahiraLoadingScreen } from './components/common/ZahiraLoadingScreen';
 import {
   LayoutDashboard,
   Calendar,
@@ -48,8 +49,9 @@ import {
 } from 'lucide-react';
 
 const MainApp: React.FC = () => {
-  const { activeRole, userProfile, updateCurrentUserBatch } = useAuth();
+  const { activeRole, userProfile, loading: authLoading, updateCurrentUserBatch } = useAuth();
   const { batches } = useBatch();
+  const [introReady, setIntroReady] = useState<boolean>(false);
   const [showPublicHome, setShowPublicHome] = useState<boolean>(true);
   const [currentPage, setCurrentPage] = useState<string>('dashboard');
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(false);
@@ -62,6 +64,16 @@ const MainApp: React.FC = () => {
   const [savingBatchPick, setSavingBatchPick] = useState<boolean>(false);
   const [batchPickError, setBatchPickError] = useState<string | null>(null);
   const signInTriggeredRef = useRef<boolean>(false);
+
+  // Brief initial branding loader entrance on white background with 3D crest
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setIntroReady(true);
+    }, 1150);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  const showLoadingScreen = !introReady || authLoading;
 
   // Close authentication modal and send the user directly into the LMS once authenticated
   useEffect(() => {
@@ -242,6 +254,7 @@ const MainApp: React.FC = () => {
   if (showPublicHome) {
     return (
       <>
+        <ZahiraLoadingScreen isVisible={showLoadingScreen} />
         <ZahiraHomePage
           onSignIn={(targetPage) => handleHomeAuthAction('signin', targetPage)}
           onSignUp={(targetPage) => handleHomeAuthAction('signup', targetPage)}
@@ -258,6 +271,7 @@ const MainApp: React.FC = () => {
 
   return (
     <div className="flex flex-col h-dvh w-full overflow-hidden bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 font-sans selection:bg-blue-100 selection:text-blue-900 transition-colors duration-200">
+      <ZahiraLoadingScreen isVisible={showLoadingScreen} />
       {/* 1. TOP HEADER */}
       <Header
         onOpenProfile={() => setCurrentPage('profile')}
