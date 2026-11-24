@@ -87,6 +87,62 @@ import {
   isAttendanceRecordActive,
 } from '../utils/attendanceUtils';
 
+class CalendarSectionErrorBoundary extends React.Component<
+  { children: React.ReactNode; fallbackTitle?: string; fallbackDescription?: string },
+  { hasError: boolean; errorMessage: string | null }
+> {
+  constructor(props: { children: React.ReactNode; fallbackTitle?: string; fallbackDescription?: string }) {
+    super(props);
+    this.state = { hasError: false, errorMessage: null };
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    return {
+      hasError: true,
+      errorMessage: error?.message || 'An unexpected rendering error occurred.',
+    };
+  }
+
+  componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
+    console.warn('CalendarSectionErrorBoundary caught:', error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="rounded-2xl border border-rose-200 dark:border-rose-900/60 bg-white dark:bg-slate-900 p-6 sm:p-8 text-center space-y-4 shadow-xs">
+          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-rose-50 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400">
+            <AlertCircle className="w-6 h-6" />
+          </div>
+          <div className="space-y-1 max-w-md mx-auto">
+            <h3 className="font-serif text-lg font-bold text-stone-900 dark:text-white">
+              {this.props.fallbackTitle || 'Unable to display this section cleanly'}
+            </h3>
+            <p className="text-xs text-stone-500 dark:text-slate-400">
+              {this.props.fallbackDescription ||
+                'A temporary connection or rendering issue occurred. Please retry below.'}
+            </p>
+            {this.state.errorMessage && (
+              <p className="mt-2 rounded-lg bg-stone-50 dark:bg-slate-800 px-3 py-1.5 text-[11px] font-mono text-stone-600 dark:text-slate-300 break-words">
+                {this.state.errorMessage}
+              </p>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={() => this.setState({ hasError: false, errorMessage: null })}
+            className="inline-flex items-center gap-2 rounded-xl bg-[#0284c7] hover:bg-[#0369a1] px-4 py-2 text-xs font-bold text-white shadow-xs transition-colors cursor-pointer"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+            <span>Retry Section</span>
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 export interface CalendarPageProps {
   initialTab?: 'events' | 'attendance' | 'recordings';
 }
@@ -97,6 +153,11 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
 
   // Active view tab: 'events' | 'attendance' | 'recordings'
   const [activeTab, setActiveTab] = useState<'events' | 'attendance' | 'recordings'>(initialTab);
+  const [recordingsSyncError, setRecordingsSyncError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setActiveTab(initialTab);
+  }, [initialTab]);
 
   // Calendar date state (for browsing months)
   const [currentDate, setCurrentDate] = useState(() => new Date());
@@ -272,7 +333,9 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
         });
         setDayControlsMap(map);
       },
-      (error) => handleFirestoreError(error, OperationType.LIST, 'attendanceDaySettings')
+      (error) => {
+        console.warn('Attendance day controls listener warning:', error?.message || error);
+      }
     );
     return () => unsub();
   }, []);
@@ -309,7 +372,7 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
         });
       },
       (error) => {
-        handleFirestoreError(error, OperationType.LIST, 'attendanceRoster');
+        console.warn('Attendance roster listener warning:', error?.message || error);
       }
     );
     return () => unsub();
@@ -341,8 +404,14 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
           return (a.createdAt || '').localeCompare(b.createdAt || '');
         });
         setClassRecordings(list);
+        setRecordingsSyncError(null);
       },
-      (error) => handleFirestoreError(error, OperationType.LIST, 'classRecordings')
+      (error) => {
+        console.warn('Class recordings listener error:', error?.message || error);
+        setRecordingsSyncError(
+          'Unable to load live class recordings from Firestore right now. Check your network connection or Firebase configuration.'
+        );
+      }
     );
     return () => unsub();
   }, []);
@@ -366,7 +435,9 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
         });
         setWatchProgressMap(map);
       },
-      (error) => handleFirestoreError(error, OperationType.LIST, 'recordingWatchProgress')
+      (error) => {
+        console.warn('Recording watch progress listener warning:', error?.message || error);
+      }
     );
     return () => unsub();
   }, [userProfile?.userId]);
@@ -384,7 +455,9 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
         list.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
         setRecordingTeachers(list);
       },
-      (error) => handleFirestoreError(error, OperationType.LIST, 'recordingTeachers')
+      (error) => {
+        console.warn('Recording teachers directory listener warning:', error?.message || error);
+      }
     );
     return () => unsub();
   }, []);
@@ -1237,7 +1310,7 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
         lastViewedAt: new Date().toISOString(),
       });
     } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, `classRecordings/${recordingId}`);
+      console.warn('Could not increment recording view count:', err);
     }
   }, []);
 
@@ -1663,8 +1736,9 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
             }.`
       );
       setTimeout(() => setSyncMessage(null), 4000);
-    } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, 'classRecordings');
+    } catch (err: any) {
+      console.warn('Save recording failed:', err);
+      setRecFormError(err?.message || 'Unable to save class recording. Please verify Firestore permissions.');
     } finally {
       setSavingRecording(false);
     }
@@ -1831,8 +1905,9 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
       setBulkTeacherPasteText('');
       setSyncMessage(`Added ${addedCount} teacher${addedCount === 1 ? '' : 's'} with subjects to Recordings.`);
       setTimeout(() => setSyncMessage(null), 4000);
-    } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, 'recordingTeachers');
+    } catch (err: any) {
+      console.warn('Bulk teachers save error:', err);
+      setTeacherDirectoryError(err?.message || 'Unable to save teachers list. Please try again.');
     } finally {
       setSavingBulkTeachers(false);
     }
@@ -1859,8 +1934,9 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
       setEditingTeacherEntryId(null);
       setEditingTeacherEntryBio('');
       setTeacherDirectoryError(null);
-    } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `recordingTeachers/${entry.id}`);
+    } catch (err: any) {
+      console.warn('Edit teacher entry error:', err);
+      setTeacherDirectoryError(err?.message || 'Unable to update teacher entry.');
     } finally {
       setSavingTeacherEntryEdit(false);
     }
@@ -1885,8 +1961,9 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
       }
       setSyncMessage(`Removed "${target.name} (${target.subject})" from recording teachers list.`);
       setTimeout(() => setSyncMessage(null), 3500);
-    } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, `recordingTeachers/${target.id}`);
+    } catch (err: any) {
+      console.warn('Delete teacher entry error:', err);
+      setTeacherDirectoryError(err?.message || 'Unable to remove teacher entry.');
     }
   };
 
@@ -1901,8 +1978,9 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
       }
       setSyncMessage(`Removed recording "${target.title}".`);
       setTimeout(() => setSyncMessage(null), 3500);
-    } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, `classRecordings/${target.id}`);
+    } catch (err: any) {
+      console.warn('Delete recording error:', err);
+      setSyncMessage(err?.message || 'Unable to delete recording right now.');
     }
   };
 
@@ -1926,8 +2004,8 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
         updatedAt: nowIso,
       });
       await setDoc(doc(db, 'recordingWatchProgress', progressId), payload, { merge: true });
-    } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `recordingWatchProgress/${progressId}`);
+    } catch (err: any) {
+      console.warn('Watch progress toggle warning:', err);
     } finally {
       setSavingWatchId(null);
     }
@@ -1997,6 +2075,21 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
             </span>
           </button>
 
+          {/* Quick Access to Class Recordings when viewing Events or Attendance */}
+          {activeTab !== 'recordings' && (
+            <button
+              type="button"
+              onClick={() => {
+                setActiveTab('recordings');
+                setRecordingDate(selectedDateStr);
+              }}
+              className="flex items-center gap-1.5 rounded-xl border border-[#0284c7]/30 bg-sky-50 hover:bg-sky-100 dark:bg-sky-950/60 dark:hover:bg-sky-900/60 px-3.5 py-2 text-xs font-bold text-[#0284c7] dark:text-sky-300 transition-colors shadow-xs"
+            >
+              <Video className="w-4 h-4 shrink-0" />
+              <span>Class Recordings ({batchRecordings.length})</span>
+            </button>
+          )}
+
           {/* Upload Recording CTA when on Recordings tab (Teachers & Admins Only) */}
           {activeTab === 'recordings' && isTeacherOrAdmin && (
             <button
@@ -2051,55 +2144,86 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
         </div>
       )}
 
-      {/* View Tabs */}
-      <div className="flex overflow-x-auto no-scrollbar border-b border-stone-200 dark:border-slate-800">
+      {/* View Tabs (Wrap cleanly so Class Recordings is never clipped off-screen on mobile or desktop) */}
+      <div
+        role="tablist"
+        aria-label="Calendar sections"
+        className="flex flex-wrap items-center gap-1.5 sm:gap-2 border-b border-stone-200 dark:border-slate-800 pb-2"
+      >
         <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === 'events'}
           onClick={() => setActiveTab('events')}
-          className={`flex items-center gap-2 border-b-2 py-3 px-4 sm:px-5 text-xs font-bold whitespace-nowrap shrink-0 transition-colors ${
+          className={`flex items-center gap-2 rounded-xl px-3.5 py-2.5 text-xs font-bold transition-colors cursor-pointer ${
             activeTab === 'events'
-              ? 'border-stone-900 dark:border-white text-stone-900 dark:text-white'
-              : 'border-transparent text-stone-500 dark:text-slate-400 hover:text-stone-700 dark:hover:text-slate-200'
+              ? 'bg-stone-900 text-white dark:bg-white dark:text-stone-900 shadow-xs'
+              : 'bg-stone-100/80 dark:bg-slate-800/80 text-stone-600 dark:text-slate-300 hover:bg-stone-200/80 dark:hover:bg-slate-800'
           }`}
         >
           <CalendarIcon className="w-4 h-4 shrink-0" />
           <span>School Events & Holidays</span>
-          <span className="rounded-full bg-stone-100 dark:bg-slate-800 px-2 py-0.5 text-[10px] text-stone-700 dark:text-slate-300 font-semibold font-mono tabular-nums">
+          <span
+            className={`rounded-full px-2 py-0.5 text-[10px] font-semibold font-mono tabular-nums ${
+              activeTab === 'events'
+                ? 'bg-white/20 text-white dark:bg-stone-900/15 dark:text-stone-900'
+                : 'bg-white dark:bg-slate-900 text-stone-700 dark:text-slate-300'
+            }`}
+          >
             {batchSchoolEvents.length}
           </span>
         </button>
 
         <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === 'attendance'}
           onClick={() => {
             setActiveTab('attendance');
             setAttendanceDate(selectedDateStr);
           }}
-          className={`flex items-center gap-2 border-b-2 py-3 px-4 sm:px-5 text-xs font-bold whitespace-nowrap shrink-0 transition-colors ${
+          className={`flex items-center gap-2 rounded-xl px-3.5 py-2.5 text-xs font-bold transition-colors cursor-pointer ${
             activeTab === 'attendance'
-              ? 'border-stone-900 dark:border-white text-stone-900 dark:text-white'
-              : 'border-transparent text-stone-500 dark:text-slate-400 hover:text-stone-700 dark:hover:text-slate-200'
+              ? 'bg-stone-900 text-white dark:bg-white dark:text-stone-900 shadow-xs'
+              : 'bg-stone-100/80 dark:bg-slate-800/80 text-stone-600 dark:text-slate-300 hover:bg-stone-200/80 dark:hover:bg-slate-800'
           }`}
         >
           <CalendarCheck2 className="w-4 h-4 shrink-0" />
           <span>Attendance Calendar & Roll-Call</span>
-          <span className="rounded-full bg-emerald-100 dark:bg-emerald-950/60 px-2 py-0.5 text-[10px] text-emerald-800 dark:text-emerald-300 font-semibold font-mono tabular-nums">
+          <span
+            className={`rounded-full px-2 py-0.5 text-[10px] font-semibold font-mono tabular-nums ${
+              activeTab === 'attendance'
+                ? 'bg-emerald-500/25 text-emerald-100 dark:bg-emerald-600/20 dark:text-emerald-800'
+                : 'bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300'
+            }`}
+          >
             {totalStudents} Scholars
           </span>
         </button>
 
         <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === 'recordings'}
           onClick={() => {
             setActiveTab('recordings');
             setRecordingDate(selectedDateStr);
           }}
-          className={`flex items-center gap-2 border-b-2 py-3 px-4 sm:px-5 text-xs font-bold whitespace-nowrap shrink-0 transition-colors ${
+          className={`flex items-center gap-2 rounded-xl px-3.5 py-2.5 text-xs font-bold transition-colors cursor-pointer ${
             activeTab === 'recordings'
-              ? 'border-[#0284c7] text-[#0284c7] dark:text-sky-400 dark:border-sky-400'
-              : 'border-transparent text-stone-500 dark:text-slate-400 hover:text-stone-700 dark:hover:text-slate-200'
+              ? 'bg-[#0284c7] text-white shadow-xs'
+              : 'bg-sky-50/90 dark:bg-sky-950/40 text-[#0284c7] dark:text-sky-300 hover:bg-sky-100 dark:hover:bg-sky-900/50 border border-sky-200/80 dark:border-sky-800/60'
           }`}
         >
           <Video className="w-4 h-4 shrink-0" />
           <span>Class Recordings</span>
-          <span className="rounded-full bg-sky-100 dark:bg-sky-950/60 px-2 py-0.5 text-[10px] text-sky-800 dark:text-sky-300 font-semibold font-mono tabular-nums">
+          <span
+            className={`rounded-full px-2 py-0.5 text-[10px] font-semibold font-mono tabular-nums ${
+              activeTab === 'recordings'
+                ? 'bg-white/25 text-white'
+                : 'bg-sky-100 dark:bg-sky-900/70 text-sky-800 dark:text-sky-200'
+            }`}
+          >
             {batchRecordings.length}
           </span>
         </button>
@@ -3076,6 +3200,23 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
       {/* TAB 3: CLASS RECORDINGS (MULTIPLE YOUTUBE RECORDINGS PER DAY) */}
       {activeTab === 'recordings' && (
         <div className="space-y-5">
+          {recordingsSyncError && (
+            <div className="rounded-xl border border-amber-200 dark:border-amber-800/60 bg-amber-50 dark:bg-amber-950/40 px-4 py-3 text-xs text-amber-900 dark:text-amber-200 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+                <span>{recordingsSyncError}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setRecordingsSyncError(null)}
+                className="text-amber-600 hover:text-amber-800 dark:text-amber-300"
+                aria-label="Dismiss warning"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+
           {/* Date Navigator & Filters Bar */}
           <div className="rounded-2xl border border-stone-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 shadow-xs space-y-3">
             <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
@@ -3347,19 +3488,25 @@ export const CalendarPage: React.FC<CalendarPageProps> = ({ initialTab = 'events
             {/* Primary Stage: Sample-Matched YouTube Video Player + Metadata Card */}
             <div className="xl:col-span-8">
               {activeRecording ? (
-                <CalendarRecordingPlayer
-                  recording={activeRecording}
-                  isWatched={!!watchProgressMap[activeRecording.id]?.watched}
-                  isTrending={trendingRecordingIds.has(activeRecording.id)}
-                  savingWatchState={savingWatchId === activeRecording.id}
-                  onToggleWatched={handleToggleWatched}
-                  onFirstPlay={(rec) => recordRecordingView(rec.id)}
-                  getTeacherSummary={getTeacherProfileSummary}
-                  onFilterByTeacher={(name) => handleSelectTeacherFilter(name)}
-                  isTeacherOrAdmin={isTeacherOrAdmin}
-                  onEdit={(rec) => openRecordingModal(rec.date, rec)}
-                  onDelete={(rec) => setRecordingToDelete(rec)}
-                />
+                <CalendarSectionErrorBoundary
+                  key={activeRecording.id}
+                  fallbackTitle="Unable to initialize video player"
+                  fallbackDescription="Please retry or open the YouTube link directly."
+                >
+                  <CalendarRecordingPlayer
+                    recording={activeRecording}
+                    isWatched={!!watchProgressMap[activeRecording.id]?.watched}
+                    isTrending={trendingRecordingIds.has(activeRecording.id)}
+                    savingWatchState={savingWatchId === activeRecording.id}
+                    onToggleWatched={handleToggleWatched}
+                    onFirstPlay={(rec) => recordRecordingView(rec.id)}
+                    getTeacherSummary={getTeacherProfileSummary}
+                    onFilterByTeacher={(name) => handleSelectTeacherFilter(name)}
+                    isTeacherOrAdmin={isTeacherOrAdmin}
+                    onEdit={(rec) => openRecordingModal(rec.date, rec)}
+                    onDelete={(rec) => setRecordingToDelete(rec)}
+                  />
+                </CalendarSectionErrorBoundary>
               ) : (
                 <div className="rounded-2xl border border-stone-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-8 sm:p-12 text-center space-y-4 shadow-xs">
                   <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-sky-50 dark:bg-sky-950/50 text-[#0284c7] dark:text-sky-400">
