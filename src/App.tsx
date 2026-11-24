@@ -46,7 +46,64 @@ import {
   Layers,
   CheckCircle2,
   Lock,
+  AlertCircle,
+  RefreshCw,
 } from 'lucide-react';
+
+class AppErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { hasError: boolean; errorMessage: string | null }
+> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { hasError: false, errorMessage: null };
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    return {
+      hasError: true,
+      errorMessage: error?.message || 'An unexpected rendering error occurred.',
+    };
+  }
+
+  componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
+    console.warn('AppErrorBoundary caught:', error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="rounded-2xl border border-rose-200 dark:border-rose-900/60 bg-white dark:bg-slate-900 p-6 sm:p-8 text-center space-y-4 shadow-xs">
+          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-rose-50 dark:bg-rose-950/60 text-rose-600 dark:text-rose-400">
+            <AlertCircle className="w-6 h-6" />
+          </div>
+          <div className="space-y-1 max-w-md mx-auto">
+            <h3 className="font-serif text-lg font-bold text-slate-900 dark:text-white">
+              Unable to display this section cleanly
+            </h3>
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              A temporary connection or rendering issue occurred. Please retry below.
+            </p>
+            {this.state.errorMessage && (
+              <p className="mt-2 rounded-lg bg-slate-50 dark:bg-slate-800 px-3 py-1.5 text-[11px] font-mono text-slate-600 dark:text-slate-300 break-words">
+                {this.state.errorMessage}
+              </p>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={() => this.setState({ hasError: false, errorMessage: null })}
+            className="inline-flex items-center gap-2 rounded-xl bg-[#0284c7] hover:bg-[#0369a1] px-4 py-2 text-xs font-bold text-white shadow-xs transition-colors cursor-pointer"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+            <span>Retry Section</span>
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 const MainApp: React.FC = () => {
   const { activeRole, userProfile, loading: authLoading, updateCurrentUserBatch } = useAuth();
@@ -214,6 +271,8 @@ const MainApp: React.FC = () => {
         return <TimetablePage />;
       case 'calendar':
         return <CalendarPage initialTab="attendance" />;
+      case 'calendar_recordings':
+        return <CalendarPage initialTab="recordings" />;
       case 'announcements':
         return <AnnouncementsPage />;
       case 'messages':
@@ -326,7 +385,7 @@ const MainApp: React.FC = () => {
         {/* Main Content Area */}
         <main className="flex-1 overflow-y-auto overflow-x-hidden px-3 sm:px-6 lg:px-8 py-4 sm:py-6 w-full min-w-0">
           <div className="mx-auto max-w-7xl pb-24 md:pb-10 w-full min-w-0 space-y-10">
-            {renderCurrentPage()}
+            <AppErrorBoundary key={currentPage}>{renderCurrentPage()}</AppErrorBoundary>
 
             <footer className="border-t border-slate-200/80 dark:border-slate-800 pt-5 pb-2 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs text-slate-500 dark:text-slate-400">
               <p>
