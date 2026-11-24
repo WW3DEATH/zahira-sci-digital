@@ -30,6 +30,7 @@ import {
   Trophy,
   Info,
   Clock,
+  Video,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useSiteConfig } from '../../context/SiteConfigContext';
@@ -104,6 +105,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         { id: 'subjects', label: 'Subjects', hint: 'Physics, Chem, Maths & Bio units', icon: BookOpen },
         { id: 'timetable', label: 'Timetable', hint: 'Weekly class schedule & room slots', icon: Clock },
         { id: 'calendar', label: 'Calendar', hint: 'Events, attendance & class recordings', icon: Calendar },
+        { id: 'calendar_recordings', label: 'Class Recordings', hint: 'Recorded lessons & teacher filter', icon: Video },
       ],
     },
     {
